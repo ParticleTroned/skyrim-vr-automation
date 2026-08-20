@@ -1,0 +1,4 @@
+interface:
+  display_name: "DevBench Control"
+  short_description: "Inspect and call a running CSX DevBench endpoint"
+  default_prompt: "Use $devbench-control to inspect the available DevBench tools safely."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Profiler Control"
+  short_description: "Capture and compare CSX profiler evidence"
+  default_prompt: "Use $profiler-control to collect a bounded CSX profiler capture."

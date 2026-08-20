@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shader Cache Control"
+  short_description: "Compare preserved compiled shader-cache snapshots"
+  default_prompt: "Use $shader-cache-control to compare two preserved shader-cache snapshots."

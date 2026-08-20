@@ -1,0 +1,20 @@
+# Skyrim VR Automation doctor
+
+`Invoke-SkyrimVRAutomationDoctor.ps1 inspect` performs read-only checks for the
+supported PowerShell runtime, resolved MO2 configuration, MO2 validation,
+SteamVR paths, the bundled null-HMD profile, and optional DevBench discovery.
+
+MO2 configuration is resolved in strict precedence order: explicit
+`-ConfigPath`, `SKYRIM_VR_AUTOMATION_CONFIG`, the stable per-user file
+`%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`, then the legacy ignored
+checkout-local file. The selected source is always reported.
+
+Initialize the stable path without overwriting an existing file:
+
+```powershell
+.\Invoke-SkyrimVRAutomationDoctor.ps1 init -WhatIf
+.\Invoke-SkyrimVRAutomationDoctor.ps1 init
+```
+
+By default this copies the public example for editing. To migrate an existing
+configuration exactly, pass `-SourceConfigPath`.

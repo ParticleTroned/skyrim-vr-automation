@@ -1,0 +1,45 @@
+{
+  "name": "skyrim-vr-automation",
+  "version": "0.2.0",
+  "description": "Codex skills for transactional Skyrim VR automation, DevBench profiling, and shader-cache analysis.",
+  "author": {
+    "name": "Treatid2",
+    "url": "https://github.com/Treatid2"
+  },
+  "homepage": "https://github.com/Treatid2/skyrim-vr-automation",
+  "repository": "https://github.com/Treatid2/skyrim-vr-automation",
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "skyrim-vr",
+    "mod-organizer-2",
+    "steamvr",
+    "null-hmd",
+    "automation",
+    "devbench",
+    "profiling",
+    "shader-cache"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Skyrim VR Automation",
+    "shortDescription": "Safe Skyrim VR test and profiling controls.",
+    "longDescription": "Adds safety-bounded workflows for exact-profile Mod Organizer 2 sessions, transactional profile edits, backed-up SteamVR null-HMD switching, DevBench calls, profiler captures, and preserved shader-cache comparisons.",
+    "developerName": "Treatid2",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/Treatid2/skyrim-vr-automation",
+    "privacyPolicyURL": "https://github.com/Treatid2/skyrim-vr-automation/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/Treatid2/skyrim-vr-automation/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Inspect my configured MO2 environment safely.",
+      "Switch SteamVR to null HMD with a recoverable backup.",
+      "Run a bounded Skyrim VR test session through MO2.",
+      "Capture and compare CSX profiler evidence.",
+      "Compare two preserved compiled shader caches."
+    ]
+  }
+}

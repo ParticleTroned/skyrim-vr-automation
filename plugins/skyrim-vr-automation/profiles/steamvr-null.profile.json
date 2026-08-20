@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "vendorDefaultsPath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\SteamVR\\drivers\\null\\resources\\settings\\default.vrsettings",
+    "vendor": "Valve",
+    "capturedDate": "2026-08-18"
+  },
+  "steamvr": {
+    "forcedDriver": "null",
+    "requireHmd": false,
+    "activateMultipleDrivers": false,
+    "enableHomeApp": false
+  },
+  "driver_null": {
+    "enable": true,
+    "loadPriority": -999,
+    "serialNumber": "CSX Null HMD",
+    "modelNumber": "CSX Null HMD",
+    "windowX": 0,
+    "windowY": 0,
+    "windowWidth": 2160,
+    "windowHeight": 1200,
+    "renderWidth": 1512,
+    "renderHeight": 1680,
+    "secondsFromVsyncToPhotons": 0.01111111,
+    "displayFrequency": 90.0
+  }
+}
