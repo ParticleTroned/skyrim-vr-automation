@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "name": "skyrim-vr-automation",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "publisher": "Treatid2",
+  "preservedUtc": "2026-08-20T00:00:00Z",
+  "minimumPowerShellVersion": "7.0",
+  "devBenchProtocolVersion": "2025-03-26",
+  "tools": [
+    {
+      "name": "mo2-control",
+      "version": "0.3.0",
+      "entryPoint": "tools/mo2-control/Invoke-MO2Control.ps1"
+    },
+    {
+      "name": "mo2-profile-control",
+      "version": "1.0.0",
+      "entryPoint": "tools/mo2-profile-control/Invoke-MO2ProfileControl.ps1"
+    },
+    {
+      "name": "steamvr-null-control",
+      "version": "1.0.0",
+      "entryPoint": "tools/steamvr-null-control/Invoke-SteamVRNullControl.ps1"
+    },
+    {
+      "name": "devbench-control",
+      "version": "1.0.0",
+      "entryPoint": "tools/devbench-control/Invoke-DevBenchControl.ps1"
+    },
+    {
+      "name": "shader-cache-control",
+      "version": "1.0.0",
+      "entryPoint": "tools/shader-cache-control/Compare-CSXShaderCache.ps1"
+    }
+  ]
+}

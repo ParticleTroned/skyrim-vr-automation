@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/mo2-control/result.schema.json",
+  "title": "MO2 Control Result",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "command",
+    "ok",
+    "state",
+    "timestampUtc",
+    "checks",
+    "warnings",
+    "errors",
+    "data"
+  ],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "command": { "type": "string" },
+    "ok": { "type": "boolean" },
+    "state": { "type": "string" },
+    "timestampUtc": { "type": "string", "format": "date-time" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "message"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "enum": ["pass", "warn", "fail", "info"] },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "devBenchRuntimePath": "C:\\Path\\To\\MO2\\overwrite\\SKSE\\Plugins\\devbench\\runtime.json",
+  "steamVrSettingsPath": "C:\\Path\\To\\Steam\\config\\steamvr.vrsettings",
+  "steamVrRoot": "C:\\Path\\To\\SteamVR"
+}
