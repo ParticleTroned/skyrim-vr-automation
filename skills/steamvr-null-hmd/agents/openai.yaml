@@ -1,0 +1,4 @@
+interface:
+  display_name: "SteamVR Null HMD"
+  short_description: "Transactional SteamVR null-HMD control"
+  default_prompt: "Use $steamvr-null-hmd to inspect or switch my SteamVR null-HMD state."

@@ -1,0 +1,38 @@
+{
+  "contractVersion": "0.3.0",
+  "machine": "example-skyrim-vr-machine",
+  "mo2": {
+    "root": "C:\\Path\\To\\MO2",
+    "executable": "C:\\Path\\To\\MO2\\ModOrganizer.exe",
+    "ini": "C:\\Path\\To\\MO2\\ModOrganizer.ini",
+    "profilesDirectory": "C:\\Path\\To\\MO2\\profiles",
+    "modsDirectory": "C:\\Path\\To\\MO2\\mods",
+    "overwriteDirectory": "C:\\Path\\To\\MO2\\overwrite",
+    "logsDirectory": "C:\\Path\\To\\MO2\\logs",
+    "rootBuilderDefinitions": [
+      "C:\\Path\\To\\MO2\\plugins\\rootbuilder\\rootbuilder_defaults.json"
+    ],
+    "rootBuilderDataDirectory": "C:\\Path\\To\\MO2\\plugins\\rootbuilder",
+    "processNames": ["ModOrganizer", "ModOrganizer2"],
+    "gameProcessNames": ["SkyrimVR", "sksevr_loader"],
+    "runtimeProcessNames": ["vrserver", "vrcompositor"]
+  },
+  "defaults": {
+    "profile": "Exact Profile Name",
+    "executable": "Exact Registered Executable Name"
+  },
+  "storage": {
+    "sessionStaging": "C:\\Path\\To\\ActiveSessions",
+    "archive": "C:\\Path\\To\\SessionArchive"
+  },
+  "limits": {
+    "maxEnumeratedFiles": 25000,
+    "overwriteWarningFiles": 5000,
+    "overwriteBlockFiles": 20000,
+    "overwriteWarningBytes": 2147483648,
+    "overwriteBlockBytes": 5368709120
+  },
+  "session": {
+    "lockFile": "C:\\Path\\To\\csx-vr-automation\\tools\\mo2-control\\sessions\\active-session.lock.json"
+  }
+}

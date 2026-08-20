@@ -1,0 +1,4 @@
+interface:
+  display_name: "MO2 Control"
+  short_description: "Safe, exact Mod Organizer 2 automation"
+  default_prompt: "Use $mo2-control to inspect and operate my configured MO2 session."

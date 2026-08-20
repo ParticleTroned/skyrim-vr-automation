@@ -1,0 +1,20 @@
+{
+  "name": "skyrim-vr-tools",
+  "interface": {
+    "displayName": "Skyrim Vr Tools"
+  },
+  "plugins": [
+    {
+      "name": "skyrim-vr-automation",
+      "source": {
+        "source": "local",
+        "path": "./plugins/skyrim-vr-automation"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
