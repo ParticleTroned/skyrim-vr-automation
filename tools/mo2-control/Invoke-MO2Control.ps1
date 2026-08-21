@@ -23,6 +23,8 @@ param(
 
     [switch]$RequireClosed,
 
+    [switch]$NoExit,
+
     [switch]$Compact
 )
 
@@ -111,6 +113,6 @@ if ($Compact) {
 
 ConvertTo-Json @jsonParameters
 
-if (-not $result.ok) {
+if (-not $result.ok -and -not $NoExit) {
     exit 2
 }

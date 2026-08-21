@@ -1503,6 +1503,19 @@ function Invoke-MO2Open {
     }
 
     $process = Start-Process -FilePath $mo2Path -ArgumentList $argumentLine -WorkingDirectory (Split-Path -Parent $mo2Path) -PassThru
+    $openStartedPath = Join-Path ([string]$owned.data.sessionPath) 'mo2-open-started.json'
+    $openStarted = [pscustomobject][ordered]@{
+        contractVersion = '0.4.0'
+        sessionId = $SessionId
+        requestedPid = $process.Id
+        mo2Path = $mo2Path
+        arguments = $arguments
+        argumentLine = $argumentLine
+        timeoutSeconds = $TimeoutSeconds
+        startedUtc = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-MO2JsonAtomic -Path $openStartedPath -Value $openStarted
+    Set-MO2OwnedSessionStatus -Owned $owned -Status 'opening' -TimestampProperty 'openedUtc'
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observed = $null
     do {
@@ -1513,11 +1526,10 @@ function Invoke-MO2Open {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     if (-not $observed) {
-        return New-MO2ActionResult -Config $Config -Command 'open' -Ok $false -State 'open-failed' -Data @{ requestedPid = $process.Id; launcherExited = $process.HasExited; launcherExitCode = $(if ($process.HasExited) { $process.ExitCode } else { $null }); processes = @(Get-MO2ProcessRecords -Names @($Config.mo2.processNames)); sessionPath = $owned.data.sessionPath } -Errors @('The exact newly started MO2 process was not observed within the bounded timeout.')
+        return New-MO2ActionResult -Config $Config -Command 'open' -Ok $false -State 'open-failed' -Data @{ requestedPid = $process.Id; launcherExited = $process.HasExited; launcherExitCode = $(if ($process.HasExited) { $process.ExitCode } else { $null }); openStartedReceiptPath = $openStartedPath; processes = @(Get-MO2ProcessRecords -Names @($Config.mo2.processNames)); sessionPath = $owned.data.sessionPath } -Errors @('The exact newly started MO2 process was not observed within the bounded timeout. The durable start receipt and opening session state allow a later status or recover-close call to adopt the exact process.')
     }
     Assert-MO2ExactProcessTargets -Config $Config -Processes @($observed)
     $null = Set-MO2OwnedSessionOwner -Owned $owned -ProcessRecord $observed -Reason 'exact MO2 process observed after open'
-    Set-MO2OwnedSessionStatus -Owned $owned -Status 'opening' -TimestampProperty 'openedUtc'
     $visibleMainWindow = $null
     do {
         # Process.MainWindowHandle is not a readiness signal: during startup it
@@ -1532,10 +1544,10 @@ function Invoke-MO2Open {
     } while ([DateTime]::UtcNow -lt $deadline)
     if (-not $visibleMainWindow) {
         Set-MO2OwnedSessionStatus -Owned $owned -Status 'open-incomplete' -TimestampProperty 'openedUtc'
-        return New-MO2ActionResult -Config $Config -Command 'open' -Ok $false -State 'open-incomplete' -Data @{ ownerPid = $process.Id; process = $observed; windows = @(Get-MO2WindowSnapshot -Processes @($observed)); sessionPath = $owned.data.sessionPath } -Errors @('The exact MO2 process started, but its visible MainWindow was not ready within the bounded timeout.')
+        return New-MO2ActionResult -Config $Config -Command 'open' -Ok $false -State 'open-incomplete' -Data @{ ownerPid = $process.Id; openStartedReceiptPath = $openStartedPath; process = $observed; windows = @(Get-MO2WindowSnapshot -Processes @($observed)); sessionPath = $owned.data.sessionPath } -Errors @('The exact MO2 process started, but its visible MainWindow was not ready within the bounded timeout. The durable start receipt and adopted owner PID remain available for cooperative recovery.')
     }
     Set-MO2OwnedSessionStatus -Owned $owned -Status 'mo2-open' -TimestampProperty 'openedUtc'
-    return New-MO2ActionResult -Config $Config -Command 'open' -Ok $true -State 'mo2-open' -Data @{ sessionId = $SessionId; ownerPid = $process.Id; process = $observed; mainWindow = $visibleMainWindow; sessionPath = $owned.data.sessionPath; gameOpened = $false }
+    return New-MO2ActionResult -Config $Config -Command 'open' -Ok $true -State 'mo2-open' -Data @{ sessionId = $SessionId; ownerPid = $process.Id; openStartedReceiptPath = $openStartedPath; process = $observed; mainWindow = $visibleMainWindow; sessionPath = $owned.data.sessionPath; gameOpened = $false }
 }
 
 function Invoke-MO2Close {

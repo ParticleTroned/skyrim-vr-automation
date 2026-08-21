@@ -15,7 +15,9 @@ param(
     [string]$EvidenceDirectory,
 
     [ValidateNotNullOrEmpty()]
-    [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader')
+    [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
+
+    [switch]$NoExit
 )
 
 Set-StrictMode -Version Latest
@@ -65,6 +67,15 @@ function Write-BytesAtomically([string]$Path, [byte[]]$Bytes) {
     }
 }
 
+function Test-ProfileShouldProcess($Caller, [string]$Target, [string]$Action) {
+    try {
+        return $Caller.ShouldProcess($Target, $Action)
+    }
+    catch {
+        throw "PowerShell's interactive confirmation host is unavailable. Use -WhatIf to preview or -Confirm:`$false for an already-authorized automation transaction. Original error: $($_.Exception.Message)"
+    }
+}
+
 $resolvedProfile = [IO.Path]::GetFullPath($ProfilePath)
 if (-not (Test-Path -LiteralPath $resolvedProfile -PathType Leaf)) {
     throw "Profile modlist does not exist: $resolvedProfile"
@@ -86,14 +97,14 @@ if ($Command -eq 'inspect') {
         sha256 = $beforeHash
         processes = $processes
     } | ConvertTo-Json -Depth 5
-    exit 0
+    return
 }
 
 if ($processes.Count -gt 0) {
     throw "MO2 profile mutation requires MO2 and Skyrim to be closed. Active: $($processes.name -join ', ')."
 }
 if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
-    throw '-EvidenceDirectory is required for disable and restore.'
+    throw '-EvidenceDirectory is required for enable, disable, and restore.'
 }
 
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDirectory)
@@ -118,7 +129,7 @@ if ($Command -in @('enable', 'disable')) {
     }
     $afterBytes[$beforeLine.byteOffset] = [byte][char]$targetMarker
 
-    if ($PSCmdlet.ShouldProcess($resolvedProfile, "$Command exact MO2 mod '$ModName'")) {
+    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "$Command exact MO2 mod '$ModName'") {
         if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) {
             New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null
         }
@@ -170,7 +181,7 @@ elseif ($Command -eq 'restore') {
         throw 'Current modlist differs from the state produced by this control; refusing to overwrite it.'
     }
     $restoreBytes = [IO.File]::ReadAllBytes($backupPath)
-    if ($PSCmdlet.ShouldProcess($resolvedProfile, "Restore exact MO2 modlist bytes for '$ModName'")) {
+    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "Restore exact MO2 modlist bytes for '$ModName'") {
         Write-BytesAtomically -Path $resolvedProfile -Bytes $restoreBytes
         if ((Get-Sha256 $resolvedProfile) -ne [string]$receipt.beforeSha256) {
             throw 'Postcondition failed: exact modlist bytes were not restored.'

@@ -13,7 +13,9 @@ param(
     [string]$SteamVRRoot = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR',
     [string]$RuntimePath = $env:CSX_DEVBENCH_RUNTIME_PATH,
     [switch]$WhatIf,
-    [switch]$Compact
+    [switch]$Compact,
+
+    [switch]$NoExit
 )
 
 Set-StrictMode -Version Latest
@@ -86,4 +88,4 @@ catch {
 $json = @{ InputObject = $result; Depth = 40 }
 if ($Compact) { $json.Compress = $true }
 ConvertTo-Json @json
-if (-not $result.ok) { exit 2 }
+if (-not $result.ok -and -not $NoExit) { exit 2 }

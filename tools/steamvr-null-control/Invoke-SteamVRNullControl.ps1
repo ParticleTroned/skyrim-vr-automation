@@ -18,6 +18,8 @@ param(
 
     [switch]$Force,
 
+    [switch]$NoExit,
+
     [switch]$Compact
 )
 
@@ -296,4 +298,4 @@ catch {
 $jsonParameters = @{ InputObject = $result; Depth = 20 }
 if ($Compact) { $jsonParameters['Compress'] = $true }
 ConvertTo-Json @jsonParameters
-if (-not $result.ok) { exit 2 }
+if (-not $result.ok -and -not $NoExit) { exit 2 }
