@@ -20,6 +20,11 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
 5. Use `call -Tool <exact-name> -ArgumentsJson <json>`, parse the structured
    result, and preserve errors as evidence. Do not infer success from a visible
    in-game effect alone.
+6. Keep runtime identity verification enabled. Supply build/artifact
+   expectations when testing a newly deployed DLL, and use `-RequireSuccess`
+   when a semantic failure must fail the orchestration step.
+7. Prefer client `wait -Condition noBlockingMenu` over the server `noMenu`
+   condition when Skyrim's permanent HUD is open.
 
 The entry point is:
 

@@ -10,8 +10,8 @@ edit `modlist.txt` ad hoc.
 
 ## Load the applicable contract
 
-- For inspection, validation, prepare, launch, status, stop-game, stop,
-  terminate, release, or recovery, read
+- For inspection, validation, prepare, open, launch, status, stop-game, close,
+  recover-close, stop, terminate, release, or recovery, read
   `../../tools/mo2-control/MO2-RUNBOOK.md` completely before acting. Read
   `../../tools/mo2-control/README.md` when command or schema details matter.
 - For enabling, disabling, or restoring one exact mod marker, read
@@ -58,6 +58,13 @@ are:
   shader caches, captures, or session evidence.
 - Do not kill processes by name. Use the bounded controller commands, which
   prove ownership and game/loader absence.
+- Run visible MO2/game window operations through the approved elevated route so
+  they execute as the logged-on interactive user. A sandbox
+  `interactive-desktop-required` result is a precondition failure, not
+  permission to fall back to SendKeys or a process kill.
+- `recover-close` is the only route for adopting one stranded, exact-path MO2
+  without a prior session. It may invoke only exact `Unlock`; Notepad++,
+  Tullius, and other editors remain outside the process target set.
 - Keep machine paths only in the stable per-user or ignored legacy
   `machine.local.json`, explicit parameters, or documented environment
   variables. If configuration is absent, use the bundled doctor to initialize

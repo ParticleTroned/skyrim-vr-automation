@@ -7,9 +7,10 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.3.0 provides read-only inspection plus single-owner `prepare`, exact
-`launch`, bounded `status`, graceful `stop-game` with retained-MO2 relaunch, and
-graceful-only full `stop`. A successful validation
+Version 0.4.0 provides read-only inspection plus single-owner `prepare`, exact
+`open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
+cooperative `close`, stranded-instance `recover-close`, and graceful full
+`stop`. A successful validation
 authorizes no mutation by itself. Changes still require the user's task to put
 the relevant MO2 state, mod files, game files, or captured artifacts in scope.
 
@@ -105,6 +106,18 @@ not change MO2's selected profile or mod list.
 6. Re-run `validate -RequireClosed` after the change. If it fails, do not launch.
 
 ## Exact launch and monitoring
+
+Open only the exact MO2/profile UI when no game launch is wanted:
+
+```powershell
+.\Invoke-MO2Control.ps1 open -SessionId $sessionId
+.\Invoke-MO2Control.ps1 close -SessionId $sessionId
+```
+
+These visible-window operations must run as the logged-on interactive user
+(the approved elevated execution route in Codex). `close` refuses while a game
+or loader is present. It may invoke the exact accessible control named
+`Unlock`; it never closes Notepad++, Tullius, or another crash-log editor.
 
 Launch only with the identity returned by `prepare`:
 
@@ -232,12 +245,25 @@ the helper exit itself was a crash.
 Symptom: `stop` closes Skyrim but returns `stop-incomplete`; the exact MO2 owner
 PID remains responsive and may have an empty window title.
 
-Response: retain the failed graceful result as evidence. Run `stop-game` to
-prove the game/loader set is empty, then `terminate -SessionId $sessionId`.
-`terminate` refuses to act while a game or active RootBuilder build exists and
-targets only MO2 processes owned by that session. Finish with `release` to
-remove only the owned lock. This sequence was validated live under SteamVR's
-null driver; a process-name-wide kill is unnecessary.
+Response: rerun `close -SessionId $sessionId` through the logged-on interactive
+user. The resolver re-inventories visible MO2 windows, expands exact `File`,
+invokes exact `Exit`, invokes exact `Unlock` when present, and normally closes
+MO2 without closing the editor retaining a
+VFS handle. If it still reports `close-incomplete`, retain the audit, prove the
+game/loader set is empty, and only then consider explicit `terminate`. Finish
+with `release`; a process-name-wide kill is unnecessary.
+
+### Stranded MO2 has no automation session
+
+Symptom: MO2 was opened manually or by an earlier failed parameter set, no
+session lock exists, and a modal/VFS state prevents ordinary shutdown.
+
+Response: preview and then run `recover-close -Label "reason"` through the
+logged-on interactive user. It accepts exactly one process whose executable
+path equals the configured `ModOrganizer.exe`, refuses while a game/loader or
+another lock exists, creates a retained recovery audit, and uses the same exact
+`File` → `Exit`, exact `Unlock`, and normal-modal-close policy. Run `release` using the same identity after
+closed-state proof. Notepad++ and Tullius are outside the target set.
 
 ### MO2 resource use grows abnormally
 

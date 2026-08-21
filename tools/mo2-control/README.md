@@ -3,13 +3,14 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
-Version `0.3.0` retains the bounded, single-owner lifecycle and adds a tested
-retained-MO2 cycle: `stop-game` gracefully closes only the owned game, and a
-subsequent `launch` asks the exact still-owned MO2 process to run the registered
-executable again. A short-lived command helper is not treated as launch failure
-while the game postcondition is still pending. The tool also supports explicit
-safe-gated MO2 termination and closed-state lock release. It still does not edit a mod list, clean
-overwrite, or move evidence.
+Version `0.4.0` adds exact-profile `open`, MO2-only cooperative `close`, and
+`recover-close` for a stranded pre-session MO2. Cooperative close verifies the
+configured executable path, addresses only the exact MO2 PID, invokes MO2's
+structured exact `File` → `Exit` command, invokes only a button whose normalized
+accessible name is exactly `Unlock`, and otherwise requests normal closure of
+visible MO2-owned modal windows. It never closes Tullius,
+Notepad++, or another editor and never force-terminates. Existing retained-MO2
+game cycling and explicit safe-gated termination remain available.
 
 ## Quick start
 
@@ -20,6 +21,7 @@ From this directory in PowerShell:
 .\Invoke-MO2Control.ps1 inspect
 .\Invoke-MO2Control.ps1 validate -RequireClosed
 .\Invoke-MO2Control.ps1 prepare -Label "null-hmd-baseline" -WhatIf
+.\Invoke-MO2Control.ps1 recover-close -Label "stranded-mo2" -WhatIf
 ```
 
 Use `-Compact` for one-line JSON. Override the configured defaults only with an
@@ -85,14 +87,25 @@ identity and uses MO2's supported command line:
 ModOrganizer.exe --profile NAME run --executable NAME
 ```
 
+`open` starts only `ModOrganizer.exe --profile NAME`, proves the exact process
+path and a visible `MainWindow`, and does not run the registered game executable.
+Immediately after process creation it writes `mo2-open-started.json` and marks
+the owned session `opening`. If the caller's outer timeout expires before UIA
+readiness, a later `status`, `close`, or `recover-close` still has durable PID,
+path, argument, and timestamp evidence for exact-process adoption.
 `status` is bounded and non-mutating. `stop-game` requests normal closure of the
 owned game/loader while preserving the exact owner MO2 PID, allowing controlled
-relaunches without UI automation. `stop` requests normal window closure for the
-whole owned chain and waits for a postcondition; neither command force-terminates. `release` removes only an
+relaunches. `close` refuses while a game/loader exists and cooperatively resolves
+MO2's structured `File` → `Exit` path and visible modal chain, including the VFS
+`Unlock` prompt. `stop` first closes
+the game and then uses the same MO2 resolver. `release` removes only an
 exactly owned lock after proving MO2 and the game are closed, while retaining
 the evidence directory. All mutation commands have `-WhatIf`. Evidence
 collection, archive verification, profile mutation, cache management, and
 recovery remain deferred until separately bounded.
+
+Use `-NoExit` when embedding the entry script in a larger PowerShell host; a
+failed command then returns structured JSON without terminating that host.
 
 The retained cycle is:
 
@@ -107,3 +120,10 @@ process and exactly one MO2 process matching the session's original owner PID.
 `terminate` is intentionally distinct from `stop`: it force-terminates only
 MO2 processes owned by the active session, and only after proving that no game
 or loader process is running and no RootBuilder `BuildData.json` remains.
+
+Visible `open`, `close`, `recover-close`, `stop-game`, and `stop` operations must
+run as the logged-on user on the interactive Windows desktop. In Codex this
+means using the approved elevated execution route. A sandbox call returns
+`interactive-desktop-required` before opening MO2 or creating a recovery lock.
+Run `release` through the same identity that created a recovery session so its
+retained evidence can be updated before the lock is removed.

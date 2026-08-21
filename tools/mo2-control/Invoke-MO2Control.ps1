@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('inspect', 'validate', 'prepare', 'launch', 'status', 'stop-game', 'stop', 'terminate', 'release', 'help')]
+    [ValidateSet('inspect', 'validate', 'prepare', 'open', 'launch', 'status', 'stop-game', 'close', 'recover-close', 'stop', 'terminate', 'release', 'help')]
     [string]$Command = 'help',
 
     [string]$ConfigPath,
@@ -22,6 +22,8 @@ param(
     [switch]$WhatIf,
 
     [switch]$RequireClosed,
+
+    [switch]$NoExit,
 
     [switch]$Compact
 )
@@ -49,6 +51,9 @@ try {
         'prepare' {
             Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -Label $Label -WhatIf:$WhatIf
         }
+        'open' {
+            Invoke-MO2Open -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
+        }
         'launch' {
             Invoke-MO2Launch -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
         }
@@ -57,6 +62,12 @@ try {
         }
         'stop-game' {
             Invoke-MO2StopGame -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
+        }
+        'close' {
+            Invoke-MO2Close -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
+        }
+        'recover-close' {
+            Invoke-MO2RecoverClose -Config $config -Label $Label -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
         }
         'stop' {
             Invoke-MO2Stop -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
@@ -76,7 +87,7 @@ try {
 }
 catch {
     $result = [pscustomobject][ordered]@{
-        contractVersion = '0.3.0'
+        contractVersion = '0.4.0'
         command = $Command
         ok = $false
         state = 'tool-error'
@@ -102,6 +113,6 @@ if ($Compact) {
 
 ConvertTo-Json @jsonParameters
 
-if (-not $result.ok) {
+if (-not $result.ok -and -not $NoExit) {
     exit 2
 }

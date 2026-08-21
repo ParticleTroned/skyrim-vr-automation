@@ -1,5 +1,5 @@
 {
-  "contractVersion": "0.3.0",
+  "contractVersion": "0.4.0",
   "machine": "example-skyrim-vr-machine",
   "mo2": {
     "root": "C:\\Path\\To\\MO2",

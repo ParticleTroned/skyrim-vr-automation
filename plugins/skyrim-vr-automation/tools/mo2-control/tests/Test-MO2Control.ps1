@@ -146,6 +146,15 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($launchDryRun.ok -and $launchDryRun.state -eq 'dry-run') 'launch dry-run succeeds'
     Assert-MO2Test (($launchDryRun.data.arguments -join '|') -eq '--profile|Codex|run|--executable|Launch MGO - Do Not Unlock') 'launch uses exact official MO2 profile and executable command'
 
+    $openDryRun = Invoke-MO2Open -Config $config -SessionId $sessionId -WhatIf
+    Assert-MO2Test ($openDryRun.ok -and $openDryRun.state -eq 'dry-run' -and -not $openDryRun.data.wouldOpenGame) 'open dry-run opens only exact MO2'
+    Assert-MO2Test (($openDryRun.data.arguments -join '|') -eq '--profile|Codex') 'open uses exact official MO2 profile command'
+
+    $closeDryRun = Invoke-MO2Close -Config $config -SessionId $sessionId -WhatIf
+    Assert-MO2Test ($closeDryRun.ok -and $closeDryRun.state -eq 'dry-run' -and $closeDryRun.data.alreadyClosed) 'close dry-run is non-mutating when MO2 is already closed'
+    $lockAfterCloseDryRun = Get-Content -LiteralPath $config.session.lockFile -Raw | ConvertFrom-Json
+    Assert-MO2Test ($lockAfterCloseDryRun.status -eq 'prepared') 'close dry-run does not change owned session state'
+
     $stopDryRun = Invoke-MO2Stop -Config $config -SessionId $sessionId -WhatIf
     Assert-MO2Test ($stopDryRun.ok -and $stopDryRun.state -eq 'dry-run' -and -not $stopDryRun.data.forceTermination) 'stop dry-run is graceful-only'
 
@@ -162,6 +171,10 @@ selected_profile=@ByteArray(Codex)
     $released = Invoke-MO2Release -Config $config -SessionId $sessionId
     Assert-MO2Test ($released.ok -and $released.state -eq 'released' -and $released.data.sessionRetained) 'release retires lock and retains evidence'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'release removes only the owned lock'
+
+    $recoverClosed = Invoke-MO2RecoverClose -Config $config -Label 'fixture recovery' -WhatIf
+    Assert-MO2Test ($recoverClosed.ok -and $recoverClosed.state -eq 'already-closed') 'recovery close is idempotent when exact MO2 is absent'
+    Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'already-closed recovery creates no lock'
 }
 finally {
     if (Test-Path -LiteralPath $fixture) {

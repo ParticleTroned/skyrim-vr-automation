@@ -43,6 +43,31 @@ try {
     Assert-Test ([long]$comparison.candidateByteDelta -eq 0) 'total byte delta is exact'
     $lighting = @($comparison.differenceGroups | Where-Object { $_.topLevel -eq 'Lighting' -and $_.status -eq 'changed' })[0]
     Assert-Test ([int]$lighting.files -eq 1 -and [long]$lighting.byteDelta -eq -2) 'top-level difference group includes byte delta'
+
+    $transaction = Join-Path $PSScriptRoot 'Invoke-CSXShaderCacheTransaction.ps1'
+    $liveCache = Join-Path $resolvedTestRoot 'live\ShaderCache'
+    $evidence = Join-Path $resolvedTestRoot 'transaction'
+    New-Item -ItemType Directory -Path $liveCache -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $liveCache 'baseline.bin'), [byte[]](1, 4, 9))
+    $snap = & $transaction snapshot -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    Assert-Test ($snap.ok -and (Test-Path -LiteralPath $snap.data.receiptPath -PathType Leaf)) 'transaction snapshots an exact cache with a receipt'
+    [IO.File]::WriteAllBytes((Join-Path $liveCache 'baseline.bin'), [byte[]](2, 5, 10))
+    [IO.File]::WriteAllBytes((Join-Path $liveCache 'new.bin'), [byte[]](7, 8))
+    $different = & $transaction verify -CachePath $liveCache -EvidenceDirectory $evidence -NoExit | ConvertFrom-Json
+    Assert-Test (-not $different.ok -and -not $different.data.matches) 'transaction verification detects physical cache mutation'
+    $restore = & $transaction restore -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    $verified = & $transaction verify -CachePath $liveCache -EvidenceDirectory $evidence -NoExit | ConvertFrom-Json
+    Assert-Test ($restore.ok -and $verified.ok -and $verified.data.matches) 'transaction restores and verifies the exact baseline'
+    Assert-Test (Test-Path -LiteralPath $restore.data.displacedPath -PathType Container) 'transaction retains the displaced cache tree'
+
+    $mods = Join-Path $resolvedTestRoot 'mods'
+    $profile = Join-Path $resolvedTestRoot 'modlist.txt'
+    New-Item -ItemType Directory -Path (Join-Path $mods 'Enabled Cache\ShaderCache'), (Join-Path $mods 'Disabled Cache\ShaderCache') -Force | Out-Null
+    Set-Content -LiteralPath $profile -Value @('+Enabled Cache', '-Disabled Cache') -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $mods 'Enabled Cache\Info.ini') -Value @('[Feature]', 'Version=1.2.3') -Encoding utf8
+    $providers = & $transaction providers -ProfilePath $profile -ModsPath $mods -DeepInventory -NoExit | ConvertFrom-Json
+    Assert-Test ($providers.ok -and $providers.data.providers.Count -eq 2) 'provider inventory finds enabled and disabled physical cache providers'
+    Assert-Test ($providers.data.enabledProviders -eq 1 -and $providers.data.disabledProviders -eq 1) 'provider inventory preserves exact MO2 marker state'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

@@ -3,7 +3,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('inspect', 'disable', 'restore')]
+    [ValidateSet('inspect', 'enable', 'disable', 'restore')]
     [string]$Command,
 
     [Parameter(Mandatory)]
@@ -15,7 +15,9 @@ param(
     [string]$EvidenceDirectory,
 
     [ValidateNotNullOrEmpty()]
-    [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader')
+    [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
+
+    [switch]$NoExit
 )
 
 Set-StrictMode -Version Latest
@@ -65,6 +67,15 @@ function Write-BytesAtomically([string]$Path, [byte[]]$Bytes) {
     }
 }
 
+function Test-ProfileShouldProcess($Caller, [string]$Target, [string]$Action) {
+    try {
+        return $Caller.ShouldProcess($Target, $Action)
+    }
+    catch {
+        throw "PowerShell's interactive confirmation host is unavailable. Use -WhatIf to preview or -Confirm:`$false for an already-authorized automation transaction. Original error: $($_.Exception.Message)"
+    }
+}
+
 $resolvedProfile = [IO.Path]::GetFullPath($ProfilePath)
 if (-not (Test-Path -LiteralPath $resolvedProfile -PathType Leaf)) {
     throw "Profile modlist does not exist: $resolvedProfile"
@@ -86,54 +97,61 @@ if ($Command -eq 'inspect') {
         sha256 = $beforeHash
         processes = $processes
     } | ConvertTo-Json -Depth 5
-    exit 0
+    return
 }
 
 if ($processes.Count -gt 0) {
     throw "MO2 profile mutation requires MO2 and Skyrim to be closed. Active: $($processes.name -join ', ')."
 }
 if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
-    throw '-EvidenceDirectory is required for disable and restore.'
+    throw '-EvidenceDirectory is required for enable, disable, and restore.'
 }
 
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 $backupPath = Join-Path $resolvedEvidence 'modlist.before.bin'
 $receiptPath = Join-Path $resolvedEvidence 'modlist-control.receipt.json'
 
-if ($Command -eq 'disable') {
-    if (-not $beforeLine.enabled) {
-        throw "The exact mod is already disabled: $ModName"
-    }
-    if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) {
-        New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null
+if ($Command -in @('enable', 'disable')) {
+    $targetEnabled = $Command -eq 'enable'
+    if ($beforeLine.enabled -eq $targetEnabled) {
+        throw "The exact mod is already $($targetEnabled ? 'enabled' : 'disabled'): $ModName"
     }
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
         throw "Refusing to overwrite an existing exact backup: $backupPath"
     }
 
-    [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
     $afterBytes = [byte[]]::new($beforeBytes.Length)
     [Array]::Copy($beforeBytes, $afterBytes, $beforeBytes.Length)
-    if ($afterBytes[$beforeLine.byteOffset] -ne [byte][char]'+') {
-        throw 'The calculated marker byte is not the expected plus sign.'
+    $expectedMarker = if ($targetEnabled) { '-' } else { '+' }
+    $targetMarker = if ($targetEnabled) { '+' } else { '-' }
+    if ($afterBytes[$beforeLine.byteOffset] -ne [byte][char]$expectedMarker) {
+        throw "The calculated marker byte is not the expected '$expectedMarker' sign."
     }
-    $afterBytes[$beforeLine.byteOffset] = [byte][char]'-'
+    $afterBytes[$beforeLine.byteOffset] = [byte][char]$targetMarker
 
-    if ($PSCmdlet.ShouldProcess($resolvedProfile, "Disable exact MO2 mod '$ModName'")) {
+    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "$Command exact MO2 mod '$ModName'") {
+        if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) {
+            New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null
+        }
+        [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
         Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
         $afterHash = Get-Sha256 $resolvedProfile
         $afterLine = Get-ModLineRecord -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -Name $ModName
-        if ($afterLine.enabled -or $afterHash -eq $beforeHash) {
-            throw 'Postcondition failed: exact mod was not disabled.'
+        if ($afterLine.enabled -ne $targetEnabled -or $afterHash -eq $beforeHash) {
+            $targetState = if ($targetEnabled) { 'enabled' } else { 'disabled' }
+            throw "Postcondition failed: exact mod was not $targetState."
         }
         [pscustomobject][ordered]@{
-            contractVersion = '1.0.0'
+            contractVersion = '1.1.0'
+            operation = $Command
             profilePath = $resolvedProfile
             modName = $ModName
             backupPath = $backupPath
             beforeSha256 = $beforeHash
-            disabledSha256 = $afterHash
-            disabledUtc = [DateTime]::UtcNow.ToString('o')
+            resultSha256 = $afterHash
+            beforeMarker = $expectedMarker
+            resultMarker = $targetMarker
+            changedUtc = [DateTime]::UtcNow.ToString('o')
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPath -Encoding utf8
     }
 }
@@ -148,11 +166,22 @@ elseif ($Command -eq 'restore') {
     if ((Get-Sha256 $backupPath) -ne [string]$receipt.beforeSha256) {
         throw 'Exact backup hash does not match its receipt.'
     }
-    if ($beforeHash -ne [string]$receipt.disabledSha256) {
+    $resultHashProperty = $receipt.PSObject.Properties['resultSha256']
+    $legacyHashProperty = $receipt.PSObject.Properties['disabledSha256']
+    $expectedResultHash = if ($resultHashProperty) {
+        [string]$resultHashProperty.Value
+    }
+    elseif ($legacyHashProperty) {
+        [string]$legacyHashProperty.Value
+    }
+    else {
+        throw 'Receipt does not contain a recognized result hash.'
+    }
+    if ($beforeHash -ne $expectedResultHash) {
         throw 'Current modlist differs from the state produced by this control; refusing to overwrite it.'
     }
     $restoreBytes = [IO.File]::ReadAllBytes($backupPath)
-    if ($PSCmdlet.ShouldProcess($resolvedProfile, "Restore exact MO2 modlist bytes for '$ModName'")) {
+    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "Restore exact MO2 modlist bytes for '$ModName'") {
         Write-BytesAtomically -Path $resolvedProfile -Bytes $restoreBytes
         if ((Get-Sha256 $resolvedProfile) -ne [string]$receipt.beforeSha256) {
             throw 'Postcondition failed: exact modlist bytes were not restored.'
