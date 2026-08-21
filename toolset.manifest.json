@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "name": "skyrim-vr-automation",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "GPL-3.0-or-later",
   "publisher": "Treatid2",
-  "preservedUtc": "2026-08-20T00:00:00Z",
+  "preservedUtc": "2026-08-21T00:00:00Z",
   "minimumPowerShellVersion": "7.0",
   "devBenchProtocolVersion": "2025-03-26",
   "tools": [
@@ -15,12 +15,12 @@
     },
     {
       "name": "mo2-control",
-      "version": "0.3.0",
+      "version": "0.4.1",
       "entryPoint": "tools/mo2-control/Invoke-MO2Control.ps1"
     },
     {
       "name": "mo2-profile-control",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "entryPoint": "tools/mo2-profile-control/Invoke-MO2ProfileControl.ps1"
     },
     {
@@ -30,7 +30,7 @@
     },
     {
       "name": "devbench-control",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "entryPoint": "tools/devbench-control/Invoke-DevBenchControl.ps1"
     },
     {
@@ -40,8 +40,13 @@
     },
     {
       "name": "shader-cache-control",
+      "version": "2.0.0",
+      "entryPoint": "tools/shader-cache-control/Invoke-CSXShaderCacheTransaction.ps1"
+    },
+    {
+      "name": "process-control",
       "version": "1.0.0",
-      "entryPoint": "tools/shader-cache-control/Compare-CSXShaderCache.ps1"
+      "entryPoint": "tools/process-control/Invoke-BoundedProcess.ps1"
     }
   ]
 }

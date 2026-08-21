@@ -89,6 +89,10 @@ ModOrganizer.exe --profile NAME run --executable NAME
 
 `open` starts only `ModOrganizer.exe --profile NAME`, proves the exact process
 path and a visible `MainWindow`, and does not run the registered game executable.
+Immediately after process creation it writes `mo2-open-started.json` and marks
+the owned session `opening`. If the caller's outer timeout expires before UIA
+readiness, a later `status`, `close`, or `recover-close` still has durable PID,
+path, argument, and timestamp evidence for exact-process adoption.
 `status` is bounded and non-mutating. `stop-game` requests normal closure of the
 owned game/loader while preserving the exact owner MO2 PID, allowing controlled
 relaunches. `close` refuses while a game/loader exists and cooperatively resolves
@@ -99,6 +103,9 @@ exactly owned lock after proving MO2 and the game are closed, while retaining
 the evidence directory. All mutation commands have `-WhatIf`. Evidence
 collection, archive verification, profile mutation, cache management, and
 recovery remain deferred until separately bounded.
+
+Use `-NoExit` when embedding the entry script in a larger PowerShell host; a
+failed command then returns structured JSON without terminating that host.
 
 The retained cycle is:
 

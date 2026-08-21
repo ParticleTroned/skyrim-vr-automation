@@ -41,8 +41,11 @@ try {
         'tools\mo2-control\Invoke-MO2Control.ps1',
         'tools\steamvr-null-control\Invoke-SteamVRNullControl.ps1',
         'tools\devbench-control\Invoke-DevBenchControl.ps1',
+        'tools\devbench-control\DevBenchControl.psm1',
         'tools\profiler-control\Measure-CSXProfiler.ps1',
-        'tools\shader-cache-control\Compare-CSXShaderCache.ps1'
+        'tools\shader-cache-control\Compare-CSXShaderCache.ps1',
+        'tools\shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1',
+        'tools\process-control\Invoke-BoundedProcess.ps1'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $simulatedCache $entryPoint) -PathType Leaf)) { throw "Installed entry point is missing: $entryPoint" }
     }

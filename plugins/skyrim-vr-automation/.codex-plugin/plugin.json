@@ -1,6 +1,6 @@
 {
   "name": "skyrim-vr-automation",
-  "version": "0.2.0+codex.20260821050014",
+  "version": "0.3.0",
   "description": "Codex skills for transactional Skyrim VR automation, DevBench profiling, and shader-cache analysis.",
   "author": {
     "name": "Treatid2",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Skyrim VR Automation",
     "shortDescription": "Safe Skyrim VR test and profiling controls.",
-    "longDescription": "Adds safety-bounded workflows for exact-profile Mod Organizer 2 sessions, transactional profile edits, backed-up SteamVR null-HMD switching, DevBench calls, profiler captures, and preserved shader-cache comparisons.",
+    "longDescription": "Adds safety-bounded workflows for exact-profile Mod Organizer 2 sessions, transactional profile and shader-cache edits, backed-up SteamVR null-HMD switching, identity-bound DevBench calls, profiler captures, and bounded process retries.",
     "developerName": "Treatid2",
     "category": "Developer Tools",
     "capabilities": [
@@ -39,7 +39,7 @@
       "Switch SteamVR to null HMD with a recoverable backup.",
       "Run a bounded Skyrim VR test session through MO2.",
       "Capture and compare CSX profiler evidence.",
-      "Compare two preserved compiled shader caches."
+      "Compare or transactionally restore compiled shader caches."
     ]
   }
 }

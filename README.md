@@ -16,10 +16,14 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/steamvr-null-control` — transactional null-HMD apply/restore and
   bounded SteamVR shutdown.
 - `tools/devbench-control` — a small MCP client for the DevBench endpoint
-  exposed by a running CSX build.
+  exposed by a running CSX build, with listener/process/build/artifact binding
+  and normalized semantic results.
 - `tools/profiler-control` — repeatable DevBench profiler capture and
   multi-state comparison reports.
-- `tools/shader-cache-control` — shader-cache inventory and comparison reports.
+- `tools/shader-cache-control` — provider discovery, physical cache
+  snapshot/restore transactions, and comparison reports.
+- `tools/process-control` — bounded exact-process execution with classified,
+  evidence-backed retries for known transient failures.
 
 The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
@@ -79,8 +83,10 @@ The toolkit remains independent of any source tree it exercises.
 
 Run inspection or a dry run before mutation. MO2 commands require exact profile,
 executable, and session ownership; null-HMD apply takes an exact backup and
-restore verifies its receipt; profile edits are exact-marker transactions.
-Nothing here deletes unclassified MO2 overwrite content or shader caches.
+restore verifies its receipt; profile edits are exact-marker transactions;
+cache restoration retains the displaced tree and verifies both sides before
+cleanup. Nothing here deletes unclassified MO2 overwrite content or shader
+caches.
 
 Run the isolated suite with:
 
