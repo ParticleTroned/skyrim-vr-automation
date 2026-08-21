@@ -1202,6 +1202,119 @@ function Set-MO2OwnedSessionStatus {
     Write-MO2JsonAtomic -Path $manifestPath -Value $manifest
 }
 
+function Set-MO2OwnedSessionOwner {
+    param(
+        [Parameter(Mandatory)]$Owned,
+        [Parameter(Mandatory)]$ProcessRecord,
+        [Parameter(Mandatory)][string]$Reason
+    )
+
+    $previousOwnerPid = if ($Owned.data.PSObject.Properties['ownerPid']) { [int]$Owned.data.ownerPid } else { 0 }
+    $adoption = [pscustomobject][ordered]@{
+        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        previousOwnerPid = $previousOwnerPid
+        ownerPid = [int]$ProcessRecord.id
+        processPath = [string]$ProcessRecord.path
+        processStartTime = [string]$ProcessRecord.startTime
+        reason = $Reason
+    }
+    if ($Owned.data.PSObject.Properties['ownerPid']) {
+        $Owned.data.ownerPid = [int]$ProcessRecord.id
+    }
+    else {
+        $Owned.data | Add-Member -NotePropertyName ownerPid -NotePropertyValue ([int]$ProcessRecord.id)
+    }
+    [object[]]$adoptions = @()
+    if ($Owned.data.PSObject.Properties['ownerAdoptions']) {
+        $adoptions = @($Owned.data.ownerAdoptions)
+    }
+    [object[]]$updatedAdoptions = @($adoptions)
+    $updatedAdoptions += $adoption
+    if ($Owned.data.PSObject.Properties['ownerAdoptions']) {
+        $Owned.data.ownerAdoptions = $updatedAdoptions
+    }
+    else {
+        $Owned.data | Add-Member -NotePropertyName ownerAdoptions -NotePropertyValue @($adoption)
+    }
+    Write-MO2JsonAtomic -Path $Owned.path -Value $Owned.data
+
+    $manifestPath = Join-Path ([string]$Owned.data.sessionPath) 'session.json'
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.PSObject.Properties['ownerPid']) {
+        $manifest.ownerPid = [int]$ProcessRecord.id
+    }
+    else {
+        $manifest | Add-Member -NotePropertyName ownerPid -NotePropertyValue ([int]$ProcessRecord.id)
+    }
+    [object[]]$manifestAdoptions = @()
+    if ($manifest.PSObject.Properties['ownerAdoptions']) {
+        $manifestAdoptions = @($manifest.ownerAdoptions)
+    }
+    [object[]]$updatedManifestAdoptions = @($manifestAdoptions)
+    $updatedManifestAdoptions += $adoption
+    if ($manifest.PSObject.Properties['ownerAdoptions']) {
+        $manifest.ownerAdoptions = $updatedManifestAdoptions
+    }
+    else {
+        $manifest | Add-Member -NotePropertyName ownerAdoptions -NotePropertyValue @($adoption)
+    }
+    Write-MO2JsonAtomic -Path $manifestPath -Value $manifest
+    return $adoption
+}
+
+function Resolve-MO2OwnedProcessTarget {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Owned,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Processes,
+        [switch]$AdoptDetachedOwner
+    )
+
+    $ownerPid = if ($Owned.data.PSObject.Properties['ownerPid']) { [int]$Owned.data.ownerPid } else { 0 }
+    $ownedTargets = @($Processes | Where-Object { [int]$_.id -eq $ownerPid })
+    if ($Processes.Count -eq 0 -or $ownedTargets.Count -eq 1) {
+        return [pscustomobject][ordered]@{
+            ok = $true
+            ownerPid = $ownerPid
+            targets = @($ownedTargets)
+            adopted = $false
+            adoption = $null
+            reason = $(if ($Processes.Count -eq 0) { 'already-closed' } else { 'recorded-owner' })
+        }
+    }
+    if (-not $AdoptDetachedOwner -or $Processes.Count -ne 1 -or $ownedTargets.Count -ne 0) {
+        return [pscustomobject][ordered]@{ ok = $false; ownerPid = $ownerPid; targets = @(); adopted = $false; adoption = $null; reason = 'ambiguous-process-set' }
+    }
+    if ($ownerPid -gt 0 -and $null -ne (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) {
+        return [pscustomobject][ordered]@{ ok = $false; ownerPid = $ownerPid; targets = @(); adopted = $false; adoption = $null; reason = 'recorded-owner-still-running' }
+    }
+
+    $candidate = $Processes[0]
+    Assert-MO2ExactProcessTargets -Config $Config -Processes @($candidate)
+    $createdText = [string]$Owned.data.createdUtc
+    $startedText = [string]$candidate.startTime
+    try {
+        $createdUtc = [DateTimeOffset]::Parse($createdText, [Globalization.CultureInfo]::InvariantCulture)
+        $startedUtc = [DateTimeOffset]::Parse($startedText, [Globalization.CultureInfo]::InvariantCulture)
+    }
+    catch {
+        return [pscustomobject][ordered]@{ ok = $false; ownerPid = $ownerPid; targets = @(); adopted = $false; adoption = $null; reason = 'candidate-time-unavailable'; createdUtc = $createdText; processStartTime = $startedText; detail = $_.Exception.Message }
+    }
+    if ($startedUtc.UtcDateTime -lt $createdUtc.UtcDateTime.AddSeconds(-5)) {
+        return [pscustomobject][ordered]@{ ok = $false; ownerPid = $ownerPid; targets = @(); adopted = $false; adoption = $null; reason = 'candidate-predates-session'; createdUtc = $createdUtc.ToString('o'); processStartTime = $startedUtc.ToString('o') }
+    }
+
+    $adoption = Set-MO2OwnedSessionOwner -Owned $Owned -ProcessRecord $candidate -Reason 'adopted exact detached MO2 process after recorded owner exited'
+    return [pscustomobject][ordered]@{
+        ok = $true
+        ownerPid = [int]$candidate.id
+        targets = @($candidate)
+        adopted = $true
+        adoption = $adoption
+        reason = 'detached-owner-adopted'
+    }
+}
+
 function Invoke-MO2Prepare {
     [CmdletBinding()]
     param(
@@ -1403,16 +1516,24 @@ function Invoke-MO2Open {
         return New-MO2ActionResult -Config $Config -Command 'open' -Ok $false -State 'open-failed' -Data @{ requestedPid = $process.Id; launcherExited = $process.HasExited; launcherExitCode = $(if ($process.HasExited) { $process.ExitCode } else { $null }); processes = @(Get-MO2ProcessRecords -Names @($Config.mo2.processNames)); sessionPath = $owned.data.sessionPath } -Errors @('The exact newly started MO2 process was not observed within the bounded timeout.')
     }
     Assert-MO2ExactProcessTargets -Config $Config -Processes @($observed)
+    $null = Set-MO2OwnedSessionOwner -Owned $owned -ProcessRecord $observed -Reason 'exact MO2 process observed after open'
+    Set-MO2OwnedSessionStatus -Owned $owned -Status 'opening' -TimestampProperty 'openedUtc'
     $visibleMainWindow = $null
     do {
-        $visibleMainWindow = @(Get-MO2WindowSnapshot -Processes @($observed) | Where-Object { $_.visible -and $_.automationId -eq 'MainWindow' }) | Select-Object -First 1
+        # Process.MainWindowHandle is not a readiness signal: during startup it
+        # can point at MessageDialog, the VFS Unlock prompt, or even a tooltip.
+        # Only MO2's stable UIA identity proves that its actual main window is
+        # ready. Other windows remain available to cooperative close/recovery.
+        $visibleMainWindow = @(Get-MO2WindowSnapshot -Processes @($observed) | Where-Object {
+            $_.visible -and $_.automationAvailable -and $_.automationId -eq 'MainWindow'
+        }) | Select-Object -First 1
         if ($visibleMainWindow) { break }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
     if (-not $visibleMainWindow) {
+        Set-MO2OwnedSessionStatus -Owned $owned -Status 'open-incomplete' -TimestampProperty 'openedUtc'
         return New-MO2ActionResult -Config $Config -Command 'open' -Ok $false -State 'open-incomplete' -Data @{ ownerPid = $process.Id; process = $observed; windows = @(Get-MO2WindowSnapshot -Processes @($observed)); sessionPath = $owned.data.sessionPath } -Errors @('The exact MO2 process started, but its visible MainWindow was not ready within the bounded timeout.')
     }
-    if ($owned.data.PSObject.Properties['ownerPid']) { $owned.data.ownerPid = $process.Id } else { $owned.data | Add-Member -NotePropertyName ownerPid -NotePropertyValue $process.Id }
     Set-MO2OwnedSessionStatus -Owned $owned -Status 'mo2-open' -TimestampProperty 'openedUtc'
     return New-MO2ActionResult -Config $Config -Command 'open' -Ok $true -State 'mo2-open' -Data @{ sessionId = $SessionId; ownerPid = $process.Id; process = $observed; mainWindow = $visibleMainWindow; sessionPath = $owned.data.sessionPath; gameOpened = $false }
 }
@@ -1432,10 +1553,11 @@ function Invoke-MO2Close {
         return New-MO2ActionResult -Config $Config -Command 'close' -Ok $false -State 'blocked' -Data @{ processes = $inspection.processes; lock = $owned } -Errors @('MO2-only close refuses while a game or loader process is running. Use stop for the full owned chain.')
     }
 
-    $ownerPid = if ($owned.data.PSObject.Properties['ownerPid']) { [int]$owned.data.ownerPid } else { 0 }
-    $targets = @($inspection.processes.mo2 | Where-Object { [int]$_.id -eq $ownerPid })
-    if ($inspection.processes.mo2.Count -gt 0 -and ($ownerPid -le 0 -or $targets.Count -ne 1 -or $inspection.processes.mo2.Count -ne 1)) {
-        return New-MO2ActionResult -Config $Config -Command 'close' -Ok $false -State 'blocked' -Data @{ processes = $inspection.processes; ownerPid = $ownerPid; lock = $owned } -Errors @('Cooperative close requires exactly one MO2 process matching the session owner PID.')
+    $resolution = Resolve-MO2OwnedProcessTarget -Config $Config -Owned $owned -Processes @($inspection.processes.mo2) -AdoptDetachedOwner
+    $ownerPid = [int]$resolution.ownerPid
+    $targets = @($resolution.targets)
+    if (-not $resolution.ok) {
+        return New-MO2ActionResult -Config $Config -Command 'close' -Ok $false -State 'blocked' -Data @{ processes = $inspection.processes; ownerPid = $ownerPid; ownershipResolution = $resolution; lock = $owned } -Errors @('Cooperative close could not prove a unique MO2 process owned by this session.')
     }
     if (-not $WhatIf -and $targets.Count -gt 0 -and -not (Test-MO2InteractiveDesktop)) {
         return New-MO2ActionResult -Config $Config -Command 'close' -Ok $false -State 'interactive-desktop-required' -Data @{ sessionId = $SessionId; requiresInteractiveDesktop = $true; forceTermination = $false; unrelatedProcessesTouched = @() } -Errors @('Cooperative MO2 close requires execution as the logged-on user on the interactive desktop. Rerun this exact command through the approved elevated execution path.')
@@ -1445,7 +1567,7 @@ function Invoke-MO2Close {
     }
     $windows = @(Get-MO2WindowSnapshot -Processes $targets)
     if ($WhatIf) {
-        return New-MO2ActionResult -Config $Config -Command 'close' -Ok $true -State 'dry-run' -Data @{ sessionId = $SessionId; targets = $targets; windows = $windows; alreadyClosed = $targets.Count -eq 0; wouldInvokeExactControls = @('File', 'Exit', 'Unlock'); wouldRequestModalWindowClose = $targets.Count -gt 0; forceTermination = $false; unrelatedProcessesTouched = @() }
+        return New-MO2ActionResult -Config $Config -Command 'close' -Ok $true -State 'dry-run' -Data @{ sessionId = $SessionId; targets = $targets; windows = $windows; ownershipResolution = $resolution; alreadyClosed = $targets.Count -eq 0; wouldInvokeExactControls = @('File', 'Exit', 'Unlock'); wouldRequestModalWindowClose = $targets.Count -gt 0; forceTermination = $false; unrelatedProcessesTouched = @() }
     }
     if ($targets.Count -eq 0) {
         Set-MO2OwnedSessionStatus -Owned $owned -Status 'mo2-closed' -TimestampProperty 'closedUtc'
@@ -1456,7 +1578,7 @@ function Invoke-MO2Close {
     $status = if ($close.closed) { 'mo2-closed' } else { 'close-incomplete' }
     Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty 'closedUtc'
     Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-close.json') -Value $close
-    return New-MO2ActionResult -Config $Config -Command 'close' -Ok $close.closed -State $status -Data @{ sessionId = $SessionId; close = $close; sessionPath = $owned.data.sessionPath } -Errors $(if ($close.closed) { @() } else { @('MO2 still owns one or more exact target processes after cooperative dialogue resolution; no force termination was attempted.') })
+    return New-MO2ActionResult -Config $Config -Command 'close' -Ok $close.closed -State $status -Data @{ sessionId = $SessionId; ownershipResolution = $resolution; close = $close; sessionPath = $owned.data.sessionPath } -Errors $(if ($close.closed) { @() } else { @('MO2 still owns one or more exact target processes after cooperative dialogue resolution; no force termination was attempted.') })
 }
 
 function Invoke-MO2RecoverClose {

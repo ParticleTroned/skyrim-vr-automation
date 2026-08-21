@@ -26,13 +26,14 @@ try {
     }
 
     $manifest = Get-Content -LiteralPath (Join-Path $rebuilt '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
-    if ($manifest.name -ne 'skyrim-vr-automation' -or $manifest.version -ne '0.2.0') { throw 'Rebuilt plugin identity/version is incorrect.' }
+    $sourceManifest = Get-Content -LiteralPath (Join-Path $repositoryRoot '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
+    if ($manifest.name -ne 'skyrim-vr-automation' -or $manifest.version -ne $sourceManifest.version) { throw 'Rebuilt plugin identity/version is incorrect.' }
     foreach ($skill in @('mo2-control', 'steamvr-null-hmd', 'devbench-control', 'profiler-control', 'shader-cache-control')) {
         if (-not (Test-Path -LiteralPath (Join-Path $rebuilt "skills\$skill\SKILL.md") -PathType Leaf)) { throw "Missing installed skill: $skill" }
     }
     if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Filter machine.local.json).Count -ne 0) { throw 'Distribution contains machine.local.json.' }
 
-    $simulatedCache = Join-Path $fixture 'cache\skyrim-vr-automation\0.2.0'
+    $simulatedCache = Join-Path $fixture "cache\skyrim-vr-automation\$($manifest.version)"
     New-Item -ItemType Directory -Path (Split-Path -Parent $simulatedCache) -Force | Out-Null
     Copy-Item -LiteralPath $rebuilt -Destination $simulatedCache -Recurse
     foreach ($entryPoint in @(
