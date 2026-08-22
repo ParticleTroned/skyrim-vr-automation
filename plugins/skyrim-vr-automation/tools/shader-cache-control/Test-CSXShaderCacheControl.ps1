@@ -49,6 +49,7 @@ try {
     $evidence = Join-Path $resolvedTestRoot 'transaction'
     New-Item -ItemType Directory -Path $liveCache -Force | Out-Null
     [IO.File]::WriteAllBytes((Join-Path $liveCache 'baseline.bin'), [byte[]](1, 4, 9))
+    Set-Content -LiteralPath (Join-Path $liveCache 'Info.ini') -Value @('[Cache]', 'ShaderCacheABI = snapshot-abi') -Encoding utf8
     $snap = & $transaction snapshot -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
     Assert-Test ($snap.ok -and (Test-Path -LiteralPath $snap.data.receiptPath -PathType Leaf)) 'transaction snapshots an exact cache with a receipt'
     [IO.File]::WriteAllBytes((Join-Path $liveCache 'baseline.bin'), [byte[]](2, 5, 10))
@@ -60,6 +61,28 @@ try {
     Assert-Test ($restore.ok -and $verified.ok -and $verified.data.matches) 'transaction restores and verifies the exact baseline'
     Assert-Test (Test-Path -LiteralPath $restore.data.displacedPath -PathType Container) 'transaction retains the displaced cache tree'
 
+    $snapshotSeed = & $transaction seed -CachePath $liveCache -EvidenceDirectory $evidence `
+        -SourceCachePath (Join-Path $evidence 'cache.before') -ExpectedSourceTreeSha256 $snap.data.inventory.treeSha256 `
+        -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    Assert-Test ($snapshotSeed.ok) 'transaction accepts its receipt-owned cache.before snapshot as a seed source'
+
+    $seedSource = Join-Path $resolvedTestRoot 'seed\CompatibleBaseline'
+    New-Item -ItemType Directory -Path $seedSource -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $seedSource 'Info.ini') -Value @('[Cache]', 'ShaderCacheABI = old-abi', '', '[Feature]', 'Enabled = true', 'Version = 1-0-0') -Encoding utf8
+    [IO.File]::WriteAllBytes((Join-Path $seedSource 'seed.bin'), [byte[]](11, 12, 13))
+    $seedInventory = & $transaction inspect -CachePath $seedSource -NoExit | ConvertFrom-Json
+    $seed = & $transaction seed -CachePath $liveCache -EvidenceDirectory $evidence -SourceCachePath $seedSource `
+        -ExpectedSourceTreeSha256 $seedInventory.data.treeSha256 -ShaderCacheAbiOverride 'new-abi' `
+        -CompatibilityReason 'Fixture proves a compatible scheduling-only contract change.' `
+        -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    Assert-Test ($seed.ok -and (Test-Path -LiteralPath $seed.data.seedReceiptPath -PathType Leaf)) 'transaction seeds a verified arbitrarily named source cache with a receipt'
+    if (-not $seed.ok) { throw "Seed fixture failed: $($seed.errors -join '; ')" }
+    Assert-Test ((Get-Content -LiteralPath (Join-Path $liveCache 'Info.ini') -Raw) -match 'ShaderCacheABI\s*=\s*new-abi') 'seed records the explicit compatible ABI override in Info.ini'
+    Assert-Test (Test-Path -LiteralPath $seed.data.displacedPath -PathType Container) 'seed retains the displaced cache tree'
+    $wrongHash = & $transaction seed -CachePath $liveCache -EvidenceDirectory $evidence -SourceCachePath $seedSource `
+        -ExpectedSourceTreeSha256 ('0' * 64) -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    Assert-Test (-not $wrongHash.ok -and $wrongHash.errors[0] -match 'hash mismatch') 'seed rejects a source whose exact tree hash is not the approved identity'
+
     $mods = Join-Path $resolvedTestRoot 'mods'
     $profile = Join-Path $resolvedTestRoot 'modlist.txt'
     New-Item -ItemType Directory -Path (Join-Path $mods 'Enabled Cache\ShaderCache'), (Join-Path $mods 'Disabled Cache\ShaderCache') -Force | Out-Null
@@ -68,6 +91,15 @@ try {
     $providers = & $transaction providers -ProfilePath $profile -ModsPath $mods -DeepInventory -NoExit | ConvertFrom-Json
     Assert-Test ($providers.ok -and $providers.data.providers.Count -eq 2) 'provider inventory finds enabled and disabled physical cache providers'
     Assert-Test ($providers.data.enabledProviders -eq 1 -and $providers.data.disabledProviders -eq 1) 'provider inventory preserves exact MO2 marker state'
+
+    $dllRelativePath = 'SKSE\Plugins\CommunityShaders.dll'
+    New-Item -ItemType Directory -Path (Join-Path $mods 'Enabled Cache\SKSE\Plugins'), (Join-Path $mods 'Disabled Cache\SKSE\Plugins') -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $mods "Enabled Cache\$dllRelativePath"), [byte[]](1, 2, 3))
+    [IO.File]::WriteAllBytes((Join-Path $mods "Disabled Cache\$dllRelativePath"), [byte[]](4, 5, 6))
+    $fileProviders = & $transaction providers -ProfilePath $profile -ModsPath $mods -RelativeCachePath $dllRelativePath -DeepInventory -NoExit | ConvertFrom-Json
+    Assert-Test ($fileProviders.ok -and $fileProviders.data.providers.Count -eq 2) 'provider inventory supports an exact relative file'
+    Assert-Test ($fileProviders.data.effectiveWinnerAmongEnabledMods.modName -eq 'Enabled Cache') 'provider inventory identifies the enabled loose-file winner'
+    Assert-Test ($fileProviders.data.providers[0].providerType -eq 'file' -and $fileProviders.data.providers[0].inventory.files -eq 1) 'file provider inventory includes its physical hash record'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

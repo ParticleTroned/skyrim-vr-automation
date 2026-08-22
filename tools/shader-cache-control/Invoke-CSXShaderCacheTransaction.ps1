@@ -3,12 +3,20 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('inspect', 'providers', 'snapshot', 'verify', 'restore')]
+    [ValidateSet('inspect', 'providers', 'snapshot', 'verify', 'seed', 'restore')]
     [string]$Command,
 
     [string]$CachePath,
 
     [string]$EvidenceDirectory,
+
+    [string]$SourceCachePath,
+
+    [string]$ExpectedSourceTreeSha256,
+
+    [string]$ShaderCacheAbiOverride,
+
+    [string]$CompatibilityReason,
 
     [string]$ProfilePath,
 
@@ -51,6 +59,15 @@ function Assert-SafeCachePath([string]$Path) {
     return $resolved
 }
 
+function Assert-SafeSourcePath([string]$Path) {
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($resolved)
+    if ([string]::IsNullOrWhiteSpace($resolved) -or $resolved -eq $root) {
+        throw "Refusing a filesystem root as a shader-cache seed source: $resolved"
+    }
+    return $resolved
+}
+
 function Get-TreeInventory([string]$Root) {
     $resolved = [IO.Path]::GetFullPath($Root)
     if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
@@ -79,8 +96,63 @@ function Get-TreeInventory([string]$Root) {
     }
 }
 
+function Get-FileInventory([string]$Path) {
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $file = Get-Item -LiteralPath $resolved -ErrorAction Stop
+    $sha256 = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash
+    return [pscustomobject][ordered]@{
+        root = $resolved
+        files = 1
+        bytes = [long]$file.Length
+        treeSha256 = $sha256
+        entries = @([pscustomobject][ordered]@{
+            relativePath = [IO.Path]::GetFileName($resolved)
+            bytes = [long]$file.Length
+            sha256 = $sha256
+        })
+    }
+}
+
 function Write-JsonFile([string]$Path, $Value) {
     $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding utf8
+}
+
+function Set-IniValue {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Section,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Value
+    )
+
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($line in @(Get-Content -LiteralPath $Path)) { $lines.Add([string]$line) }
+    $sectionPattern = '^\s*\[' + [regex]::Escape($Section) + '\]\s*$'
+    $keyPattern = '^\s*' + [regex]::Escape($Key) + '\s*='
+    $sectionStart = -1
+    $sectionEnd = $lines.Count
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match $sectionPattern) {
+            $sectionStart = $i
+            for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+                if ($lines[$j] -match '^\s*\[.+\]\s*$') { $sectionEnd = $j; break }
+            }
+            break
+        }
+    }
+    if ($sectionStart -lt 0) { throw "INI section [$Section] is missing: $Path" }
+
+    $keyIndexes = @()
+    for ($i = $sectionStart + 1; $i -lt $sectionEnd; $i++) {
+        if ($lines[$i] -match $keyPattern) { $keyIndexes += $i }
+    }
+    if ($keyIndexes.Count -ne 1) {
+        throw "Expected exactly one '$Key' entry in [$Section], found $($keyIndexes.Count): $Path"
+    }
+    $previous = (($lines[$keyIndexes[0]] -split '=', 2)[1]).Trim()
+    $lines[$keyIndexes[0]] = "$Key = $Value"
+    [IO.File]::WriteAllLines($Path, $lines, [Text.UTF8Encoding]::new($false))
+    return $previous
 }
 
 function Get-ProviderMetadata([string]$ModRoot) {
@@ -120,19 +192,35 @@ function Get-Providers {
         $marker = $Matches.marker
         $modName = $Matches.name.TrimEnd("`r")
         $modRoot = Join-Path $resolvedMods $modName
-        $cacheRoot = Join-Path $modRoot $RelativeCachePath
-        if (-not (Test-Path -LiteralPath $cacheRoot -PathType Container)) { continue }
-        $inventory = if ($DeepInventory) { Get-TreeInventory $cacheRoot } else { $null }
+        $providerPath = Join-Path $modRoot $RelativeCachePath
+        if (-not (Test-Path -LiteralPath $providerPath)) { continue }
+        $providerType = if (Test-Path -LiteralPath $providerPath -PathType Container) { 'directory' } else { 'file' }
+        $inventory = if (-not $DeepInventory) {
+            $null
+        }
+        elseif ($providerType -eq 'directory') {
+            Get-TreeInventory $providerPath
+        }
+        else {
+            Get-FileInventory $providerPath
+        }
         $providers += [pscustomobject][ordered]@{
             lineNumber = $lineNumber
             marker = $marker
             enabled = $marker -eq '+'
             modName = $modName
             modRoot = $modRoot
-            cachePath = $cacheRoot
+            cachePath = $providerPath
+            providerPath = $providerPath
+            providerType = $providerType
             inventory = $inventory
             metadata = @(Get-ProviderMetadata $modRoot)
         }
+    }
+    $enabled = @($providers | Where-Object enabled | Sort-Object lineNumber)
+    $winner = if ($enabled.Count -gt 0) { $enabled[0] } else { $null }
+    foreach ($provider in $providers) {
+        $provider | Add-Member -NotePropertyName effectiveWinnerAmongEnabledMods -NotePropertyValue ($null -ne $winner -and $provider.lineNumber -eq $winner.lineNumber)
     }
     return [pscustomobject][ordered]@{
         profilePath = $resolvedProfile
@@ -142,7 +230,8 @@ function Get-Providers {
         providers = $providers
         enabledProviders = @($providers | Where-Object enabled).Count
         disabledProviders = @($providers | Where-Object { -not $_.enabled }).Count
-        priorityNote = 'lineNumber records exact modlist order; this tool does not infer an MO2 winner without VFS resolution evidence'
+        effectiveWinnerAmongEnabledMods = $winner
+        priorityNote = 'Among enabled loose-file mod providers, the earliest modlist line wins. Overwrite, unmanaged game files, archives, and runtime deployment still require separate VFS evidence.'
     }
 }
 
@@ -154,7 +243,7 @@ function Assert-Closed {
 }
 
 function Get-ReceiptPaths {
-    if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) { throw '-EvidenceDirectory is required for snapshot, verify, and restore.' }
+    if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) { throw '-EvidenceDirectory is required for snapshot, verify, seed, and restore.' }
     $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
     return [pscustomobject][ordered]@{
         evidence = $evidence
@@ -171,7 +260,12 @@ try {
     }
     else {
         if ([string]::IsNullOrWhiteSpace($CachePath)) { throw "$Command requires -CachePath." }
-        $resolvedCache = Assert-SafeCachePath $CachePath
+        $resolvedCache = if ($Command -eq 'inspect') {
+            Assert-SafeSourcePath $CachePath
+        }
+        else {
+            Assert-SafeCachePath $CachePath
+        }
         if ($Command -eq 'inspect') {
             $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; data = Get-TreeInventory $resolvedCache; errors = @() }
         }
@@ -213,13 +307,78 @@ try {
                     $matches = $current.treeSha256 -eq [string]$receipt.beforeTreeSha256
                     $result = [pscustomobject][ordered]@{ ok = $matches; command = $Command; data = @{ matches = $matches; current = $current; receiptPath = $paths.receipt }; errors = $(if ($matches) { @() } else { @('Current shader-cache tree differs from the preserved transaction baseline.') }) }
                 }
+                elseif ($Command -eq 'seed') {
+                    Assert-Closed
+                    if ([string]::IsNullOrWhiteSpace($SourceCachePath)) { throw 'seed requires -SourceCachePath.' }
+                    if ([string]::IsNullOrWhiteSpace($ExpectedSourceTreeSha256)) { throw 'seed requires -ExpectedSourceTreeSha256.' }
+                    $resolvedSource = Assert-SafeSourcePath $SourceCachePath
+                    if ($resolvedSource -eq $resolvedCache) { throw 'Seed source and live cache must be different directories.' }
+                    $source = Get-TreeInventory $resolvedSource
+                    if ($source.treeSha256 -ne $ExpectedSourceTreeSha256) {
+                        throw "Seed source tree hash mismatch. Expected $ExpectedSourceTreeSha256, observed $($source.treeSha256)."
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($ShaderCacheAbiOverride) -and [string]::IsNullOrWhiteSpace($CompatibilityReason)) {
+                        throw '-CompatibilityReason is required when -ShaderCacheAbiOverride is used.'
+                    }
+
+                    $parent = Split-Path -Parent $resolvedCache
+                    $leaf = Split-Path -Leaf $resolvedCache
+                    $staging = Join-Path $parent ('.' + $leaf + '.seed.' + [guid]::NewGuid().ToString('N'))
+                    $displaced = Join-Path $parent ('.' + $leaf + '.displaced.' + [guid]::NewGuid().ToString('N'))
+                    $preservedDisplaced = Join-Path $paths.evidence ('cache.displaced-before-seed.' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.' + [guid]::NewGuid().ToString('N'))
+                    $current = Get-TreeInventory $resolvedCache
+                    $abiBefore = $null
+                    $staged = $null
+                    if ($PSCmdlet.ShouldProcess($resolvedCache, 'Seed verified shader-cache tree and retain displaced contents')) {
+                        Copy-Item -LiteralPath $resolvedSource -Destination $staging -Recurse
+                        $copied = Get-TreeInventory $staging
+                        if ($copied.treeSha256 -ne $source.treeSha256) { throw 'Staged seed tree differs from its verified source.' }
+                        if (-not [string]::IsNullOrWhiteSpace($ShaderCacheAbiOverride)) {
+                            $infoPath = Join-Path $staging 'Info.ini'
+                            if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { throw 'ShaderCacheABI override requires a staged Info.ini.' }
+                            $abiBefore = Set-IniValue -Path $infoPath -Section 'Cache' -Key 'ShaderCacheABI' -Value $ShaderCacheAbiOverride
+                        }
+                        $staged = Get-TreeInventory $staging
+                        try {
+                            Move-Item -LiteralPath $resolvedCache -Destination $displaced
+                            Move-Item -LiteralPath $staging -Destination $resolvedCache
+                            $seeded = Get-TreeInventory $resolvedCache
+                            if ($seeded.treeSha256 -ne $staged.treeSha256) { throw 'Seeded cache tree failed postcondition verification.' }
+                            Copy-Item -LiteralPath $displaced -Destination $preservedDisplaced -Recurse
+                            $preserved = Get-TreeInventory $preservedDisplaced
+                            if ($preserved.treeSha256 -ne $current.treeSha256) { throw 'Displaced cache preservation failed verification.' }
+                            Remove-Item -LiteralPath $displaced -Recurse -Force
+                        }
+                        catch {
+                            if (-not (Test-Path -LiteralPath $resolvedCache) -and (Test-Path -LiteralPath $displaced)) {
+                                Move-Item -LiteralPath $displaced -Destination $resolvedCache
+                            }
+                            throw
+                        }
+                        $seedReceipt = [pscustomobject][ordered]@{
+                            contractVersion = '1.0.0'
+                            cachePath = $resolvedCache
+                            sourceCachePath = $resolvedSource
+                            sourceTreeSha256 = $source.treeSha256
+                            seededTreeSha256 = $staged.treeSha256
+                            displacedTreeSha256 = $current.treeSha256
+                            displacedPath = $preservedDisplaced
+                            shaderCacheAbiBefore = $abiBefore
+                            shaderCacheAbiOverride = $(if ([string]::IsNullOrWhiteSpace($ShaderCacheAbiOverride)) { $null } else { $ShaderCacheAbiOverride })
+                            compatibilityReason = $(if ([string]::IsNullOrWhiteSpace($CompatibilityReason)) { $null } else { $CompatibilityReason })
+                            seededUtc = [DateTime]::UtcNow.ToString('o')
+                        }
+                        Write-JsonFile (Join-Path $paths.evidence 'shader-cache-seed.receipt.json') $seedReceipt
+                    }
+                    $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; whatIf = [bool]$WhatIfPreference; data = @{ cachePath = $resolvedCache; source = $source; seeded = $staged; displacedPath = $preservedDisplaced; receiptPath = $paths.receipt; seedReceiptPath = (Join-Path $paths.evidence 'shader-cache-seed.receipt.json') }; errors = @() }
+                }
                 else {
                     Assert-Closed
                     $parent = Split-Path -Parent $resolvedCache
                     $leaf = Split-Path -Leaf $resolvedCache
                     $staging = Join-Path $parent ('.' + $leaf + '.restore.' + [guid]::NewGuid().ToString('N'))
                     $displaced = Join-Path $parent ('.' + $leaf + '.displaced.' + [guid]::NewGuid().ToString('N'))
-                    $preservedDisplaced = Join-Path $paths.evidence ('cache.displaced.' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))
+                    $preservedDisplaced = Join-Path $paths.evidence ('cache.displaced.' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.' + [guid]::NewGuid().ToString('N'))
                     $current = Get-TreeInventory $resolvedCache
                     if ($PSCmdlet.ShouldProcess($resolvedCache, 'Restore exact preserved shader-cache tree and retain displaced contents')) {
                         Write-JsonFile (Join-Path $paths.evidence 'cache.current-before-restore.inventory.json') $current
