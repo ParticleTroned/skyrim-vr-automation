@@ -37,18 +37,21 @@ try {
     $rootBuilderDefinitions = Join-Path $mo2Root 'rootbuilder-definitions'
     $rootBuilderData = Join-Path $mo2Root 'rootbuilder-data'
     $gameRoot = Join-Path $fixture 'Game'
+    $modsRoot = Join-Path $mo2Root 'mods'
+    $loaderMod = Join-Path $modsRoot 'Skyrim Script Extender for VR (SKSEVR)'
     $staging = Join-Path $fixture 'staging'
     $archive = Join-Path $fixture 'archive'
     $sessionRoot = Join-Path $fixture 'sessions'
 
-    foreach ($directory in @($profile, $overwrite, $rootBuilderDefinitions, $rootBuilderData, $gameRoot, $staging, $archive, $sessionRoot)) {
+    foreach ($directory in @($profile, $overwrite, $rootBuilderDefinitions, $rootBuilderData, $gameRoot, $loaderMod, $staging, $archive, $sessionRoot)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
 
     $mo2Exe = Join-Path $mo2Root 'ModOrganizer.exe'
-    $loader = Join-Path $gameRoot 'sksevr_loader.exe'
+    $loader = Join-Path $loaderMod 'sksevr_loader.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null
     New-Item -ItemType File -Path $loader -Force | Out-Null
+    '+Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
 
     $definition = Join-Path $rootBuilderDefinitions 'rootbuilder_defaults.json'
     $gameData = Join-Path $rootBuilderData 'GameData.json'
@@ -75,7 +78,7 @@ selected_profile=@ByteArray(Codex)
             executable = $mo2Exe
             ini = $ini
             profilesDirectory = $profileRoot
-            modsDirectory = (Join-Path $mo2Root 'mods')
+            modsDirectory = $modsRoot
             overwriteDirectory = $overwrite
             logsDirectory = (Join-Path $mo2Root 'logs')
             rootBuilderDefinitions = @($definition)
@@ -113,6 +116,12 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($validation.state -eq 'ready') 'clean fixture is ready'
     Assert-MO2Test ($validation.data.selectedProfile -eq 'Codex') 'ByteArray profile is decoded'
     Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').Count -eq 1) 'registered executable is parsed exactly once'
+    Assert-MO2Test (@($validation.checks | Where-Object { $_.name -eq 'registered-binary-owner-mod' -and $_.status -eq 'pass' }).Count -eq 1) 'enabled executable owner mod passes validation'
+    '-Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
+    $disabledOwner = Invoke-MO2Validate -Config $config -RequireClosed
+    Assert-MO2Test (-not $disabledOwner.ok) 'disabled executable owner mod blocks validation'
+    Assert-MO2Test (@($disabledOwner.checks | Where-Object { $_.name -eq 'registered-binary-owner-mod' -and $_.status -eq 'fail' }).Count -eq 1) 'disabled owner failure is attributable'
+    '+Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
     $dialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'Mod Organizer' -Texts @('Failed to write settings') }
     Assert-MO2Test ($dialogKind -eq 'failed-to-write-settings') 'known settings-write dialog is classified exactly'
 

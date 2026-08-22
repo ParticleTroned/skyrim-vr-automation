@@ -7,7 +7,7 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.5.0 provides read-only inspection plus single-owner `prepare`, exact
+Version 0.5.1 provides read-only inspection plus single-owner `prepare`, exact
 `open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
 cooperative `close`, stranded-instance `recover-close`, and graceful full
 `stop`, immediate start receipts, and attributable RootBuilder recovery. A successful validation

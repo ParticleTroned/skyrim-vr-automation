@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 Set-StrictMode -Version Latest
-$script:MO2ControlContractVersion = '0.5.0'
+$script:MO2ControlContractVersion = '0.5.1'
 
 function Resolve-MO2ControlPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -147,6 +147,68 @@ function Get-MO2RegisteredExecutables {
     }
 
     return @($records)
+}
+
+function Get-MO2ExecutableModOwner {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$Profile,
+        [Parameter(Mandatory)][string]$Binary
+    )
+
+    $modsRoot = if ($Config.mo2.PSObject.Properties['modsDirectory']) {
+        Resolve-MO2ControlPath ([string]$Config.mo2.modsDirectory)
+    }
+    else {
+        Join-Path (Resolve-MO2ControlPath ([string]$Config.mo2.root)) 'mods'
+    }
+    $resolvedModsRoot = [IO.Path]::GetFullPath($modsRoot).TrimEnd('\')
+    $resolvedBinary = [IO.Path]::GetFullPath($Binary)
+    $prefix = $resolvedModsRoot + '\'
+    if (-not $resolvedBinary.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject][ordered]@{ managedByMod = $false; binary = $resolvedBinary; modsRoot = $resolvedModsRoot }
+    }
+
+    $relative = [IO.Path]::GetRelativePath($resolvedModsRoot, $resolvedBinary)
+    $parts = @($relative -split '[\\/]', 2)
+    $modName = $parts[0]
+    $profilePath = Join-Path (Join-Path (Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory)) $Profile) 'modlist.txt'
+    $ownerMarkers = @()
+    if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+        $lineNumber = 0
+        foreach ($line in Get-Content -LiteralPath $profilePath) {
+            $lineNumber++
+            if ($line -notmatch '^(?<marker>[+-])(?<name>.+)$') { continue }
+            if ($Matches.name.TrimEnd("`r") -ceq $modName) {
+                $ownerMarkers += [pscustomobject][ordered]@{ lineNumber = $lineNumber; marker = $Matches.marker; modName = $modName }
+            }
+        }
+    }
+    $state = if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+        'profile-missing'
+    }
+    elseif ($ownerMarkers.Count -eq 0) {
+        'missing'
+    }
+    elseif ($ownerMarkers.Count -gt 1) {
+        'ambiguous'
+    }
+    elseif ($ownerMarkers[0].marker -eq '+') {
+        'enabled'
+    }
+    else {
+        'disabled'
+    }
+    return [pscustomobject][ordered]@{
+        managedByMod = $true
+        binary = $resolvedBinary
+        modsRoot = $resolvedModsRoot
+        relativeBinaryPath = $relative
+        modName = $modName
+        profilePath = $profilePath
+        state = $state
+        matches = @($ownerMarkers)
+    }
 }
 
 function Get-MO2ProcessRecords {
@@ -544,6 +606,19 @@ function Invoke-MO2Validate {
         $checks += New-MO2Check -Name 'registered-executable' -Status 'pass' -Message "Registered executable exists exactly once: $($data.requested.executable)" -Details $registered[0]
         $binaryExists = -not [string]::IsNullOrWhiteSpace($registered[0].binary) -and (Test-Path -LiteralPath $registered[0].binary -PathType Leaf)
         $checks += New-MO2Check -Name 'registered-binary' -Status $(if ($binaryExists) { 'pass' } else { 'fail' }) -Message $(if ($binaryExists) { "Registered binary exists: $($registered[0].binary)" } else { "Registered binary is missing: $($registered[0].binary)" })
+        if ($binaryExists) {
+            $owner = Get-MO2ExecutableModOwner -Config $Config -Profile $data.requested.profile -Binary $registered[0].binary
+            if ($owner.managedByMod) {
+                $ownerEnabled = $owner.state -eq 'enabled'
+                $checks += New-MO2Check -Name 'registered-binary-owner-mod' -Status $(if ($ownerEnabled) { 'pass' } else { 'fail' }) -Message $(
+                    if ($ownerEnabled) { "Registered binary owner mod is enabled in the exact profile: $($owner.modName)" }
+                    else { "Registered binary owner mod '$($owner.modName)' is $($owner.state) in profile '$($data.requested.profile)'." }
+                ) -Details $owner
+            }
+            else {
+                $checks += New-MO2Check -Name 'registered-binary-owner-mod' -Status 'info' -Message 'Registered binary is outside the MO2 mods directory; no profile marker applies.' -Details $owner
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($registered[0].workingDirectory)) {
             $workingExists = Test-Path -LiteralPath $registered[0].workingDirectory -PathType Container
             $checks += New-MO2Check -Name 'registered-working-directory' -Status $(if ($workingExists) { 'pass' } else { 'fail' }) -Message $(if ($workingExists) { "Registered working directory exists: $($registered[0].workingDirectory)" } else { "Registered working directory is missing: $($registered[0].workingDirectory)" })
@@ -2071,7 +2146,7 @@ function Get-MO2ControlHelp {
             '.\Invoke-MO2Control.ps1 validate -RequireClosed',
             '.\Invoke-MO2Control.ps1 validate -Profile "Codex" -Executable "Launch MGO - Do Not Unlock" -Compact'
         )
-        note = 'Version 0.5.0 adds immediate start receipts, structured session preconditions, exact Failed-to-write-settings classification, and an attributable RootBuilder recovery route.'
+        note = 'Version 0.5.1 adds executable-owner mod validation while retaining immediate receipts, structured preconditions, and attributable recovery.'
     }
 
     return [pscustomobject][ordered]@{

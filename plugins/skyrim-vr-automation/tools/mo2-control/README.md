@@ -3,7 +3,7 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
-Version `0.5.0` retains exact-profile `open`, MO2-only cooperative `close`, and
+Version `0.5.1` retains exact-profile `open`, MO2-only cooperative `close`, and
 `recover-close` for a stranded pre-session MO2. Cooperative close verifies the
 configured executable path, addresses only the exact MO2 PID, invokes MO2's
 structured exact `File` → `Exit` command, invokes only a button whose normalized
@@ -24,6 +24,10 @@ cooperative close acknowledges only its exact `OK` button.
 performs one recorded exact-profile launch; the caller then uses normal `stop`
 so RootBuilder can restore its deployment through the exact Unlock path. It
 never deletes deployment data.
+
+Validation also resolves a registered executable stored under MO2's `mods`
+directory back to its owning mod. Launch is blocked when that exact mod is
+disabled, missing, or ambiguous in the requested profile.
 
 ## Quick start
 

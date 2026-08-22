@@ -46,7 +46,7 @@ try {
     $sessionCommands = @('open', 'launch', 'stop-game', 'close', 'recover-rootbuilder', 'stop', 'terminate', 'release')
     if ($Command -in $sessionCommands -and [string]::IsNullOrWhiteSpace($SessionId)) {
         $result = [pscustomobject][ordered]@{
-            contractVersion = '0.5.0'
+            contractVersion = '0.5.1'
             command = $Command
             ok = $false
             state = 'missing-session-id'
@@ -106,7 +106,7 @@ try {
 }
 catch {
     $result = [pscustomobject][ordered]@{
-        contractVersion = '0.5.0'
+        contractVersion = '0.5.1'
         command = $Command
         ok = $false
         state = 'tool-error'
