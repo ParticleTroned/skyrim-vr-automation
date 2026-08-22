@@ -135,6 +135,45 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test (@($invalidRootBuilder.checks | Where-Object { $_.name -eq 'rootbuilder-json' -and $_.status -eq 'fail' }).Count -eq 1) 'RootBuilder failure is attributable'
 
     '{}' | Set-Content -LiteralPath $gameData -Encoding utf8
+    $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15 -WhatIf
+    Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory) 'access request dry-run reports an advisory estimate without locking'
+    Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'access request dry-run creates no lock'
+
+    $access = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15
+    $accessId = [string]$access.data.access.accessId
+    Assert-MO2Test ($access.ok -and $access.state -eq 'access-acquired' -and -not [string]::IsNullOrWhiteSpace($accessId)) 'first task atomically acquires access'
+    $busyAccess = Invoke-MO2RequestAccess -Config $config -Label 'second task' -EstimatedMinutes 5
+    Assert-MO2Test (-not $busyAccess.ok -and $busyAccess.state -eq 'access-busy' -and $busyAccess.data.retryable) 'second task receives a retryable access-busy result'
+    Assert-MO2Test ($busyAccess.data.current.accessId -eq $accessId -and $busyAccess.data.current.estimatedReleaseUtc) 'busy result communicates owner and advisory estimate'
+
+    $ownedAccess = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
+    Assert-MO2Test ($ownedAccess.ok -and $ownedAccess.state -eq 'access-owned' -and $ownedAccess.data.owned) 'access status proves exact ownership'
+    Assert-MO2Test (-not $ownedAccess.data.access.estimateOverdue -and [string]$ownedAccess.data.access.estimatedReleaseUtc -match 'Z$') 'future advisory estimate survives JSON round-trip with UTC identity'
+    $ownedValidation = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate -ConfigPath $configPath -AccessId $accessId -RequireClosed -NoExit | ConvertFrom-Json)
+    Assert-MO2Test ($ownedValidation.ok -and @($ownedValidation.checks | Where-Object { $_.name -eq 'session-lock' -and $_.status -eq 'pass' }).Count -eq 1) 'validation accepts the exact owned access lease'
+    $renewedAccess = Invoke-MO2RenewAccess -Config $config -AccessId $accessId -EstimatedMinutes 30
+    Assert-MO2Test ($renewedAccess.ok -and $renewedAccess.state -eq 'access-renewed' -and $renewedAccess.data.access.estimatedDurationMinutes -eq 30) 'access renewal replaces the advisory estimate'
+
+    $explicitPrepared = Invoke-MO2Prepare -Config $config -Label 'explicit fixture test' -AccessId $accessId
+    $explicitSessionId = [string]$explicitPrepared.data.session.sessionId
+    Assert-MO2Test ($explicitPrepared.ok -and $explicitPrepared.data.explicitAccess -and $explicitPrepared.data.accessId -eq $accessId) 'prepare binds an explicitly owned access lease'
+    $prematureAccessRelease = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
+    Assert-MO2Test (-not $prematureAccessRelease.ok -and $prematureAccessRelease.state -eq 'session-release-required') 'access cannot be released while a session is bound'
+    $explicitReleased = Invoke-MO2Release -Config $config -SessionId $explicitSessionId
+    Assert-MO2Test ($explicitReleased.ok -and $explicitReleased.state -eq 'session-released-access-retained' -and $explicitReleased.data.releaseAccessRequired) 'session release retains explicitly requested access'
+    $accessOnlyStatus = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
+    Assert-MO2Test ($accessOnlyStatus.state -eq 'access-owned' -and $accessOnlyStatus.data.access.state -eq 'access-held' -and [string]::IsNullOrWhiteSpace([string]$accessOnlyStatus.data.access.sessionId)) 'released session returns the lock to access-only state'
+    $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
+    Assert-MO2Test ($releasedAccess.ok -and $releasedAccess.state -eq 'access-released') 'task explicitly releases access when MO2 is no longer needed'
+    Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'explicit access release removes the shared lock'
+
+    $abandonedAccess = Invoke-MO2RequestAccess -Config $config -Label 'abandoned task'
+    $abandonedAccessId = [string]$abandonedAccess.data.access.accessId
+    $unconfirmedRecovery = Invoke-MO2RecoverAccess -Config $config -AccessId $abandonedAccessId
+    Assert-MO2Test (-not $unconfirmedRecovery.ok -and $unconfirmedRecovery.state -eq 'confirmation-required') 'abandoned access is never inferred from time alone'
+    $recoveredAccess = Invoke-MO2RecoverAccess -Config $config -AccessId $abandonedAccessId -ConfirmAbandoned -Label 'fixture confirmed abandoned'
+    Assert-MO2Test ($recoveredAccess.ok -and $recoveredAccess.state -eq 'access-recovered') 'confirmed abandoned access can be recovered in proven closed state'
+
     $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -WhatIf
     Assert-MO2Test ($prepareDryRun.ok -and $prepareDryRun.state -eq 'dry-run') 'prepare dry-run succeeds'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'prepare dry-run creates no lock'
@@ -155,6 +194,8 @@ selected_profile=@ByteArray(Codex)
 
     $missingSession = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') open -ConfigPath $configPath -NoExit | ConvertFrom-Json)
     Assert-MO2Test (-not $missingSession.ok -and $missingSession.state -eq 'missing-session-id' -and $missingSession.data.requiredParameter -eq 'SessionId') 'entry point returns a structured missing-session precondition'
+    $missingAccess = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') release-access -ConfigPath $configPath -NoExit | ConvertFrom-Json)
+    Assert-MO2Test (-not $missingAccess.ok -and $missingAccess.state -eq 'missing-access-id' -and $missingAccess.data.requiredParameter -eq 'AccessId') 'entry point returns a structured missing-access precondition'
 
     $launchDryRun = Invoke-MO2Launch -Config $config -SessionId $sessionId -StartOnly -WhatIf
     Assert-MO2Test ($launchDryRun.ok -and $launchDryRun.state -eq 'dry-run' -and $launchDryRun.data.startOnly) 'launch start-only dry-run succeeds'

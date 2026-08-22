@@ -10,8 +10,8 @@ edit `modlist.txt` ad hoc.
 
 ## Load the applicable contract
 
-- For inspection, validation, prepare, open, launch, status, stop-game, close,
-  recover-close, stop, terminate, release, or recovery, read
+- For access requests, inspection, validation, prepare, open, launch, status,
+  stop-game, close, recover-close, stop, terminate, release, or recovery, read
   `../../tools/mo2-control/MO2-RUNBOOK.md` completely before acting. Read
   `../../tools/mo2-control/README.md` when command or schema details matter.
 - For enabling, disabling, or restoring one exact mod marker, read
@@ -30,11 +30,15 @@ are:
 ## Operating sequence
 
 1. State in commentary that this skill is governing the MO2 operation.
-2. Start with `inspect`. Before any closed-state mutation, run `validate
+2. Start with `inspect`. Before any planned MO2 operation, call
+   `request-access`, retain its exact `accessId`, and respect `access-busy`.
+   An estimated duration is advisory only and never permits lease stealing.
+   Before any closed-state mutation, run `validate -AccessId $accessId
    -RequireClosed` and account for every warning or block.
 3. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
-4. For a live run, call `prepare`, retain its `sessionId`, and pass that exact
+4. For a live run, call `prepare -AccessId` with the owned lease, retain its
+   `sessionId`, and pass that exact
    identity to every lifecycle command. Parse the JSON result; do not infer
    success from process appearance alone.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
@@ -46,7 +50,8 @@ are:
    `recover-rootbuilder` with the same exact session, then finish through normal
    `stop`/Unlock. Never delete `BuildData.json` directly.
 8. End with the bounded graceful path. Use `terminate` and `release` only under
-   the runbook's ownership and closed-game proofs.
+   the runbook's ownership and closed-game proofs. After releasing the session,
+   call `release-access` as soon as MO2 is no longer needed.
 9. Preserve session identifiers, receipts, hashes, logs, screenshots, dumps,
    and the pre/post inspection results with the test record.
 
@@ -60,6 +65,12 @@ are:
   other MO2-owned state.
 - Do not launch a second owner while the first session is unresolved. Do not
   retry a crash or failed launch before classifying the evidence.
+- Do not retain an access lease during compilation, source editing, offline
+  analysis, or reporting. Each task explicitly releases MO2 whenever it can
+  make progress without it, even if the overall task is unfinished.
+- Never treat an overdue estimated release time as expiry. `recover-access`
+  requires positive abandonment classification, exact ownership identity, and
+  closed-state proof.
 - Never delete, bulk-move, or silently clean MO2 overwrite, RootBuilder data,
   shader caches, captures, or session evidence.
 - Do not kill processes by name. Use the bounded controller commands, which

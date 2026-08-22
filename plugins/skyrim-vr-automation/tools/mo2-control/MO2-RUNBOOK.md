@@ -7,7 +7,8 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.5.1 provides read-only inspection plus single-owner `prepare`, exact
+Version 0.6.0 provides cooperative cross-task access leases, read-only
+inspection, single-owner `prepare`, exact
 `open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
 cooperative `close`, stranded-instance `recover-close`, and graceful full
 `stop`, immediate start receipts, and attributable RootBuilder recovery. A successful validation
@@ -33,8 +34,9 @@ install and overwrite are not long-term diagnostic stores.
 2. Before editing MO2 state, require MO2 and the game to be closed. VR runtime
    processes may remain live unless the operation specifically requires them
    closed.
-3. Run one automation owner at a time. Do not launch a second attempt while the
-   first MO2 or game process is unresolved.
+3. Run one automation owner at a time. Acquire access before preparing or
+   operating MO2. Do not launch a second attempt while the first lease, MO2, or
+   game process is unresolved.
 4. Do not repeatedly retry a failing launch. Inspect processes, logs,
    RootBuilder JSON, and overwrite first.
 5. Use the configured staging location for files needed during a session. At
@@ -74,19 +76,51 @@ Proceed with a state-changing setup only when:
 Current safety limits are configuration, not cleanup targets. A blocked
 overwrite means “classify and relocate safely,” not “delete until green.”
 
-## Automated preparation
+## Access arbitration
 
-Preview first, then acquire the session lock:
+Before any planned MO2 use, request the shared resource:
 
 ```powershell
-$preview = .\Invoke-MO2Control.ps1 prepare -Label "short-test-name" -WhatIf | ConvertFrom-Json
-$prepared = .\Invoke-MO2Control.ps1 prepare -Label "short-test-name" | ConvertFrom-Json
+$access = .\Invoke-MO2Control.ps1 request-access `
+  -Label "short-task-name" -EstimatedMinutes 20 | ConvertFrom-Json
+$accessId = $access.data.access.accessId
+.\Invoke-MO2Control.ps1 validate -AccessId $accessId -RequireClosed
+```
+
+If another task owns it, `state` is `access-busy`. The response includes its
+label, whether a session is bound, and any estimated release time. The estimate
+is advisory only. It never expires a lease or authorizes another task to take
+over. A caller may use a short bounded `-WaitSeconds`, or return to other work
+and retry later.
+
+Hold access only while operating MO2, Skyrim, its profile, or a live test
+session. Release it during code compilation, source editing, offline cache
+analysis, report writing, or any other phase that does not require MO2:
+
+```powershell
+.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```
+
+The task remains responsible for its lease even when the estimate is overdue.
+Use `renew-access` to update coordination metadata. Use `recover-access` only
+after the owner is positively classified as abandoned, and only with the exact
+AccessId plus `-ConfirmAbandoned`; recovery also proves MO2/game closure and no
+active RootBuilder deployment.
+
+## Automated preparation
+
+Preview first, then bind a session to the owned access lease:
+
+```powershell
+$preview = .\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "short-test-name" -WhatIf | ConvertFrom-Json
+$prepared = .\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "short-test-name" | ConvertFrom-Json
 $sessionId = $prepared.data.session.sessionId
 ```
 
 `prepare` requires closed state, validates the exact profile/executable pair,
-creates `session.json`, and atomically creates the single-owner lock. It does
-not change MO2's selected profile or mod list.
+creates `session.json`, and binds it to the exact access lease. It does not
+change MO2's selected profile or mod list. Legacy callers may omit AccessId;
+that creates an implicit one-session lease which `release` removes.
 
 ## Manual preparation for unimplemented mutations
 
@@ -163,6 +197,9 @@ the actual route independently.
    `stop-incomplete` because the retained MO2 owner has no closeable window,
    use the bounded escalation `stop-game`, `terminate`, then `release`; the
    latter two commands prove game/RootBuilder absence and exact lock ownership.
+   `release -SessionId` ends the evidence session. For an explicitly requested
+   lease it deliberately retains access, so call `release-access -AccessId`
+   immediately unless another MO2 session is about to begin.
 2. Collect only files attributable to the session. Common sources include:
    - CSX/SKSE/MO2 logs;
    - crash dumps from configured diagnostic locations when in scope;

@@ -9,8 +9,8 @@ optional integration rather than the identity or boundary of the toolkit.
 
 - `tools/doctor` — configuration discovery, environment validation, and
   non-overwriting initialization of the stable per-user MO2 config.
-- `tools/mo2-control` — exact-profile MO2 inspection and a bounded,
-  single-owner launch lifecycle.
+- `tools/mo2-control` — exact-profile MO2 inspection, cooperative cross-task
+  access leases, and a bounded single-owner launch lifecycle.
 - `tools/mo2-profile-control` — transactional toggling of an exact MO2
   `modlist.txt` marker.
 - `tools/steamvr-null-control` — transactional null-HMD apply/restore and
@@ -83,8 +83,9 @@ The toolkit remains independent of any source tree it exercises.
 
 ## Safety model
 
-Run inspection or a dry run before mutation. MO2 commands require exact profile,
-executable, and session ownership; null-HMD apply takes an exact backup and
+Run inspection or a dry run before mutation. MO2 commands require exact access,
+profile, executable, and session ownership; tasks release MO2 access whenever
+they can continue without it. Null-HMD apply takes an exact backup and
 restore verifies its receipt; profile edits are exact-marker transactions;
 cache restoration retains the displaced tree and verifies both sides before
 cleanup. Nothing here deletes unclassified MO2 overwrite content or shader
