@@ -7,13 +7,19 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.6.0 provides cooperative cross-task access leases, read-only
+Version 0.7.0 provides cooperative cross-task access leases, read-only
 inspection, single-owner `prepare`, exact
 `open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
 cooperative `close`, stranded-instance `recover-close`, and graceful full
 `stop`, immediate start receipts, and attributable RootBuilder recovery. A successful validation
 authorizes no mutation by itself. Changes still require the user's task to put
 the relevant MO2 state, mod files, game files, or captured artifacts in scope.
+
+Each independent test task creates its own profile from the explicit
+`defaults.testProfileSource` through `../mo2-workspace-control`. The stable
+source is distinct from the ordinary session default and from experimental
+alternate profiles. Workspaces never inherit saves and never own mods that
+predate their creation.
 
 ## Machine configuration
 
@@ -108,6 +114,20 @@ AccessId plus `-ConfirmAbandoned`; recovery also proves MO2/game closure and no
 active RootBuilder deployment.
 
 ## Automated preparation
+
+Create a task workspace while holding access, then pass its returned profile
+explicitly to `prepare`:
+
+```powershell
+$workspace = ..\mo2-workspace-control\Invoke-MO2WorkspaceControl.ps1 create `
+  -AccessId $accessId -Label "short-test-name" -SavePolicy MainMenuOnly `
+  -Confirm:$false | ConvertFrom-Json
+$taskProfile = $workspace.data.profile
+```
+
+At the end, release the evidence session, release the exact task workspace and
+its explicitly owned artifacts, then release access. A task must never replace
+or delete a pre-existing shared mod.
 
 Preview first, then bind a session to the owned access lease:
 
@@ -282,6 +302,17 @@ Response: retain the session and preview `recover-rootbuilder -SessionId ...
 -WhatIf`. The real command performs one exact-profile launch; finish with normal
 `stop`/Unlock and verify `BuildData.json` is absent. This route does not delete
 or rewrite RootBuilder metadata directly.
+
+### Main-thread deadlock
+
+If `stop-game` cannot close a launch-recorded game process, preview and run
+`terminate-game -SessionId ...`. It terminates only exact PID/name/path/start
+identities recorded by that launch, retains MO2, invokes only exact `Unlock`,
+and withholds success until RootBuilder removes `BuildData.json`.
+
+`coc APStartCell` is not a New Game action. A `FreshGame` baseline requires a
+genuine Skyrim initialization route; until one is automated, classify it as an
+attended or unsupported step rather than substituting COC.
 
 ### MO2 command helper exits before the game appears
 

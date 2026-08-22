@@ -124,6 +124,8 @@ selected_profile=@ByteArray(Codex)
     '+Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
     $dialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'Mod Organizer' -Texts @('Failed to write settings') }
     Assert-MO2Test ($dialogKind -eq 'failed-to-write-settings') 'known settings-write dialog is classified exactly'
+    $unlockDialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'vrserver.exe' -Buttons @([pscustomobject]@{name='Unlock'}) }
+    Assert-MO2Test ($unlockDialogKind -eq 'unlock-required') 'Unlock dialog is classified structurally even when titled with a child executable'
 
     $missingProfile = Invoke-MO2Validate -Config $config -Profile 'Does Not Exist'
     Assert-MO2Test (-not $missingProfile.ok) 'missing exact profile blocks validation'
@@ -207,11 +209,23 @@ selected_profile=@ByteArray(Codex)
 
     $buildData = Join-Path $rootBuilderData 'BuildData.json'
     '{}' | Set-Content -LiteralPath $buildData -Encoding utf8
+    $launchPendingLock = Get-Content -LiteralPath $config.session.lockFile -Raw | ConvertFrom-Json
+    $launchPendingLock.status = 'launching'
+    $launchPendingLock | Add-Member -NotePropertyName launchedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+    $launchPendingLock | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $config.session.lockFile -Encoding utf8
+    $launchPendingStatus = Invoke-MO2Status -Config $config -SessionId $sessionId
+    Assert-MO2Test ($launchPendingStatus.state -eq 'launch-pending' -and $launchPendingStatus.data.controller.launchGraceRemainingSeconds -gt 0) 'active BuildData remains bounded launch-pending during process-appearance grace'
+    $launchPendingLock = Get-Content -LiteralPath $config.session.lockFile -Raw | ConvertFrom-Json
+    $launchPendingLock.launchedUtc = [DateTime]::UtcNow.AddSeconds(-31).ToString('o')
+    $launchPendingLock | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $config.session.lockFile -Encoding utf8
     $rootBuilderStatus = Invoke-MO2Status -Config $config -SessionId $sessionId
     Assert-MO2Test ($rootBuilderStatus.state -eq 'rootbuilder-recovery-required' -and $rootBuilderStatus.data.controller.activeBuildData.Count -eq 1) 'status classifies a closed stranded RootBuilder transaction'
     $rootBuilderRecovery = Invoke-MO2RecoverRootBuilder -Config $config -SessionId $sessionId -StartOnly -WhatIf
     Assert-MO2Test ($rootBuilderRecovery.ok -and $rootBuilderRecovery.state -eq 'dry-run' -and $rootBuilderRecovery.data.recovery.destructiveCleanup -eq $false) 'RootBuilder recovery is an attributable exact-launch dry-run'
     Remove-Item -LiteralPath $buildData -Force
+    $ownedAfterPending = Get-Content -LiteralPath $config.session.lockFile -Raw | ConvertFrom-Json
+    $ownedAfterPending.status = 'prepared'
+    $ownedAfterPending | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $config.session.lockFile -Encoding utf8
 
     $closeDryRun = Invoke-MO2Close -Config $config -SessionId $sessionId -WhatIf
     Assert-MO2Test ($closeDryRun.ok -and $closeDryRun.state -eq 'dry-run' -and $closeDryRun.data.alreadyClosed) 'close dry-run is non-mutating when MO2 is already closed'
@@ -223,6 +237,8 @@ selected_profile=@ByteArray(Codex)
 
     $stopGameDryRun = Invoke-MO2StopGame -Config $config -SessionId $sessionId -WhatIf
     Assert-MO2Test ($stopGameDryRun.ok -and $stopGameDryRun.state -eq 'dry-run' -and $stopGameDryRun.data.wouldLeaveMO2Running) 'stop-game dry-run preserves MO2 for controlled relaunch'
+    $terminateGameWithoutRecordedIdentity = Invoke-MO2TerminateGame -Config $config -SessionId $sessionId -WhatIf
+    Assert-MO2Test (-not $terminateGameWithoutRecordedIdentity.ok -and $terminateGameWithoutRecordedIdentity.state -eq 'blocked') 'terminate-game refuses process-name recovery without launch-recorded identities and a retained MO2 owner'
 
     $terminateDryRun = Invoke-MO2Terminate -Config $config -SessionId $sessionId -WhatIf
     Assert-MO2Test ($terminateDryRun.ok -and $terminateDryRun.state -eq 'dry-run') 'terminate dry-run succeeds only after game/rootbuilder absence'

@@ -2,6 +2,15 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## Unreleased
+
+- Add isolated per-task profiles cloned from an explicit stable source without
+  inherited saves, plus guarded task-owned mod registration and cleanup.
+- Add launch-pending grace, detached MO2 runtime-owner adoption, structural
+  Unlock classification, and exact-session game deadlock recovery.
+- Require RootBuilder restoration after deadlock recovery and reject COC as a
+  substitute for a genuine New Game baseline.
+
 ## 0.5.0 - 2026-08-22
 
 - Add atomic cross-task MO2 access requests with exact lease identities,

@@ -1,10 +1,15 @@
 # MO2 Profile Control
 
-`Invoke-MO2ProfileControl.ps1` inspects, enables, disables, or restores one exact
+`Invoke-MO2ProfileControl.ps1` inspects, registers, enables, disables, or restores one exact
 mod marker in an MO2 profile's `modlist.txt`. Every mutation retains a backup and
 emits a receipt; it does not launch MO2 or select a fallback profile. `-WhatIf`
 previews enable and disable operations without creating evidence or changing the
 profile.
+
+`register` requires an exact deployed mod directory and proves that no marker
+already exists. It inserts one disabled marker by default at `End`, `Before`,
+or `After`; relative placement requires one exact `RelativeToMod`. Prefer the
+workspace controller, which also proves that the mod did not predate the task.
 
 For noninteractive orchestration, pass `-Confirm:$false` only after the caller
 has authorized the exact transaction. A bare `-Confirm` requests an interactive
