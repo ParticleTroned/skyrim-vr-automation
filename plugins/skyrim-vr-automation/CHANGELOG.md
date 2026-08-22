@@ -2,6 +2,26 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## Unreleased
+
+- Add isolated per-task profiles cloned from an explicit stable source without
+  inherited saves, plus guarded task-owned mod registration and cleanup.
+- Add launch-pending grace, detached MO2 runtime-owner adoption, structural
+  Unlock classification, and exact-session game deadlock recovery.
+- Require RootBuilder restoration after deadlock recovery and reject COC as a
+  substitute for a genuine New Game baseline.
+
+## 0.5.0 - 2026-08-22
+
+- Add atomic cross-task MO2 access requests with exact lease identities,
+  bounded contention waits, ownership status, and explicit release.
+- Allow an access lease to span multiple attributable MO2 evidence sessions
+  while preserving the legacy implicit `prepare`/`release` lifecycle.
+- Record optional release-time estimates as advisory coordination metadata;
+  leases never expire or transfer automatically.
+- Add closed-state-gated recovery for positively confirmed abandoned leases and
+  document the requirement to release MO2 during compilation and offline work.
+
 ## 0.4.0 - 2026-08-21
 
 - Add contract-aware DevBench service/tool waits with exponential backoff,

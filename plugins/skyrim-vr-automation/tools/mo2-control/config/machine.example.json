@@ -19,6 +19,7 @@
   },
   "defaults": {
     "profile": "Exact Profile Name",
+    "testProfileSource": "Known-Good Stable Profile Name",
     "executable": "Exact Registered Executable Name"
   },
   "storage": {
@@ -30,7 +31,8 @@
     "overwriteWarningFiles": 5000,
     "overwriteBlockFiles": 20000,
     "overwriteWarningBytes": 2147483648,
-    "overwriteBlockBytes": 5368709120
+    "overwriteBlockBytes": 5368709120,
+    "launchPendingGraceSeconds": 30
   },
   "session": {
     "lockFile": "C:\\Path\\To\\csx-vr-automation\\tools\\mo2-control\\sessions\\active-session.lock.json"

@@ -4,6 +4,12 @@
   transaction. Inspect first and preserve its result with the test record.
 - Never silently fall back to a different MO2 profile, executable, runtime,
   configuration file, or null-HMD profile.
+- Give every independent test task a unique profile cloned from the configured
+  stable source. Never share a mutable task profile or infer an experimental
+  alternate profile as a safe template.
+- A task may delete or replace only uniquely named mods that its workspace
+  proves did not predate the task and explicitly records as task-owned.
+- Do not inherit unknown-provenance saves, and do not treat COC as New Game.
 - Require MO2 and Skyrim to be closed before profile or package mutation.
 - Require SteamVR to be closed before applying or restoring null-HMD settings.
 - Retain exact backups and receipts until the associated test evidence has been

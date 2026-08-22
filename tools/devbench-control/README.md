@@ -23,6 +23,9 @@ JSON. By default it binds the endpoint to the owning listener PID and DevBench's
 off-thread `inspect health` identity before returning. Runtime metadata may add
 `pid`/`processId` and `exe`/`executable`; supplied values become strict
 expectations. Pass `-EvidenceDirectory` to preserve this binding with the run.
+Each invocation writes a uniquely named binding receipt, so parallel calls do
+not overwrite one another. Use `-EvidenceLabel` to give that receipt a stable
+human-readable label within the unique filename.
 When available, add `buildId`, `artifactPath`/`dllPath`, and
 `artifactSha256` to runtime metadata (or pass their explicit parameter
 equivalents). The controller queries the CSX registry bridge and hashes the
@@ -50,6 +53,12 @@ waits back off to `-MaxPollMilliseconds` and collect bounded PID/CPU/memory and
 optional explicit-log samples. A missing target with increasing CPU is reported
 as `api-waiting-behind-initialization`; a quiet missing target is
 `api-absent-or-not-registered`.
+
+All bounded waits keep explicitly transient 404/429/502/503/504, timeout, and
+main-thread-busy probe failures as unsatisfied observations after the short
+transport retry budget is exhausted. The outer deadline therefore survives a
+normal load or compile transition, while non-transient probe failures still
+terminate immediately and the last transient error remains in the result.
 
 Runtime identity is refreshed after a waited-for service registers. The binding
 reports listener process identity, every available CSX producer registry,

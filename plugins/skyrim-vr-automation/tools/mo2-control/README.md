@@ -3,7 +3,15 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
-Version `0.5.0` retains exact-profile `open`, MO2-only cooperative `close`, and
+Version `0.7.0` retains cooperative access arbitration and adds bounded launch
+pending state, helper-to-runtime PID adoption, structural Unlock handling, and
+exact-session `terminate-game` deadlock recovery. Recovery preserves MO2 and
+requires RootBuilder restoration before success. Test tasks should use
+`../mo2-workspace-control` to clone the configured stable source profile; the
+ordinary session default is not inferred as a safe template.
+
+Version `0.6.0` added cooperative access arbitration across independent tasks
+while retaining exact-profile `open`, MO2-only cooperative `close`, and
 `recover-close` for a stranded pre-session MO2. Cooperative close verifies the
 configured executable path, addresses only the exact MO2 PID, invokes MO2's
 structured exact `File` → `Exit` command, invokes only a button whose normalized
@@ -19,11 +27,16 @@ structured `missing-session-id` precondition instead of a PowerShell binding
 failure. Launch classifies the exact `Failed to write settings` dialog and
 cooperative close acknowledges only its exact `OK` button.
 
-`status` identifies a closed or headless owner with active RootBuilder
+`status` first retains a new launch in bounded `launch-pending`. After that
+grace it identifies a closed or headless owner with active RootBuilder
 `BuildData.json` as `rootbuilder-recovery-required`. `recover-rootbuilder`
 performs one recorded exact-profile launch; the caller then uses normal `stop`
 so RootBuilder can restore its deployment through the exact Unlock path. It
 never deletes deployment data.
+
+Validation also resolves a registered executable stored under MO2's `mods`
+directory back to its owning mod. Launch is blocked when that exact mod is
+disabled, missing, or ambiguous in the requested profile.
 
 ## Quick start
 
@@ -32,7 +45,9 @@ From this directory in PowerShell:
 ```powershell
 .\Invoke-MO2Control.ps1 help
 .\Invoke-MO2Control.ps1 inspect
-.\Invoke-MO2Control.ps1 validate -RequireClosed
+.\Invoke-MO2Control.ps1 request-access -Label "upscaling-api-tests" -EstimatedMinutes 20
+.\Invoke-MO2Control.ps1 validate -AccessId $accessId -RequireClosed
+.\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "upscaling-api-run"
 .\Invoke-MO2Control.ps1 prepare -Label "null-hmd-baseline" -WhatIf
 .\Invoke-MO2Control.ps1 recover-close -Label "stranded-mo2" -WhatIf
 .\Invoke-MO2Control.ps1 recover-rootbuilder -SessionId $sessionId -WhatIf
@@ -67,8 +82,8 @@ file. The result reports the selected source under `data.configuration`.
 - `schemas/result.schema.json` — output contract.
 - `MO2-RUNBOOK.md` — operating and recovery guidance.
 - `tests/Test-MO2Control.ps1` — isolated fixture tests plus optional live checks.
-- `sessions/` — reserved for a future single-owner session lock; never a capture
-  store.
+- `sessions/` — optional location for the configured durable single-owner lock;
+  never a capture store.
 
 ## Current contract
 
@@ -90,11 +105,59 @@ Profile fallback is never accepted as success. Quarantined
 `*.corrupt-*.json` files are retained evidence and are warnings, not active
 RootBuilder failures.
 
+## Cooperative access lifecycle
+
+`request-access` atomically acquires the one shared MO2 lock and returns an
+`accessId`. If another task owns it, the command returns `access-busy`, the
+current owner label/state, and any advisory release estimate. `-WaitSeconds`
+can perform a bounded retry, but no task is queued indefinitely.
+
+`-EstimatedMinutes` is useful coordination metadata, not a deadline. The tool
+never expires, steals, or transfers a lease because its estimate elapsed.
+`renew-access` refreshes the recorded activity time and can replace the
+estimate. `access-status` reports availability and exact ownership.
+
+Every task must call `release-access` as soon as it no longer needs MO2. This
+includes compilation, source editing, result analysis, report writing, and any
+other phase that does not operate MO2 or Skyrim. Do not hold the lease merely
+because the overall task remains active. `release-access` proves MO2, Skyrim,
+and RootBuilder deployment are inactive before removing the lock.
+
+If a task disappears while retaining a lease, `recover-access` requires the
+exact `accessId`, explicit `-ConfirmAbandoned`, and the same closed-state proof.
+An overdue estimate is never sufficient evidence of abandonment.
+
+The normal explicit workflow is:
+
+```powershell
+$access = .\Invoke-MO2Control.ps1 request-access `
+  -Label "weather-api-tests" -EstimatedMinutes 20 | ConvertFrom-Json
+$accessId = $access.data.access.accessId
+
+$validation = .\Invoke-MO2Control.ps1 validate `
+  -AccessId $accessId -RequireClosed | ConvertFrom-Json
+
+$prepared = .\Invoke-MO2Control.ps1 prepare `
+  -AccessId $accessId -Label "weather-api-run" | ConvertFrom-Json
+$sessionId = $prepared.data.session.sessionId
+
+# open/launch/status/stop work uses the exact SessionId
+.\Invoke-MO2Control.ps1 release -SessionId $sessionId
+.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```
+
+For backward compatibility, `prepare` without `-AccessId` still acquires an
+implicit single-session lease, and `release` removes it as before. When an
+explicit lease is used, `release` retains access and returns
+`session-released-access-retained`; the task must then either prepare another
+session or call `release-access`.
+
 ## Session lifecycle
 
 `prepare` requires a closed game/MO2 state, validates one exact profile and
-registered executable, creates a durable evidence manifest on staging storage,
-and atomically acquires the shared lock. `launch` requires the returned session
+registered executable, and creates a durable evidence manifest on staging
+storage. It either binds the caller's exact access lease or, for legacy callers,
+atomically acquires an implicit lease. `launch` requires the returned session
 identity and uses MO2's supported command line:
 
 ```text
@@ -111,10 +174,11 @@ path, argument, and timestamp evidence for exact-process adoption.
 owned game/loader while preserving the exact owner MO2 PID, allowing controlled
 relaunches. `close` refuses while a game/loader exists and cooperatively resolves
 MO2's structured `File` → `Exit` path and visible modal chain, including the VFS
-`Unlock` prompt. `stop` first closes
-the game and then uses the same MO2 resolver. `release` removes only an
-exactly owned lock after proving MO2 and the game are closed, while retaining
-the evidence directory. All mutation commands have `-WhatIf`. Evidence
+`Unlock` prompt. `stop` first closes the game and then uses the same MO2
+resolver. `release` ends only the exactly owned session after proving MO2 and
+the game are closed, while retaining the evidence directory. It removes an
+implicit lease or returns an explicit lease to access-only state. All mutation
+commands have `-WhatIf`. Evidence
 collection, archive verification, profile mutation, cache management, and
 recovery remain deferred until separately bounded.
 

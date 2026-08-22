@@ -13,6 +13,7 @@ param(
     [switch]$RequireSuccess,
     [switch]$SkipRuntimeIdentityVerification,
     [string]$EvidenceDirectory,
+    [string]$EvidenceLabel,
     [string]$ArtifactPath,
     [string]$ExpectedBuildId,
     [string]$ExpectedArtifactSha256,
@@ -125,6 +126,15 @@ function Invoke-ToolRpc {
     return [pscustomobject][ordered]@{ tool = $Name; content = $parsed; rawResult = $rpc.json.result }
 }
 
+function Test-WaitRetryableException {
+    param([Parameter(Mandatory)]$Exception)
+    $message = [string]$Exception.Message
+    $statusCode = $null
+    try { $statusCode = [int]$Exception.Response.StatusCode } catch { $statusCode = $null }
+    return $statusCode -in @(404, 429, 502, 503, 504) -or
+        $message -match '\[(404|429|502|503|504)\]|timed out|temporarily unavailable|connection.*closed|main-thread task did not run|main thread busy'
+}
+
 function Get-ListenerPid([int]$Port) {
     $records = @()
     if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
@@ -188,6 +198,7 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
                     if ($payload.PSObject.Properties['producer']) { $producer = $payload.producer }
                     elseif ($payload.PSObject.Properties['registry'] -and $payload.registry.PSObject.Properties['producer']) { $producer = $payload.registry.producer }
                     elseif ($payload.PSObject.Properties['result'] -and $payload.result.PSObject.Properties['producer']) { $producer = $payload.result.producer }
+                    elseif ($payload.PSObject.Properties['server']) { $producer = $payload.server }
                 }
                 if ($producer) { break }
             }
@@ -201,7 +212,16 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
     $actualBuildId = if ($buildIds.Count -eq 1) { $buildIds[0] } else { $null }
     $build = [pscustomobject][ordered]@{ buildId = $actualBuildId; producers = @($producers); sources = @($registrySources) }
     if ($expectations.buildId -and -not $actualBuildId -and -not $AllowDeferredBuildIdentity) { $errors.Add('A build ID expectation was supplied but no CSX service registry exposed a producer build ID.') }
-    elseif ($expectations.buildId -and $actualBuildId -and $actualBuildId -ne $expectations.buildId) { $errors.Add("Expected CSX build ID '$($expectations.buildId)' differs from runtime build ID '$actualBuildId'.") }
+    elseif (
+        $expectations.buildId -and
+        $actualBuildId -and
+        -not [string]::Equals(
+            ([string]$actualBuildId).Trim(),
+            ([string]$expectations.buildId).Trim(),
+            [StringComparison]::OrdinalIgnoreCase)
+    ) {
+        $errors.Add("Expected CSX build ID '$($expectations.buildId)' differs from runtime build ID '$actualBuildId'.")
+    }
     $artifact = $null
     if ($expectations.artifactPath) {
         $resolvedArtifact = [IO.Path]::GetFullPath($expectations.artifactPath)
@@ -237,7 +257,17 @@ function Write-RuntimeEvidence($Binding) {
     if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) { return $null }
     $resolved = [IO.Path]::GetFullPath($EvidenceDirectory)
     New-Item -ItemType Directory -Path $resolved -Force | Out-Null
-    $path = Join-Path $resolved 'devbench-runtime-binding.json'
+    $rawLabel = if (-not [string]::IsNullOrWhiteSpace($EvidenceLabel)) {
+        $EvidenceLabel
+    } elseif ($Command -eq 'wait') {
+        "$Command-$Condition-$Tool"
+    } else {
+        "$Command-$Tool"
+    }
+    $safeLabel = ($rawLabel -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safeLabel)) { $safeLabel = 'invocation' }
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+    $path = Join-Path $resolved "devbench-runtime-binding.$safeLabel.$stamp.$PID.json"
     [pscustomobject][ordered]@{
         schemaVersion = 1
         runtimePath = [IO.Path]::GetFullPath($RuntimePath)
@@ -317,12 +347,24 @@ try {
         do {
             $attempts++
             if ($Condition -eq 'noBlockingMenu') {
-                $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
-                $observation = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                try {
+                    $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
+                    $observation = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                }
+                catch {
+                    if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                    $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; probeError = $_.Exception.Message }
+                }
             }
             elseif ($Condition -eq 'playerLoaded') {
-                $state = @(Invoke-ToolRpc -Name 'inspect' -Arguments @{ kind = 'state' } -Headers $headers).content | Select-Object -First 1
-                $observation = [pscustomobject][ordered]@{ satisfied = [bool]$state.playerLoaded; state = $state }
+                try {
+                    $state = @(Invoke-ToolRpc -Name 'inspect' -Arguments @{ kind = 'state' } -Headers $headers).content | Select-Object -First 1
+                    $observation = [pscustomobject][ordered]@{ satisfied = [bool]$state.playerLoaded; state = $state; retryable = $false; probeError = $null }
+                }
+                catch {
+                    if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                    $observation = [pscustomobject][ordered]@{ satisfied = $false; state = $null; retryable = $true; probeError = $_.Exception.Message }
+                }
             }
             else {
                 $currentList = Invoke-McpRequest -Endpoint $endpoint -Headers $headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
@@ -336,8 +378,22 @@ try {
                 }
                 $service = $null
                 if ($Condition -eq 'serviceReady' -and $toolPresent) {
-                    $toolResult = Invoke-ToolRpc -Name $Tool -Arguments $waitArguments -Headers $headers
-                    $service = Test-DevBenchServiceReady -Content @($toolResult.content) -AcceptedStates $AcceptedState -RetryableStates $RetryableState
+                    try {
+                        $toolResult = Invoke-ToolRpc -Name $Tool -Arguments $waitArguments -Headers $headers
+                        $service = Test-DevBenchServiceReady -Content @($toolResult.content) -AcceptedStates $AcceptedState -RetryableStates $RetryableState
+                    }
+                    catch {
+                        if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                        $service = [pscustomobject][ordered]@{
+                            ready = $false
+                            retryable = $true
+                            terminalFailure = $false
+                            state = 'transport_retry'
+                            statePath = $null
+                            probeError = $_.Exception.Message
+                            semantic = $null
+                        }
+                    }
                 }
 
                 $now = [DateTime]::UtcNow

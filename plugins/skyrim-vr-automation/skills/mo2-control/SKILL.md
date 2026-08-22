@@ -10,13 +10,17 @@ edit `modlist.txt` ad hoc.
 
 ## Load the applicable contract
 
-- For inspection, validation, prepare, open, launch, status, stop-game, close,
-  recover-close, stop, terminate, release, or recovery, read
+- For access requests, inspection, validation, prepare, open, launch, status,
+  stop-game, close, recover-close, stop, terminate, release, or recovery, read
   `../../tools/mo2-control/MO2-RUNBOOK.md` completely before acting. Read
   `../../tools/mo2-control/README.md` when command or schema details matter.
 - For enabling, disabling, or restoring one exact mod marker, read
   `../../tools/mo2-profile-control/README.md` and inspect the entry point's
   parameter block before acting.
+- For every independent test task, read
+  `../../tools/mo2-workspace-control/README.md` and create a unique task profile
+  from `defaults.testProfileSource` before preparing a session. Never use an
+  experimental alternate profile as an implicit template.
 - Treat the repository-root `AGENTS.md` as binding operational policy.
 
 Resolve all paths from this skill's installed location. The main entry points
@@ -30,13 +34,19 @@ are:
 ## Operating sequence
 
 1. State in commentary that this skill is governing the MO2 operation.
-2. Start with `inspect`. Before any closed-state mutation, run `validate
+2. Start with `inspect`. Before any planned MO2 operation, call
+   `request-access`, retain its exact `accessId`, and respect `access-busy`.
+   An estimated duration is advisory only and never permits lease stealing.
+   Before any closed-state mutation, run `validate -AccessId $accessId
    -RequireClosed` and account for every warning or block.
 3. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
-4. For a live run, call `prepare`, retain its `sessionId`, and pass that exact
+4. For a live run, call `prepare -AccessId` with the owned lease, retain its
+   `sessionId`, and pass that exact
    identity to every lifecycle command. Parse the JSON result; do not infer
    success from process appearance alone.
+   Pass the exact profile returned by the task workspace rather than accepting
+   the ordinary configured session default.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
 6. Use `-StartOnly` when the outer host cannot safely wait for UI/game
@@ -46,7 +56,12 @@ are:
    `recover-rootbuilder` with the same exact session, then finish through normal
    `stop`/Unlock. Never delete `BuildData.json` directly.
 8. End with the bounded graceful path. Use `terminate` and `release` only under
-   the runbook's ownership and closed-game proofs.
+   the runbook's ownership and closed-game proofs. After releasing the session,
+   call `release-access` as soon as MO2 is no longer needed.
+   If the game main thread is deadlocked, `terminate-game` is the only forced
+   game recovery: it targets launch-recorded identities, retains MO2, invokes
+   exact Unlock, and requires RootBuilder cleanup. Release the task workspace
+   before releasing access.
 9. Preserve session identifiers, receipts, hashes, logs, screenshots, dumps,
    and the pre/post inspection results with the test record.
 
@@ -60,10 +75,20 @@ are:
   other MO2-owned state.
 - Do not launch a second owner while the first session is unresolved. Do not
   retry a crash or failed launch before classifying the evidence.
+- Do not retain an access lease during compilation, source editing, offline
+  analysis, or reporting. Each task explicitly releases MO2 whenever it can
+  make progress without it, even if the overall task is unfinished.
+- Never treat an overdue estimated release time as expiry. `recover-access`
+  requires positive abandonment classification, exact ownership identity, and
+  closed-state proof.
 - Never delete, bulk-move, or silently clean MO2 overwrite, RootBuilder data,
   shader caches, captures, or session evidence.
 - Do not kill processes by name. Use the bounded controller commands, which
   prove ownership and game/loader absence.
+- Never delete or replace a mod that existed when a test workspace was created.
+  A task may clean only uniquely named mods explicitly registered as its own.
+- Never treat `coc APStartCell` as a genuine New Game and never use an
+  inherited or unknown-provenance save for a baseline.
 - Run visible MO2/game window operations through the approved elevated route so
   they execute as the logged-on interactive user. A sandbox
   `interactive-desktop-required` result is a precondition failure, not

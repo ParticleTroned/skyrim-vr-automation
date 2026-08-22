@@ -11,6 +11,17 @@ try {
     [IO.File]::WriteAllBytes($profile, $original)
     $originalHash = (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash
     $fixtureProcessNames = @('MO2ProfileControlImpossibleFixtureProcess')
+    $mods = Join-Path $fixture 'mods'
+    $newMod = Join-Path $mods 'New Test Mod'
+    New-Item -ItemType Directory -Path $newMod -Force | Out-Null
+
+    $registerEvidence = Join-Path $fixture 'register-evidence'
+    $registered = & $script register -ProfilePath $profile -ModName 'New Test Mod' -ModDirectory $newMod -Placement After -RelativeToMod 'Exact Test Mod' -EvidenceDirectory $registerEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    if ($registered.enabled -or $registered.marker -ne '-') { throw 'Register did not create one disabled marker.' }
+    $registeredLines = Get-Content -LiteralPath $profile
+    if ($registeredLines[2] -ne '-New Test Mod') { throw 'Register did not honor exact relative placement.' }
+    $registerRestored = & $script restore -ProfilePath $profile -ModName 'New Test Mod' -EvidenceDirectory $registerEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    if ($null -ne $registerRestored.marker -or (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash -ne $originalHash) { throw 'Register restore did not remove the owned marker byte-identically.' }
 
     $inspect = & $script inspect -ProfilePath $profile -ModName 'Exact Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if (-not $inspect.enabled) { throw 'Inspect did not report the enabled marker.' }
@@ -39,7 +50,7 @@ try {
     if ($enableRestored.enabled -or $enableRestored.sha256 -ne $originalHash) { throw 'Enable restore did not reproduce the original marker state.' }
     if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$original, [byte[]][IO.File]::ReadAllBytes($profile))) { throw 'Enable restore was not byte-identical.' }
 
-    [pscustomobject]@{ ok = $true; assertions = 11; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
+    [pscustomobject]@{ ok = $true; assertions = 14; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
 }
 finally {
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }

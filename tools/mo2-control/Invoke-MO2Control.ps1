@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('inspect', 'validate', 'prepare', 'open', 'launch', 'status', 'stop-game', 'close', 'recover-close', 'recover-rootbuilder', 'stop', 'terminate', 'release', 'help')]
+    [ValidateSet('inspect', 'validate', 'request-access', 'access-status', 'renew-access', 'release-access', 'recover-access', 'prepare', 'open', 'launch', 'status', 'stop-game', 'terminate-game', 'close', 'recover-close', 'recover-rootbuilder', 'stop', 'terminate', 'release', 'help')]
     [string]$Command = 'help',
 
     [string]$ConfigPath,
@@ -14,10 +14,17 @@ param(
 
     [string]$SessionId,
 
+    [string]$AccessId,
+
     [string]$Label = 'automation',
 
     [ValidateRange(1, 600)]
     [int]$TimeoutSeconds = 90,
+
+    [Nullable[int]]$EstimatedMinutes,
+
+    [ValidateRange(0, 600)]
+    [int]$WaitSeconds = 0,
 
     [switch]$WhatIf,
 
@@ -26,6 +33,8 @@ param(
     [switch]$StartOnly,
 
     [switch]$NoExit,
+
+    [switch]$ConfirmAbandoned,
 
     [switch]$Compact
 )
@@ -43,10 +52,10 @@ try {
     }
     $config = Read-MO2ControlConfig -ConfigPath $configuration.path
 
-    $sessionCommands = @('open', 'launch', 'stop-game', 'close', 'recover-rootbuilder', 'stop', 'terminate', 'release')
+    $sessionCommands = @('open', 'launch', 'stop-game', 'terminate-game', 'close', 'recover-rootbuilder', 'stop', 'terminate', 'release')
     if ($Command -in $sessionCommands -and [string]::IsNullOrWhiteSpace($SessionId)) {
         $result = [pscustomobject][ordered]@{
-            contractVersion = '0.5.0'
+            contractVersion = '0.7.0'
             command = $Command
             ok = $false
             state = 'missing-session-id'
@@ -57,15 +66,43 @@ try {
             data = [pscustomobject]@{ requiredParameter = 'SessionId'; supplied = $false }
         }
     }
+    elseif ($Command -in @('renew-access', 'release-access', 'recover-access') -and [string]::IsNullOrWhiteSpace($AccessId)) {
+        $result = [pscustomobject][ordered]@{
+            contractVersion = '0.7.0'
+            command = $Command
+            ok = $false
+            state = 'missing-access-id'
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            checks = @()
+            warnings = @()
+            errors = @("Command '$Command' requires a non-empty -AccessId returned by request-access.")
+            data = [pscustomobject]@{ requiredParameter = 'AccessId'; supplied = $false }
+        }
+    }
     else { $result = switch ($Command) {
         'inspect' {
             Invoke-MO2Inspect -Config $config -Profile $Profile -Executable $Executable
         }
         'validate' {
-            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed:$RequireClosed
+            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
+        }
+        'request-access' {
+            Invoke-MO2RequestAccess -Config $config -Label $Label -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
+        }
+        'access-status' {
+            Invoke-MO2AccessStatus -Config $config -AccessId $AccessId
+        }
+        'renew-access' {
+            Invoke-MO2RenewAccess -Config $config -AccessId $AccessId -EstimatedMinutes $EstimatedMinutes -WhatIf:$WhatIf
+        }
+        'release-access' {
+            Invoke-MO2ReleaseAccess -Config $config -AccessId $AccessId -WhatIf:$WhatIf
+        }
+        'recover-access' {
+            Invoke-MO2RecoverAccess -Config $config -AccessId $AccessId -Label $Label -ConfirmAbandoned:$ConfirmAbandoned -WhatIf:$WhatIf
         }
         'prepare' {
-            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -Label $Label -WhatIf:$WhatIf
+            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
         }
         'open' {
             Invoke-MO2Open -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -StartOnly:$StartOnly -WhatIf:$WhatIf
@@ -78,6 +115,9 @@ try {
         }
         'stop-game' {
             Invoke-MO2StopGame -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
+        }
+        'terminate-game' {
+            Invoke-MO2TerminateGame -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
         }
         'close' {
             Invoke-MO2Close -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
@@ -106,7 +146,7 @@ try {
 }
 catch {
     $result = [pscustomobject][ordered]@{
-        contractVersion = '0.5.0'
+        contractVersion = '0.7.0'
         command = $Command
         ok = $false
         state = 'tool-error'
