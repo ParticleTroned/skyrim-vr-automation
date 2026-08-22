@@ -123,7 +123,7 @@ try {
             Invoke-MO2Close -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
         }
         'recover-close' {
-            Invoke-MO2RecoverClose -Config $config -Label $Label -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
+            Invoke-MO2RecoverClose -Config $config -AccessId $AccessId -Label $Label -TimeoutSeconds $TimeoutSeconds -WhatIf:$WhatIf
         }
         'recover-rootbuilder' {
             Invoke-MO2RecoverRootBuilder -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -StartOnly:$StartOnly -WhatIf:$WhatIf
