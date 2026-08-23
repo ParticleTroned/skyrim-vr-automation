@@ -47,8 +47,8 @@ $trackedFiles = @(& git -C $repositoryRoot ls-files)
 if ($LASTEXITCODE -ne 0) { throw 'Unable to enumerate tracked files.' }
 $candidateFiles = @(& git -C $repositoryRoot ls-files --cached --others --exclude-standard | Sort-Object -Unique)
 if ($LASTEXITCODE -ne 0) { throw 'Unable to enumerate public-release candidate files.' }
-if ($trackedFiles -contains 'tools/mo2-control/config/machine.local.json') {
-    $violations.Add([pscustomobject]@{ file = 'tools/mo2-control/config/machine.local.json'; issue = 'machine-local configuration is tracked' })
+foreach ($trackedLocal in @($trackedFiles | Where-Object { $_ -like '*.local.json' })) {
+    $violations.Add([pscustomobject]@{ file = $trackedLocal; issue = 'machine-local configuration is tracked' })
 }
 
 foreach ($relativePath in $candidateFiles) {

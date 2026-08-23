@@ -7,7 +7,7 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.7.0 provides cooperative cross-task access leases, read-only
+Version 0.7.1 provides cooperative cross-task access leases, read-only
 inspection, single-owner `prepare`, exact
 `open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
 cooperative `close`, stranded-instance `recover-close`, and graceful full

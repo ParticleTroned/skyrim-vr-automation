@@ -20,6 +20,7 @@
   "defaults": {
     "profile": "Exact Profile Name",
     "testProfileSource": "Known-Good Stable Profile Name",
+    "newGameFixtureManifest": "C:\\Path\\To\\new-game-fixtures.local.json",
     "executable": "Exact Registered Executable Name"
   },
   "storage": {

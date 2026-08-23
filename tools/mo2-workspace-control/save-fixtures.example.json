@@ -1,0 +1,26 @@
+{
+  "contractVersion": "1.0.0",
+  "sourceProfile": "Known-Good Stable Profile Name",
+  "profileFingerprintSha256": "SHA256-OF-SOURCE-PROFILE-EXCLUDING-SAVES",
+  "defaultFixtureId": "interior",
+  "fixtures": [
+    {
+      "id": "interior",
+      "label": "Known-good interior baseline",
+      "location": "Interior cell name",
+      "loadName": "Save2_Example",
+      "files": [
+        {
+          "relativePath": "Save2_Example.ess",
+          "bytes": 123,
+          "sha256": "SHA256-OF-ESS"
+        },
+        {
+          "relativePath": "Save2_Example.skse",
+          "bytes": 45,
+          "sha256": "SHA256-OF-SKSE-COSAVE"
+        }
+      ]
+    }
+  ]
+}

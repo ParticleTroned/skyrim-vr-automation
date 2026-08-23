@@ -2,8 +2,14 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
-## Unreleased
+## 0.6.0 - 2026-08-23
 
+- Copy only hash-verified, explicitly selected save/co-save fixtures into task
+  profiles and return their deterministic load identity.
+- Add guarded registration and reordering that proves a task-owned DLL mod wins
+  every requested path among enabled loose-file providers.
+- Allow cooperative stranded-MO2 recovery to bind an already-owned access
+  lease without weakening exact-process or closed-game checks.
 - Add isolated per-task profiles cloned from an explicit stable source without
   inherited saves, plus guarded task-owned mod registration and cleanup.
 - Add launch-pending grace, detached MO2 runtime-owner adoption, structural

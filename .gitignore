@@ -1,5 +1,6 @@
 # Machine-specific configuration and transient state
 **/config/machine.local.json
+**/config/*.local.json
 **/sessions/
 
 # Generated evidence and reports

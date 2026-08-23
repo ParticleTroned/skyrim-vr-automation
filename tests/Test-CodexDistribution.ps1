@@ -31,7 +31,7 @@ try {
     foreach ($skill in @('mo2-control', 'steamvr-null-hmd', 'devbench-control', 'profiler-control', 'shader-cache-control')) {
         if (-not (Test-Path -LiteralPath (Join-Path $rebuilt "skills\$skill\SKILL.md") -PathType Leaf)) { throw "Missing installed skill: $skill" }
     }
-    if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Filter machine.local.json).Count -ne 0) { throw 'Distribution contains machine.local.json.' }
+    if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Filter '*.local.json').Count -ne 0) { throw 'Distribution contains machine-local JSON.' }
 
     $simulatedCache = Join-Path $fixture "cache\skyrim-vr-automation\$($manifest.version)"
     New-Item -ItemType Directory -Path (Split-Path -Parent $simulatedCache) -Force | Out-Null

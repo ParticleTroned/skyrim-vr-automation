@@ -16,7 +16,8 @@ edit `modlist.txt` ad hoc.
   `../../tools/mo2-control/README.md` when command or schema details matter.
 - For enabling, disabling, or restoring one exact mod marker, read
   `../../tools/mo2-profile-control/README.md` and inspect the entry point's
-  parameter block before acting.
+  parameter block before acting. For a DLL deployment, prefer the workspace
+  controller's `-WinningPaths` transaction; do not guess MO2 priority order.
 - For every independent test task, read
   `../../tools/mo2-workspace-control/README.md` and create a unique task profile
   from `defaults.testProfileSource` before preparing a session. Never use an
@@ -47,6 +48,9 @@ are:
    success from process appearance alone.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.
+   When the test requires a deterministic new-game baseline, create the
+   workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
+   and `loadName`; do not copy saves manually or substitute `coc`.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
 6. Use `-StartOnly` when the outer host cannot safely wait for UI/game
@@ -87,6 +91,9 @@ are:
   prove ownership and game/loader absence.
 - Never delete or replace a mod that existed when a test workspace was created.
   A task may clean only uniquely named mods explicitly registered as its own.
+- Register a task DLL with its exact relative path in `-WinningPaths`. Treat
+  the returned loose-file provider proof as scoped: overwrite, unmanaged game
+  files, and archives still require separate VFS evidence.
 - Never treat `coc APStartCell` as a genuine New Game and never use an
   inherited or unknown-provenance save for a baseline.
 - Run visible MO2/game window operations through the approved elevated route so

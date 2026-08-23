@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 Set-StrictMode -Version Latest
-$script:MO2ControlContractVersion = '0.7.0'
+$script:MO2ControlContractVersion = '0.7.1'
 
 function Resolve-MO2ControlPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -2656,7 +2656,7 @@ function Get-MO2ControlHelp {
             '.\Invoke-MO2Control.ps1 validate -RequireClosed',
             '.\Invoke-MO2Control.ps1 validate -Profile "Codex" -Executable "Launch MGO - Do Not Unlock" -Compact'
         )
-        note = 'Version 0.7.0 adds detached runtime-owner adoption, launch-pending grace, structural Unlock handling, and exact-session deadlock recovery while preserving the 0.6.0 access-lease contract.'
+        note = 'Version 0.7.1 preserves the 0.7.0 lifecycle contract and allows recover-close to bind an already-owned access-only lease.'
     }
 
     return [pscustomobject][ordered]@{
