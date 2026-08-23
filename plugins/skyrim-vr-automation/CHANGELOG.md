@@ -2,6 +2,15 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## 0.7.0 - 2026-08-23
+
+- Add a durable local automation-feedback mailbox with atomic receipts,
+  immutable lifecycle events, duplicate hints, evidence hashes, bounded
+  concurrent writers, maintainer triage, and explicit sanitized export.
+- Add a feedback skill that prevents tasks from claiming a report was recorded
+  without a durable receipt and keeps public issue creation under explicit
+  maintainer control.
+
 ## 0.6.0 - 2026-08-23
 
 - Copy only hash-verified, explicitly selected save/co-save fixtures into task

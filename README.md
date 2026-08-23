@@ -9,6 +9,9 @@ optional integration rather than the identity or boundary of the toolkit.
 
 - `tools/doctor` — configuration discovery, environment validation, and
   non-overwriting initialization of the stable per-user MO2 config.
+- `tools/feedback-control` — durable local reporter/maintainer feedback with
+  atomic receipts, lifecycle events, deduplication hints, and explicit
+  sanitized export.
 - `tools/mo2-control` — exact-profile MO2 inspection, cooperative cross-task
   access leases, and a bounded single-owner launch lifecycle.
 - `tools/mo2-profile-control` — transactional toggling of an exact MO2
@@ -33,9 +36,11 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its five skills connect a
+The repository publishes a Codex marketplace plugin. Its six skills connect a
 new task to the bundled implementations and their operational contracts:
 
+- `$feedback-control` records unexpected automation behaviour and concrete
+  enhancement requests in a durable local queue; it never publishes them.
 - `$mo2-control` routes MO2 inspection, exact-profile lifecycle management,
   and transactional profile edits.
 - `$steamvr-null-hmd` routes backed-up SteamVR null-HMD apply/restore and
@@ -94,6 +99,11 @@ restore verifies its receipt; profile edits are exact-marker transactions;
 cache restoration retains the displaced tree and verifies both sides before
 cleanup. Nothing here deletes unclassified MO2 overwrite content or shader
 caches.
+
+Unexpected automation behaviour is submitted through `feedback-control`.
+Tasks receive a durable `AUTO-...` receipt; only the maintainer triages,
+resolves, or deliberately exports a sanitized record. Queue contents stay
+local and are never sent to GitHub automatically.
 
 Run the isolated suite with:
 

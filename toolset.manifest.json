@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "skyrim-vr-automation",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "license": "GPL-3.0-or-later",
   "publisher": "Treatid2",
   "preservedUtc": "2026-08-21T00:00:00Z",
@@ -12,6 +12,11 @@
       "name": "doctor",
       "version": "1.0.0",
       "entryPoint": "tools/doctor/Invoke-SkyrimVRAutomationDoctor.ps1"
+    },
+    {
+      "name": "feedback-control",
+      "version": "1.0.0",
+      "entryPoint": "tools/feedback-control/Invoke-AutomationFeedback.ps1"
     },
     {
       "name": "mo2-control",
