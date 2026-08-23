@@ -7,7 +7,7 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.7.0 provides cooperative cross-task access leases, read-only
+Version 0.7.1 provides cooperative cross-task access leases, read-only
 inspection, single-owner `prepare`, exact
 `open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
 cooperative `close`, stranded-instance `recover-close`, and graceful full
@@ -346,12 +346,14 @@ with `release`; a process-name-wide kill is unnecessary.
 Symptom: MO2 was opened manually or by an earlier failed parameter set, no
 session lock exists, and a modal/VFS state prevents ordinary shutdown.
 
-Response: preview and then run `recover-close -Label "reason"` through the
+Response: acquire access, then preview and run
+`recover-close -AccessId $accessId -Label "reason"` through the
 logged-on interactive user. It accepts exactly one process whose executable
 path equals the configured `ModOrganizer.exe`, refuses while a game/loader or
 another lock exists, creates a retained recovery audit, and uses the same exact
 `File` → `Exit`, exact `Unlock`, and normal-modal-close policy. Run `release` using the same identity after
-closed-state proof. Notepad++ and Tullius are outside the target set.
+closed-state proof, then release the retained access lease. Notepad++ and
+Tullius are outside the target set.
 
 ### MO2 resource use grows abnormally
 

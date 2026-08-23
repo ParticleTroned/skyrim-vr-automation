@@ -3,7 +3,7 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
-Version `0.7.0` retains cooperative access arbitration and adds bounded launch
+Version `0.7.1` retains cooperative access arbitration and adds bounded launch
 pending state, helper-to-runtime PID adoption, structural Unlock handling, and
 exact-session `terminate-game` deadlock recovery. Recovery preserves MO2 and
 requires RootBuilder restoration before success. Test tasks should use
@@ -12,7 +12,8 @@ ordinary session default is not inferred as a safe template.
 
 Version `0.6.0` added cooperative access arbitration across independent tasks
 while retaining exact-profile `open`, MO2-only cooperative `close`, and
-`recover-close` for a stranded pre-session MO2. Cooperative close verifies the
+`recover-close` for a stranded pre-session MO2, including one protected by the
+caller's already-owned access-only lease. Cooperative close verifies the
 configured executable path, addresses only the exact MO2 PID, invokes MO2's
 structured exact `File` → `Exit` command, invokes only a button whose normalized
 accessible name is exactly `Unlock`, and otherwise requests normal closure of

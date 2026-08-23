@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 Set-StrictMode -Version Latest
-$script:MO2ControlContractVersion = '0.7.0'
+$script:MO2ControlContractVersion = '0.7.1'
 
 function Resolve-MO2ControlPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -2249,6 +2249,7 @@ function Invoke-MO2RecoverClose {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Config,
+        [string]$AccessId,
         [string]$Label = 'recovery-close',
         [ValidateRange(1, 600)][int]$TimeoutSeconds = 90,
         [switch]$WhatIf
@@ -2258,12 +2259,23 @@ function Invoke-MO2RecoverClose {
     if ($inspection.processes.game.Count -gt 0) {
         return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $false -State 'blocked' -Data @{ processes = $inspection.processes } -Errors @('Recovery close refuses while a game or loader process is running.')
     }
+    $explicitAccess = -not [string]::IsNullOrWhiteSpace($AccessId)
+    $accessLock = $null
     if ($inspection.sessionLock.exists) {
-        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $false -State 'blocked' -Data @{ lock = $inspection.sessionLock; processes = $inspection.processes } -Errors @('A session lock already exists. Use close with that exact SessionId, or classify the stale lock before recovery.')
+        if (-not $explicitAccess) {
+            return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $false -State 'blocked' -Data @{ lock = $inspection.sessionLock; processes = $inspection.processes } -Errors @('A session lock already exists. Pass its exact access-only AccessId, use close with its exact SessionId, or classify the stale lock before recovery.')
+        }
+        $accessLock = Get-MO2OwnedAccessLease -Config $Config -AccessId $AccessId
+        if (-not [string]::IsNullOrWhiteSpace([string]$accessLock.sessionId)) {
+            return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $false -State 'blocked' -Data @{ access = Get-MO2AccessLeaseSummary -Lock $accessLock; processes = $inspection.processes } -Errors @('The access lease already has a bound session. Use close with that exact SessionId.')
+        }
+    }
+    elseif ($explicitAccess) {
+        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $false -State 'blocked' -Data @{ processes = $inspection.processes } -Errors @("Access lease '$AccessId' does not exist.")
     }
     $targets = @($inspection.processes.mo2)
     if ($targets.Count -eq 0) {
-        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $true -State 'already-closed' -Data @{ targets = @(); forceTermination = $false; unrelatedProcessesTouched = @() }
+        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $true -State 'already-closed' -Data @{ accessId = $AccessId; accessRetained = $explicitAccess; targets = @(); forceTermination = $false; unrelatedProcessesTouched = @() }
     }
     Assert-MO2ExactProcessTargets -Config $Config -Processes $targets
     if ($targets.Count -ne 1) {
@@ -2278,6 +2290,9 @@ function Invoke-MO2RecoverClose {
     $sessionPath = Join-Path (Resolve-MO2ControlPath ([string]$Config.storage.sessionStaging)) $sessionId
     $lockPath = Resolve-MO2ControlPath ([string]$Config.session.lockFile)
     $createdUtc = [DateTime]::UtcNow.ToString('o')
+    if (-not $explicitAccess) {
+        $AccessId = 'access-{0}-{1}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')), ([guid]::NewGuid().ToString('N').Substring(0, 12))
+    }
     $manifest = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
         sessionId = $sessionId
@@ -2289,11 +2304,21 @@ function Invoke-MO2RecoverClose {
         mo2Path = [string]$inspection.config.mo2Executable
         ownerPid = [int]$targets[0].id
         recovery = $true
+        accessId = $AccessId
+        acquisitionMode = $(if ($explicitAccess) { 'explicit-access' } else { 'implicit-session' })
         processesBefore = $inspection.processes
         windowsBefore = @(Get-MO2WindowSnapshot -Processes $targets)
     }
     $lock = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
+        accessId = $AccessId
+        acquisitionMode = $(if ($explicitAccess) { 'explicit-access' } else { 'implicit-session' })
+        label = $(if ($explicitAccess -and $accessLock.data.PSObject.Properties['label']) { [string]$accessLock.data.label } else { $safeLabel })
+        requestedUtc = $(if ($explicitAccess -and $accessLock.data.PSObject.Properties['requestedUtc']) { [string]$accessLock.data.requestedUtc } else { $createdUtc })
+        lastRenewedUtc = $(if ($explicitAccess -and $accessLock.data.PSObject.Properties['lastRenewedUtc']) { [string]$accessLock.data.lastRenewedUtc } else { $createdUtc })
+        estimatedDurationMinutes = $(if ($explicitAccess -and $accessLock.data.PSObject.Properties['estimatedDurationMinutes']) { $accessLock.data.estimatedDurationMinutes } else { $null })
+        estimatedReleaseUtc = $(if ($explicitAccess -and $accessLock.data.PSObject.Properties['estimatedReleaseUtc']) { $accessLock.data.estimatedReleaseUtc } else { $null })
+        ownerRequestPid = $(if ($explicitAccess -and $accessLock.data.PSObject.Properties['ownerRequestPid']) { $accessLock.data.ownerRequestPid } else { $PID })
         sessionId = $sessionId
         sessionPath = $sessionPath
         status = 'recovery-closing'
@@ -2304,13 +2329,22 @@ function Invoke-MO2RecoverClose {
         recovery = $true
     }
     if ($WhatIf) {
-        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $true -State 'dry-run' -Data @{ session = $manifest; lockPath = $lockPath; sessionPath = $sessionPath; targets = $targets; wouldInvokeExactControls = @('File', 'Exit', 'Unlock'); wouldRequestModalWindowClose = $true; forceTermination = $false; unrelatedProcessesTouched = @() }
+        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $true -State 'dry-run' -Data @{ session = $manifest; lockPath = $lockPath; sessionPath = $sessionPath; accessId = $AccessId; explicitAccess = $explicitAccess; wouldBindAccessLock = $explicitAccess; targets = $targets; wouldInvokeExactControls = @('File', 'Exit', 'Unlock'); wouldRequestModalWindowClose = $true; forceTermination = $false; unrelatedProcessesTouched = @() }
     }
 
     New-Item -ItemType Directory -Path $sessionPath -ErrorAction Stop | Out-Null
     try {
         Write-MO2JsonAtomic -Path (Join-Path $sessionPath 'session.json') -Value $manifest -CreateNew
-        Write-MO2JsonAtomic -Path $lockPath -Value $lock -CreateNew
+        if ($explicitAccess) {
+            $currentAccess = Get-MO2OwnedAccessLease -Config $Config -AccessId $AccessId
+            if (-not [string]::IsNullOrWhiteSpace([string]$currentAccess.sessionId)) {
+                throw 'The access lease acquired a session before recovery close could bind it.'
+            }
+            Write-MO2JsonAtomic -Path $lockPath -Value $lock
+        }
+        else {
+            Write-MO2JsonAtomic -Path $lockPath -Value $lock -CreateNew
+        }
     }
     catch {
         throw "Failed to acquire recovery session '$sessionId'. Evidence is retained at '$sessionPath'. $($_.Exception.Message)"
@@ -2321,7 +2355,7 @@ function Invoke-MO2RecoverClose {
     $status = if ($close.closed) { 'mo2-closed' } else { 'close-incomplete' }
     Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty 'closedUtc'
     Write-MO2JsonAtomic -Path (Join-Path $sessionPath 'mo2-close.json') -Value $close
-    return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $close.closed -State $status -Data @{ sessionId = $sessionId; lockPath = $lockPath; sessionPath = $sessionPath; close = $close; releaseRequired = $close.closed } -Errors $(if ($close.closed) { @() } else { @('MO2 remains after cooperative recovery close. The recovery lock and evidence were retained; no force termination was attempted.') })
+    return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $close.closed -State $status -Data @{ sessionId = $sessionId; accessId = $AccessId; explicitAccess = $explicitAccess; lockPath = $lockPath; sessionPath = $sessionPath; close = $close; releaseRequired = $close.closed } -Errors $(if ($close.closed) { @() } else { @('MO2 remains after cooperative recovery close. The recovery lock and evidence were retained; no force termination was attempted.') })
 }
 
 function Invoke-MO2StopGame {
@@ -2622,7 +2656,7 @@ function Get-MO2ControlHelp {
             '.\Invoke-MO2Control.ps1 validate -RequireClosed',
             '.\Invoke-MO2Control.ps1 validate -Profile "Codex" -Executable "Launch MGO - Do Not Unlock" -Compact'
         )
-        note = 'Version 0.7.0 adds detached runtime-owner adoption, launch-pending grace, structural Unlock handling, and exact-session deadlock recovery while preserving the 0.6.0 access-lease contract.'
+        note = 'Version 0.7.1 preserves the 0.7.0 lifecycle contract and allows recover-close to bind an already-owned access-only lease.'
     }
 
     return [pscustomobject][ordered]@{

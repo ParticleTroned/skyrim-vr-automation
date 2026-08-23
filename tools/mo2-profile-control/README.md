@@ -11,6 +11,14 @@ already exists. It inserts one disabled marker by default at `End`, `Before`,
 or `After`; relative placement requires one exact `RelativeToMod`. Prefer the
 workspace controller, which also proves that the mod did not predate the task.
 
+`register-winning` registers and enables a new mod immediately before the
+earliest enabled loose-file provider of every exact `WinningPaths` entry.
+`ensure-winner` enables and repositions an existing marker using the same
+calculation. Both require `ModsDirectory`, prove the target supplies every
+path, retain an exact modlist backup, and record all displaced providers plus a
+postcondition. MO2 overwrite, unmanaged files, and archives are outside this
+proof; use VFS evidence when those sources matter.
+
 For noninteractive orchestration, pass `-Confirm:$false` only after the caller
 has authorized the exact transaction. A bare `-Confirm` requests an interactive
 PowerShell prompt and is converted into a clear blocked error when no prompt

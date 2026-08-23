@@ -27,7 +27,7 @@ foreach ($tree in @('.codex-plugin', 'skills', 'tools', 'profiles', 'docs')) {
     $sourceRoot = Join-Path $repositoryRoot $tree
     foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File) {
         $relative = [IO.Path]::GetRelativePath($sourceRoot, $file.FullName)
-        if ($file.Name -eq 'machine.local.json' -or $relative -match '(^|[\\/])sessions([\\/]|$)') { continue }
+        if ($file.Name -like '*.local.json' -or $relative -match '(^|[\\/])sessions([\\/]|$)') { continue }
         $target = Join-Path (Join-Path $destination $tree) $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $target

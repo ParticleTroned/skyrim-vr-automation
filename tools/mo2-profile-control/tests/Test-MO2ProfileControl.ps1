@@ -13,7 +13,12 @@ try {
     $fixtureProcessNames = @('MO2ProfileControlImpossibleFixtureProcess')
     $mods = Join-Path $fixture 'mods'
     $newMod = Join-Path $mods 'New Test Mod'
-    New-Item -ItemType Directory -Path $newMod -Force | Out-Null
+    $exactMod = Join-Path $mods 'Exact Test Mod'
+    $enableMod = Join-Path $mods 'Enable Test Mod'
+    foreach ($mod in @($newMod, $exactMod, $enableMod)) {
+        New-Item -ItemType Directory -Path (Join-Path $mod 'SKSE\Plugins') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $mod 'SKSE\Plugins\Example.dll'), $mod)
+    }
 
     $registerEvidence = Join-Path $fixture 'register-evidence'
     $registered = & $script register -ProfilePath $profile -ModName 'New Test Mod' -ModDirectory $newMod -Placement After -RelativeToMod 'Exact Test Mod' -EvidenceDirectory $registerEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
@@ -22,6 +27,22 @@ try {
     if ($registeredLines[2] -ne '-New Test Mod') { throw 'Register did not honor exact relative placement.' }
     $registerRestored = & $script restore -ProfilePath $profile -ModName 'New Test Mod' -EvidenceDirectory $registerEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($null -ne $registerRestored.marker -or (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash -ne $originalHash) { throw 'Register restore did not remove the owned marker byte-identically.' }
+
+    $winnerRegisterEvidence = Join-Path $fixture 'register-winner-evidence'
+    $registeredWinner = & $script register-winning -ProfilePath $profile -ModName 'New Test Mod' -ModDirectory $newMod -ModsDirectory $mods -WinningPaths 'SKSE\Plugins\Example.dll' -EvidenceDirectory $winnerRegisterEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    $winnerLines = Get-Content -LiteralPath $profile
+    if (-not $registeredWinner.enabled -or $winnerLines[1] -ne '+New Test Mod') { throw 'Register-winning did not enable and place the target before the earliest enabled provider.' }
+    $winnerReceipt = Get-Content -LiteralPath (Join-Path $winnerRegisterEvidence 'modlist-control.receipt.json') -Raw | ConvertFrom-Json
+    if (-not $winnerReceipt.winnerProof.verified -or @($winnerReceipt.winnerProof.displacedProviders).Count -ne 1) { throw 'Register-winning did not record its provider proof.' }
+    $winnerRegisterRestored = & $script restore -ProfilePath $profile -ModName 'New Test Mod' -EvidenceDirectory $winnerRegisterEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    if ($null -ne $winnerRegisterRestored.marker -or $winnerRegisterRestored.sha256 -ne $originalHash) { throw 'Register-winning restore was not byte-identical.' }
+
+    $ensureWinnerEvidence = Join-Path $fixture 'ensure-winner-evidence'
+    $ensuredWinner = & $script ensure-winner -ProfilePath $profile -ModName 'Enable Test Mod' -ModDirectory $enableMod -ModsDirectory $mods -WinningPaths 'SKSE\Plugins\Example.dll' -EvidenceDirectory $ensureWinnerEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    $ensuredLines = Get-Content -LiteralPath $profile
+    if (-not $ensuredWinner.enabled -or $ensuredLines[1] -ne '+Enable Test Mod') { throw 'Ensure-winner did not enable and move the existing target before providers.' }
+    $ensureWinnerRestored = & $script restore -ProfilePath $profile -ModName 'Enable Test Mod' -EvidenceDirectory $ensureWinnerEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    if ($ensureWinnerRestored.enabled -or $ensureWinnerRestored.sha256 -ne $originalHash) { throw 'Ensure-winner restore was not byte-identical.' }
 
     $inspect = & $script inspect -ProfilePath $profile -ModName 'Exact Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if (-not $inspect.enabled) { throw 'Inspect did not report the enabled marker.' }
@@ -50,7 +71,7 @@ try {
     if ($enableRestored.enabled -or $enableRestored.sha256 -ne $originalHash) { throw 'Enable restore did not reproduce the original marker state.' }
     if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$original, [byte[]][IO.File]::ReadAllBytes($profile))) { throw 'Enable restore was not byte-identical.' }
 
-    [pscustomobject]@{ ok = $true; assertions = 14; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
+    [pscustomobject]@{ ok = $true; assertions = 20; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
 }
 finally {
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }

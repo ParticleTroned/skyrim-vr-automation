@@ -3,7 +3,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('inspect', 'register', 'enable', 'disable', 'restore')]
+    [ValidateSet('inspect', 'register', 'register-winning', 'ensure-winner', 'enable', 'disable', 'restore')]
     [string]$Command,
 
     [Parameter(Mandatory)]
@@ -18,6 +18,10 @@ param(
     [string]$Placement = 'End',
 
     [string]$RelativeToMod,
+
+    [string]$ModsDirectory,
+
+    [string[]]$WinningPaths,
 
     [switch]$RegisterEnabled,
 
@@ -99,6 +103,75 @@ function Add-ModLine([byte[]]$Bytes, [string]$Name, [bool]$Enabled, [string]$Lin
     return [Text.Encoding]::UTF8.GetBytes($result)
 }
 
+function Remove-ModLine([byte[]]$Bytes, [string]$Name) {
+    $text = [Text.Encoding]::UTF8.GetString($Bytes)
+    $matches = @(Get-ModLineMatches -Bytes $Bytes -Name $Name)
+    if ($matches.Count -ne 1) { throw "Expected exactly one modlist line for '$Name'; found $($matches.Count)." }
+    $match = $matches[0]
+    $start = $match.Index
+    $length = $match.Length
+    if ($start + $length -lt $text.Length -and $text[$start + $length] -eq "`n") { $length++ }
+    return [Text.Encoding]::UTF8.GetBytes($text.Remove($start, $length))
+}
+
+function Get-ModListRecords([byte[]]$Bytes) {
+    $text = [Text.Encoding]::UTF8.GetString($Bytes)
+    $records = @()
+    $lineNumber = 0
+    foreach ($line in @($text -split "`r?`n")) {
+        $lineNumber++
+        if ($line -match '^(?<marker>[+-])(?<name>.+)$') {
+            $records += [pscustomobject][ordered]@{ lineNumber = $lineNumber; marker = $Matches.marker; enabled = $Matches.marker -eq '+'; name = $Matches.name }
+        }
+    }
+    return @($records)
+}
+
+function Resolve-WinningPlan([byte[]]$Bytes, [string]$TargetName, [string]$TargetDirectory, [string]$ModRoot, [string[]]$Paths) {
+    if ([string]::IsNullOrWhiteSpace($ModRoot)) { throw '-ModsDirectory is required for winning-provider operations.' }
+    $resolvedRoot = [IO.Path]::GetFullPath($ModRoot)
+    $resolvedTarget = [IO.Path]::GetFullPath($TargetDirectory)
+    if (-not $resolvedTarget.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'The target mod is not inside ModsDirectory.' }
+    $normalizedPaths = @()
+    foreach ($path in @($Paths)) {
+        if ([string]::IsNullOrWhiteSpace($path) -or [IO.Path]::IsPathRooted($path)) { throw 'WinningPaths must contain non-rooted relative file paths.' }
+        $normalized = $path.Replace('/', [IO.Path]::DirectorySeparatorChar).TrimStart([IO.Path]::DirectorySeparatorChar)
+        $targetFile = [IO.Path]::GetFullPath((Join-Path $resolvedTarget $normalized))
+        if (-not $targetFile.StartsWith($resolvedTarget + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Winning path escapes the target mod: $path" }
+        if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf)) { throw "The target mod does not provide required winning path: $normalized" }
+        if ($normalizedPaths -inotcontains $normalized) { $normalizedPaths += $normalized }
+    }
+    if ($normalizedPaths.Count -eq 0) { throw 'At least one WinningPaths entry is required.' }
+    $providers = @()
+    foreach ($record in @(Get-ModListRecords -Bytes $Bytes | Where-Object { $_.enabled -and $_.name -cne $TargetName })) {
+        $providerRoot = [IO.Path]::GetFullPath((Join-Path $resolvedRoot ([string]$record.name)))
+        if (-not $providerRoot.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $providerRoot -PathType Container)) { continue }
+        foreach ($path in $normalizedPaths) {
+            $providerFile = [IO.Path]::GetFullPath((Join-Path $providerRoot $path))
+            if ($providerFile.StartsWith($providerRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $providerFile -PathType Leaf)) {
+                $providers += [pscustomobject][ordered]@{ path = $path; modName = [string]$record.name; lineNumber = [int]$record.lineNumber; filePath = $providerFile; sha256 = (Get-FileHash -LiteralPath $providerFile -Algorithm SHA256).Hash }
+            }
+        }
+    }
+    $earliest = @($providers | Sort-Object lineNumber | Select-Object -First 1)
+    return [pscustomobject][ordered]@{
+        relativePaths = $normalizedPaths
+        otherEnabledProviders = @($providers | Sort-Object path, lineNumber)
+        placeBeforeMod = if ($earliest.Count -eq 1) { [string]$earliest[0].modName } else { $null }
+        scopeNote = 'Winner proof covers enabled loose-file providers registered in this exact modlist. MO2 overwrite, unmanaged game files, and archives require separate VFS evidence.'
+    }
+}
+
+function Test-WinningPostcondition([byte[]]$Bytes, [string]$TargetName, [string]$TargetDirectory, [string]$ModRoot, [string[]]$Paths) {
+    $target = Get-ModListRecords -Bytes $Bytes | Where-Object { $_.name -ceq $TargetName }
+    if (@($target).Count -ne 1 -or -not @($target)[0].enabled) { throw "Winning target '$TargetName' is not enabled exactly once." }
+    $plan = Resolve-WinningPlan -Bytes $Bytes -TargetName $TargetName -TargetDirectory $TargetDirectory -ModRoot $ModRoot -Paths $Paths
+    $targetLine = [int]@($target)[0].lineNumber
+    $losing = @($plan.otherEnabledProviders | Where-Object { [int]$_.lineNumber -lt $targetLine })
+    if ($losing.Count -gt 0) { throw "Winning postcondition failed; an enabled provider precedes '$TargetName': $($losing.modName -join ', ')." }
+    return [pscustomobject][ordered]@{ verified = $true; targetLineNumber = $targetLine; relativePaths = $plan.relativePaths; displacedProviders = $plan.otherEnabledProviders; scopeNote = $plan.scopeNote }
+}
+
 function Write-BytesAtomically([string]$Path, [byte[]]$Bytes) {
     $directory = Split-Path -Parent $Path
     $temporary = Join-Path $directory ('.' + [IO.Path]::GetFileName($Path) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
@@ -152,14 +225,14 @@ if ($processes.Count -gt 0) {
     throw "MO2 profile mutation requires MO2 and Skyrim to be closed. Active: $($processes.name -join ', ')."
 }
 if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
-    throw '-EvidenceDirectory is required for enable, disable, and restore.'
+    throw '-EvidenceDirectory is required for every profile mutation and restore.'
 }
 
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 $backupPath = Join-Path $resolvedEvidence 'modlist.before.bin'
 $receiptPath = Join-Path $resolvedEvidence 'modlist-control.receipt.json'
 
-if ($Command -eq 'register') {
+if ($Command -in @('register', 'register-winning')) {
     if ($beforeMatches.Count -ne 0) {
         throw "Registration requires no existing marker for '$ModName'; found $($beforeMatches.Count)."
     }
@@ -168,20 +241,58 @@ if ($Command -eq 'register') {
     if (-not (Test-Path -LiteralPath $resolvedModDirectory -PathType Container)) { throw "Deployed mod directory does not exist: $resolvedModDirectory" }
     if ([IO.Path]::GetFileName($resolvedModDirectory) -cne $ModName) { throw "The deployed mod directory name must exactly match ModName ('$ModName')." }
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite an existing exact backup: $backupPath" }
-    $afterBytes = Add-ModLine -Bytes $beforeBytes -Name $ModName -Enabled ([bool]$RegisterEnabled) -LinePlacement $Placement -RelativeName $RelativeToMod
-    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "register exact MO2 mod '$ModName' as $(if ($RegisterEnabled) { 'enabled' } else { 'disabled' }) at $Placement") {
+    $winningPlan = $null
+    if ($Command -eq 'register-winning') {
+        $winningPlan = Resolve-WinningPlan -Bytes $beforeBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+        $effectivePlacement = if ([string]::IsNullOrWhiteSpace([string]$winningPlan.placeBeforeMod)) { 'End' } else { 'Before' }
+        $effectiveRelative = [string]$winningPlan.placeBeforeMod
+        $afterBytes = Add-ModLine -Bytes $beforeBytes -Name $ModName -Enabled $true -LinePlacement $effectivePlacement -RelativeName $effectiveRelative
+    }
+    else {
+        $effectivePlacement = $Placement
+        $effectiveRelative = $RelativeToMod
+        $afterBytes = Add-ModLine -Bytes $beforeBytes -Name $ModName -Enabled ([bool]$RegisterEnabled) -LinePlacement $Placement -RelativeName $RelativeToMod
+    }
+    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "$Command exact MO2 mod '$ModName' at $effectivePlacement") {
         if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) { New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null }
         [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
         Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
         $afterLine = Get-ModLineRecord -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -Name $ModName
         $afterHash = Get-Sha256 $resolvedProfile
+        $winnerProof = if ($Command -eq 'register-winning') { Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths } else { $null }
         [pscustomobject][ordered]@{
-            contractVersion = '1.2.0'; operation = 'register'; profilePath = $resolvedProfile
+            contractVersion = '1.3.0'; operation = $Command; profilePath = $resolvedProfile
             modName = $ModName; modDirectory = $resolvedModDirectory; backupPath = $backupPath
             beforeSha256 = $beforeHash; resultSha256 = $afterHash; beforeMarker = $null
-            resultMarker = $afterLine.marker; placement = $Placement; relativeToMod = $RelativeToMod
+            resultMarker = $afterLine.marker; placement = $effectivePlacement; relativeToMod = $effectiveRelative
+            winnerProof = $winnerProof; providerPlan = $winningPlan
             changedUtc = [DateTime]::UtcNow.ToString('o')
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+    }
+}
+elseif ($Command -eq 'ensure-winner') {
+    if ($beforeMatches.Count -ne 1) { throw "Expected exactly one modlist line for '$ModName'; found $($beforeMatches.Count)." }
+    if ([string]::IsNullOrWhiteSpace($ModDirectory)) { throw '-ModDirectory is required for ensure-winner.' }
+    $resolvedModDirectory = [IO.Path]::GetFullPath($ModDirectory)
+    $withoutTarget = Remove-ModLine -Bytes $beforeBytes -Name $ModName
+    $winningPlan = Resolve-WinningPlan -Bytes $withoutTarget -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+    $effectivePlacement = if ([string]::IsNullOrWhiteSpace([string]$winningPlan.placeBeforeMod)) { 'End' } else { 'Before' }
+    $effectiveRelative = [string]$winningPlan.placeBeforeMod
+    $afterBytes = Add-ModLine -Bytes $withoutTarget -Name $ModName -Enabled $true -LinePlacement $effectivePlacement -RelativeName $effectiveRelative
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite an existing exact backup: $backupPath" }
+    if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "enable and place '$ModName' before every enabled loose-file provider") {
+        if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) { New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null }
+        [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
+        Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
+        $afterHash = Get-Sha256 $resolvedProfile
+        $winnerProof = Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+        [pscustomobject][ordered]@{
+            contractVersion = '1.3.0'; operation = 'ensure-winner'; profilePath = $resolvedProfile
+            modName = $ModName; modDirectory = $resolvedModDirectory; backupPath = $backupPath
+            beforeSha256 = $beforeHash; resultSha256 = $afterHash; beforeMarker = $beforeLine.marker
+            resultMarker = '+'; placement = $effectivePlacement; relativeToMod = $effectiveRelative
+            winnerProof = $winnerProof; providerPlan = $winningPlan; changedUtc = [DateTime]::UtcNow.ToString('o')
+        } | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $receiptPath -Encoding utf8
     }
 }
 elseif ($Command -in @('enable', 'disable')) {
