@@ -29,6 +29,12 @@ location, archive, process names, and safety limits live in the ignored
 the doctor-reported configuration. Start from `config/machine.example.json`; do not
 commit the resulting machine file.
 
+Machines with multiple portable MO2 installations keep one exact config per
+modlist through `../modlist-control`. Inspect and select the intended name
+before preflight. A persisted exact selection is allowed; choosing the first
+config, assuming that `main` means safe, or falling back to the UI-selected
+profile is not.
+
 Before any elevated invocation, read `APPROVALS.md`. Use a direct literal
 `pwsh.exe -NoProfile -NonInteractive -File <entrypoint> <subcommand>` shape and
 the result's `data.approval.reusablePrefix`. Variables in this runbook describe

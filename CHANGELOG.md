@@ -4,6 +4,16 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add exact named MO2 config registration, listing, resolution, and persistent
+  selection for machines that switch between multiple portable modlists.
+- Resolve explicit config paths and environment overrides before a named
+  selection, and fail closed when named configs exist without one exact valid
+  choice.
+- Route the MO2 skill and doctor through the shared multi-modlist contract.
+- Expand environment variables in verified-save fixture manifest paths before
+  normalization so `%LOCALAPPDATA%` configuration remains portable.
+- Allow feedback identity collection to run from hydrated plugin caches whose
+  generated metadata omits the optional source plugin version.
 - Publish exact direct-invocation approval metadata from the MO2 lifecycle,
   workspace, and profile controllers, document stable conversation-scoped
   prefix rules, and keep forced termination and overwrite/removal operations

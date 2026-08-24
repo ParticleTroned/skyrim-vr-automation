@@ -9,6 +9,11 @@
   "devBenchProtocolVersion": "2025-03-26",
   "tools": [
     {
+      "name": "modlist-control",
+      "version": "1.0.0",
+      "entryPoint": "tools/modlist-control/Invoke-SkyrimVRModlist.ps1"
+    },
+    {
       "name": "doctor",
       "version": "1.0.0",
       "entryPoint": "tools/doctor/Invoke-SkyrimVRAutomationDoctor.ps1"

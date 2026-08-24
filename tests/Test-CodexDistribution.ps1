@@ -37,6 +37,7 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $simulatedCache) -Force | Out-Null
     Copy-Item -LiteralPath $rebuilt -Destination $simulatedCache -Recurse
     foreach ($entryPoint in @(
+        'tools\modlist-control\Invoke-SkyrimVRModlist.ps1',
         'tools\doctor\Invoke-SkyrimVRAutomationDoctor.ps1',
         'tools\feedback-control\Invoke-AutomationFeedback.ps1',
         'tools\mo2-control\Invoke-MO2Control.ps1',
@@ -51,6 +52,12 @@ try {
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $simulatedCache $entryPoint) -PathType Leaf)) { throw "Installed entry point is missing: $entryPoint" }
     }
+
+    $hydratedPluginPath = Join-Path $simulatedCache '.codex-plugin\plugin.json'
+    [IO.File]::WriteAllText($hydratedPluginPath, '{"name":"skyrim-vr-automation","category":"Developer Tools","interface":{"category":"Developer Tools"}}', [Text.UTF8Encoding]::new($false))
+    $hydratedFeedbackRoot = Join-Path $fixture 'hydrated-feedback'
+    $hydratedFeedback = & (Join-Path $simulatedCache 'tools\feedback-control\Invoke-AutomationFeedback.ps1') submit -FeedbackRoot $hydratedFeedbackRoot -Area packaging -Kind defect -Summary 'Hydrated cache probe' -Observed 'Observed.' -Expected 'Expected.' -Compact | ConvertFrom-Json -Depth 50
+    if (-not $hydratedFeedback.ok -or $hydratedFeedback.state -ne 'recorded' -or $hydratedFeedback.data.feedback.toolkit.version -ne '0.8.0' -or $null -ne $hydratedFeedback.data.feedback.toolkit.pluginVersion) { throw 'Feedback control rejected hydration-stripped plugin metadata.' }
 
     [pscustomobject][ordered]@{ ok = $true; marketplace = $marketplace.name; pluginVersion = $manifest.version; files = $rebuiltFiles.Count; simulatedCache = $simulatedCache } | ConvertTo-Json
 }

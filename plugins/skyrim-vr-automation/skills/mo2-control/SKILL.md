@@ -18,6 +18,9 @@ edit `modlist.txt` ad hoc.
   `../../tools/mo2-control/APPROVALS.md` completely and use the command's
   returned `approval.reusablePrefix` when it is eligible. Never hide the
   executable, entry point, or subcommand behind a variable or `-Command`.
+- When the machine has or may have multiple MO2 modlists, read
+  `../../tools/modlist-control/README.md`, list the registered names, and select
+  or explicitly resolve the user's exact requested modlist before inspection.
 - For enabling, disabling, or restoring one exact mod marker, read
   `../../tools/mo2-profile-control/README.md` and inspect the entry point's
   parameter block before acting. For a DLL deployment, prefer the workspace
@@ -33,20 +36,25 @@ are:
 
 ```text
 ../../tools/mo2-control/Invoke-MO2Control.ps1
+../../tools/modlist-control/Invoke-SkyrimVRModlist.ps1
 ../../tools/mo2-profile-control/Invoke-MO2ProfileControl.ps1
 ```
 
 ## Operating sequence
 
 1. State in commentary that this skill is governing the MO2 operation.
-2. Start with `inspect`. Before any planned MO2 operation, call
+2. Run modlist `list` first. If named configs exist, use the persisted exact
+   selection only when it matches the user's stated modlist; otherwise run
+   `select -Name <exact-name>` or pass an explicit config. Never infer `main`,
+   the first file, or MO2's UI-selected profile as the intended target.
+3. Start with `inspect`. Before any planned MO2 operation, call
    `request-access`, retain its exact `accessId`, and respect `access-busy`.
    An estimated duration is advisory only and never permits lease stealing.
    Before any closed-state mutation, run `validate -AccessId <literal-access-id>
    -RequireClosed` and account for every warning or block.
-3. Use `-WhatIf` when the command supports it and the requested change has not
+4. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
-4. For a live run, call `prepare -AccessId` with the owned lease, retain its
+5. For a live run, call `prepare -AccessId` with the owned lease, retain its
    `sessionId` and returned `controllerPath`, then invoke every lifecycle
    command through that literal session-scoped controller path with the exact session
    identity. The copied controller survives plugin cache replacement; do not
@@ -62,22 +70,22 @@ are:
    If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
    and Skyrim are still closed: catalog `prepare` the exact task cache before
    launch, then catalog `complete` after shutdown and before workspace release.
-5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
+6. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
-6. Use `-StartOnly` when the outer host cannot safely wait for UI/game
+7. Use `-StartOnly` when the outer host cannot safely wait for UI/game
    readiness; retain the immediate receipt and poll the exact session with
    `status`.
-7. If `status` reports `rootbuilder-recovery-required`, preview and use
+8. If `status` reports `rootbuilder-recovery-required`, preview and use
    `recover-rootbuilder` with the same exact session, then finish through normal
    `stop`/Unlock. Never delete `BuildData.json` directly.
-8. End with the bounded graceful path. Use `terminate` and `release` only under
+9. End with the bounded graceful path. Use `terminate` and `release` only under
    the runbook's ownership and closed-game proofs. After releasing the session,
    call `release-access` as soon as MO2 is no longer needed.
    If the game main thread is deadlocked, `terminate-game` is the only forced
    game recovery: it targets launch-recorded identities, retains MO2, invokes
    exact Unlock, and requires RootBuilder cleanup. Release the task workspace
    before releasing access.
-9. Preserve session identifiers, receipts, hashes, logs, screenshots, dumps,
+10. Preserve session identifiers, receipts, hashes, logs, screenshots, dumps,
    and the pre/post inspection results with the test record.
 
 ## Safety and authority

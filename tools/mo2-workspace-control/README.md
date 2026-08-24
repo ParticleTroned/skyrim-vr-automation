@@ -34,6 +34,8 @@ match the exact stable source profile. Every listed save/co-save is verified by
 path, size, and SHA-256 before and after copying; no other save is copied. The
 result reports the fixture ID, location, and `loadName` for a later game-load
 adapter. See `save-fixtures.example.json` for the portable schema.
+Environment variables in the manifest path, including `%LOCALAPPDATA%`, are
+expanded before the path is normalized.
 
 Use `fixture-status` to compare the manifest's expected stable-profile
 fingerprint and declared save hashes with their current actual values without

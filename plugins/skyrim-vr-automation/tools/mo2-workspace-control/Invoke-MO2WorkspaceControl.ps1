@@ -144,7 +144,8 @@ function Resolve-VerifiedSaveFixture($Config, [string]$SourceName, [string]$Sour
     $configuredManifest = if ($Config.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$Config.defaults.newGameFixtureManifest } else { '' }
     $manifestInput = if (-not [string]::IsNullOrWhiteSpace($RequestedManifestPath)) { $RequestedManifestPath } else { $configuredManifest }
     if ([string]::IsNullOrWhiteSpace($manifestInput)) { throw 'VerifiedFixture requires -FixtureManifestPath or defaults.newGameFixtureManifest.' }
-    $manifestPath = [IO.Path]::GetFullPath($manifestInput)
+    $expandedManifestInput = [Environment]::ExpandEnvironmentVariables($manifestInput)
+    $manifestPath = [IO.Path]::GetFullPath($expandedManifestInput)
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Fixture manifest does not exist: $manifestPath" }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if (-not $manifest.PSObject.Properties['profileFingerprintSha256'] -or [string]$manifest.profileFingerprintSha256 -cne [string]$SourceSnapshot.sha256) { throw 'Verified fixture profile fingerprint does not match the stable source profile.' }
@@ -190,7 +191,8 @@ function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$So
     $configuredManifest = if ($Config.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$Config.defaults.newGameFixtureManifest } else { '' }
     $manifestInput = if (-not [string]::IsNullOrWhiteSpace($RequestedManifestPath)) { $RequestedManifestPath } else { $configuredManifest }
     if ([string]::IsNullOrWhiteSpace($manifestInput)) { throw 'Fixture inspection requires -FixtureManifestPath or defaults.newGameFixtureManifest.' }
-    $manifestPath = [IO.Path]::GetFullPath($manifestInput)
+    $expandedManifestInput = [Environment]::ExpandEnvironmentVariables($manifestInput)
+    $manifestPath = [IO.Path]::GetFullPath($expandedManifestInput)
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Fixture manifest does not exist: $manifestPath" }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $fixtures = @($manifest.fixtures)

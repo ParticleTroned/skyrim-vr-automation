@@ -80,8 +80,12 @@ the exit code, but must be reviewed before a state-changing operation.
   per-user configuration, independent of a checkout or plugin cache version.
 
 Configuration precedence is explicit `-ConfigPath`,
-`SKYRIM_VR_AUTOMATION_CONFIG`, the stable per-user path, then the legacy local
-file. The result reports the selected source under `data.configuration`.
+`SKYRIM_VR_AUTOMATION_CONFIG`, an exact `SKYRIM_VR_AUTOMATION_MODLIST` name,
+the persisted selection managed by `../modlist-control`, the stable per-user
+path, then the legacy local file. The two historical paths are considered only
+when no named configs exist. Named configs without a valid selection fail
+closed. The result reports the selected source and modlist under
+`data.configuration`.
 - `schemas/result.schema.json` — output contract.
 - `MO2-RUNBOOK.md` — operating and recovery guidance.
 - `tests/Test-MO2Control.ps1` — isolated fixture tests plus optional live checks.

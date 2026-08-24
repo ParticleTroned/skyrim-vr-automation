@@ -7,6 +7,9 @@ optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
 
+- `tools/modlist-control` — fail-closed registration and persistent selection
+  of exact named MO2 machine configurations.
+
 - `tools/doctor` — configuration discovery, environment validation, and
   non-overwriting initialization of the stable per-user MO2 config.
 - `tools/feedback-control` — durable local reporter/maintainer feedback with
@@ -75,8 +78,19 @@ it with the bundled doctor:
 .\tools\doctor\Invoke-SkyrimVRAutomationDoctor.ps1 inspect
 ```
 
-Then edit `%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`. An explicit
-`-ConfigPath` or `SKYRIM_VR_AUTOMATION_CONFIG` can select another file.
+For one MO2 installation, edit
+`%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`. For multiple portable
+modlists, register and select exact named configs instead:
+
+```powershell
+.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 register -Name main -ConfigPath C:\staging\main.json
+.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 select -Name main
+.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 list
+```
+
+An explicit `-ConfigPath`, `SKYRIM_VR_AUTOMATION_CONFIG`, or
+`SKYRIM_VR_AUTOMATION_MODLIST` can override the persisted selection. The
+resolver never chooses an arbitrary named config.
 
 DevBench runtime discovery is supplied either explicitly or through an
 environment variable:
