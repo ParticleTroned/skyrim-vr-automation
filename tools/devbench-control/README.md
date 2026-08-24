@@ -59,6 +59,15 @@ main-thread-busy probe failures as unsatisfied observations after the short
 transport retry budget is exhausted. The outer deadline therefore survives a
 normal load or compile transition, while non-transient probe failures still
 terminate immediately and the last transient error remains in the result.
+The initial MCP initialize/initialized/tools-list exchange is part of that same
+outer wait state machine, so a temporarily unavailable listener cannot exhaust
+the short transport budget before the requested timeout begins.
+
+`playerLoaded` is transition-fresh by default: the wait must observe an
+unloaded state before accepting loaded. This prevents the prior world's cached
+`true` from satisfying an asynchronous load. Use `-AcceptAlreadyLoaded` only
+when the caller intentionally wants a current-state check rather than proof of
+a new load transition.
 
 Runtime identity is refreshed after a waited-for service registers. The binding
 reports listener process identity, every available CSX producer registry,

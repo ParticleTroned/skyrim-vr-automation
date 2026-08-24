@@ -6,6 +6,11 @@ emits a receipt; it does not launch MO2 or select a fallback profile. `-WhatIf`
 previews enable and disable operations without creating evidence or changing the
 profile.
 
+`-ProfilePath` accepts either the profile directory or its exact `modlist.txt`
+leaf (`-ModListPath` is an alias). Results and receipts preserve the legacy
+`profilePath` leaf while also reporting unambiguous `profileName`,
+`profileDirectory`, and `modListPath` fields.
+
 `register` requires an exact deployed mod directory and proves that no marker
 already exists. It inserts one disabled marker by default at `End`, `Before`,
 or `After`; relative placement requires one exact `RelativeToMod`. Prefer the

@@ -2,6 +2,18 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## Unreleased
+
+- Snapshot a self-contained lifecycle controller into every MO2 session so an
+  installed plugin cache replacement cannot invalidate an active run.
+- Normalize MO2 profile directory/modlist identity, add compact workspace
+  output, fixture drift inspection and guarded refresh, and select the stable
+  profile transactionally before deleting a task profile.
+- Classify and acknowledge only retained failed-to-run MO2 dialogs after a
+  game stop, returning needs-attention for unknown windows.
+- Keep MCP initialization within the full DevBench wait deadline and require a
+  fresh unloaded-to-loaded transition for `playerLoaded` by default.
+
 ## 0.8.0 - 2026-08-24
 
 - Add immutable content-addressed compiled shader-cache catalogs with

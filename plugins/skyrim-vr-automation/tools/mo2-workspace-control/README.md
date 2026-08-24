@@ -7,7 +7,8 @@ or unlisted saves.
 
 The task must own an MO2 access lease. MO2, Skyrim, loaders, and active
 RootBuilder deployment must be closed before `create`, `register-mod`, or
-`release`. Release any evidence session before mutating the workspace.
+`release`. Release any evidence session before mutating the workspace. All
+commands accept `-Compact` for one-line JSON.
 
 ```powershell
 $workspace = .\Invoke-MO2WorkspaceControl.ps1 create `
@@ -47,11 +48,22 @@ path, size, and SHA-256 before and after copying; no other save is copied. The
 result reports the fixture ID, location, and `loadName` for a later game-load
 adapter. See `save-fixtures.example.json` for the portable schema.
 
+Use `fixture-status` to compare the manifest's expected stable-profile
+fingerprint and declared save hashes with their current actual values without
+changing anything. `refresh-fixture` is the separately authorized repair path:
+it requires the exact access lease and closed-state proof, preserves the prior
+manifest and a receipt, refreshes only the selected declared fixture, and
+verifies the postcondition. It never invents a replacement save path.
+
 At creation the tool records every existing mod directory. A workspace may
 register only an exact mod directory absent from that snapshot. It refuses to
 claim, replace, or delete a pre-existing shared mod. Cleanup is restricted to
 the exact generated profile and registered task-owned mods; the stable source
-profile must remain byte-identical.
+profile must remain byte-identical. Before deleting a task profile, `release`
+atomically selects and verifies its stable source in `ModOrganizer.ini`, keeps
+the exact prior INI bytes and receipt, and only then removes the task profile.
+Workspace manifests and results expose `profileName`, `profileDirectory`, and
+`modListPath` while retaining the legacy `profile` and `profilePath` fields.
 
 `-WinningPaths` changes `register-mod` into an enabled winning-provider
 transaction. `ensure-mod-wins` can subsequently re-check and reposition only a

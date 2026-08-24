@@ -46,6 +46,9 @@ try {
 
     $inspect = & $script inspect -ProfilePath $profile -ModName 'Exact Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if (-not $inspect.enabled) { throw 'Inspect did not report the enabled marker.' }
+    $directoryInspect = & $script inspect -ProfilePath $fixture -ModName 'Exact Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    if (-not $directoryInspect.enabled -or $directoryInspect.modListPath -ne $profile) { throw 'Profile directory input did not normalize to its exact modlist.' }
+    if ($directoryInspect.profileDirectory -ne $fixture -or $directoryInspect.profileName -ne [IO.Path]::GetFileName($fixture)) { throw 'Profile identity fields are not explicit and canonical.' }
     $enableInspect = & $script inspect -ProfilePath $profile -ModName 'Enable Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($enableInspect.enabled) { throw 'Inspect did not report the disabled marker.' }
 
@@ -71,7 +74,7 @@ try {
     if ($enableRestored.enabled -or $enableRestored.sha256 -ne $originalHash) { throw 'Enable restore did not reproduce the original marker state.' }
     if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$original, [byte[]][IO.File]::ReadAllBytes($profile))) { throw 'Enable restore was not byte-identical.' }
 
-    [pscustomobject]@{ ok = $true; assertions = 20; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
+    [pscustomobject]@{ ok = $true; assertions = 22; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
 }
 finally {
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }

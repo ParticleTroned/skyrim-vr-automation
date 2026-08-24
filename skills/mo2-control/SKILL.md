@@ -43,8 +43,10 @@ are:
 3. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
 4. For a live run, call `prepare -AccessId` with the owned lease, retain its
-   `sessionId`, and pass that exact
-   identity to every lifecycle command. Parse the JSON result; do not infer
+   `sessionId` and returned `controllerPath`, then invoke every lifecycle
+   command through that session-scoped controller with the exact session
+   identity. The copied controller survives plugin cache replacement; do not
+   keep using the versioned plugin-cache entry point after prepare. Parse the JSON result; do not infer
    success from process appearance alone.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.

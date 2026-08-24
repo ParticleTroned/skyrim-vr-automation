@@ -42,6 +42,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $configuration = $null
+$sessionLocalConfig = Join-Path $PSScriptRoot 'config\machine.local.json'
+if ([string]::IsNullOrWhiteSpace($ConfigPath) -and (Test-Path -LiteralPath $sessionLocalConfig -PathType Leaf)) {
+    # A prepare/recover-created controller bundle is self-contained. Prefer its
+    # exact captured configuration over any newer per-user/plugin installation.
+    $ConfigPath = $sessionLocalConfig
+}
 
 try {
     Import-Module (Join-Path $PSScriptRoot 'ConfigResolution.psm1') -Force -ErrorAction Stop
@@ -55,7 +61,7 @@ try {
     $sessionCommands = @('open', 'launch', 'stop-game', 'terminate-game', 'close', 'recover-rootbuilder', 'stop', 'terminate', 'release')
     if ($Command -in $sessionCommands -and [string]::IsNullOrWhiteSpace($SessionId)) {
         $result = [pscustomobject][ordered]@{
-            contractVersion = '0.7.1'
+            contractVersion = '0.8.0'
             command = $Command
             ok = $false
             state = 'missing-session-id'
@@ -68,7 +74,7 @@ try {
     }
     elseif ($Command -in @('renew-access', 'release-access', 'recover-access') -and [string]::IsNullOrWhiteSpace($AccessId)) {
         $result = [pscustomobject][ordered]@{
-            contractVersion = '0.7.1'
+            contractVersion = '0.8.0'
             command = $Command
             ok = $false
             state = 'missing-access-id'
@@ -146,7 +152,7 @@ try {
 }
 catch {
     $result = [pscustomobject][ordered]@{
-        contractVersion = '0.7.1'
+        contractVersion = '0.8.0'
         command = $Command
         ok = $false
         state = 'tool-error'

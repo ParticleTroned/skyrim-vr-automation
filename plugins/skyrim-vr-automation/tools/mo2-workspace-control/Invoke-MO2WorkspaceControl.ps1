@@ -3,7 +3,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('create', 'inspect', 'register-mod', 'ensure-mod-wins', 'release')]
+    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'register-mod', 'ensure-mod-wins', 'release')]
     [string]$Command,
 
     [string]$ConfigPath,
@@ -23,6 +23,7 @@ param(
     [string[]]$WinningPaths,
     [switch]$RegisterEnabled,
     [switch]$CleanupOwnedMods,
+    [switch]$Compact,
     [switch]$NoExit
 )
 
@@ -60,6 +61,63 @@ function Get-ProfileSnapshot([string]$Path) {
     $canonical = $records | ConvertTo-Json -Compress -Depth 4
     $hashBytes = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical))
     return [pscustomobject][ordered]@{ files = @($records); sha256 = [Convert]::ToHexString($hashBytes) }
+}
+
+function Write-WorkspaceBytesAtomic([string]$Path, [byte[]]$Bytes) {
+    $parent = Split-Path -Parent $Path
+    $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($Path) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllBytes($temporary, $Bytes)
+        [IO.File]::Move($temporary, $Path, $true)
+    }
+    finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force } }
+}
+
+function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string]$StableProfile, [string]$EvidenceRoot, [switch]$WhatIf) {
+    $iniPath = [IO.Path]::GetFullPath([string]$Config.mo2.ini)
+    if (-not (Test-Path -LiteralPath $iniPath -PathType Leaf)) { throw "MO2 INI does not exist: $iniPath" }
+    $beforeBytes = [IO.File]::ReadAllBytes($iniPath)
+    $beforeText = [Text.Encoding]::UTF8.GetString($beforeBytes)
+    $selectionMatches = [regex]::Matches($beforeText, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)$')
+    if ($selectionMatches.Count -ne 1) { throw "Expected exactly one selected_profile entry in MO2 INI; found $($selectionMatches.Count)." }
+    $rawBeforeValue = $selectionMatches[0].Groups['value'].Value.Trim()
+    $byteArrayMatch = [regex]::Match($rawBeforeValue, '^@ByteArray\((.*)\)$')
+    $beforeValue = if ($byteArrayMatch.Success) { $byteArrayMatch.Groups[1].Value } else { $rawBeforeValue }
+    $replacement = $selectionMatches[0].Groups['prefix'].Value + '@ByteArray(' + $StableProfile + ')'
+    $afterText = $beforeText.Remove($selectionMatches[0].Index, $selectionMatches[0].Length).Insert($selectionMatches[0].Index, $replacement)
+    $backupPath = Join-Path $EvidenceRoot 'ModOrganizer.before.ini'
+    $receiptPath = Join-Path $EvidenceRoot 'selected-profile-release.receipt.json'
+    $record = [pscustomobject][ordered]@{
+        iniPath = $iniPath; selectedProfileBefore = $beforeValue; selectedProfileAfter = $StableProfile
+        backupPath = $backupPath; receiptPath = $receiptPath; changed = $beforeValue -cne $StableProfile
+    }
+    if ($WhatIf) { return $record }
+    if (-not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null }
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite the exact MO2 INI backup: $backupPath" }
+    [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
+    try {
+        if ($beforeValue -cne $StableProfile) {
+            Write-WorkspaceBytesAtomic -Path $iniPath -Bytes ([Text.Encoding]::UTF8.GetBytes($afterText))
+        }
+        $verifiedText = [IO.File]::ReadAllText($iniPath, [Text.Encoding]::UTF8)
+        $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*$')
+        $verified = if ($verifiedMatches.Count -eq 1) { $verifiedMatches[0].Groups['value'].Value } else { $null }
+        if ($verified -cne $StableProfile) { throw 'MO2 selected profile postcondition did not match the stable source.' }
+        $receipt = [pscustomobject][ordered]@{
+            contractVersion = '1.0.0'; operation = 'select-stable-before-workspace-release'; iniPath = $iniPath
+            taskProfile = $TaskProfile; stableProfile = $StableProfile; selectedProfileBefore = $beforeValue
+            selectedProfileAfter = $verified; backupPath = $backupPath
+            beforeSha256 = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+            resultSha256 = (Get-FileHash -LiteralPath $iniPath -Algorithm SHA256).Hash
+            changedUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        Write-WorkspaceJsonAtomic -Path $receiptPath -Value $receipt
+    }
+    catch {
+        Write-WorkspaceBytesAtomic -Path $iniPath -Bytes $beforeBytes
+        throw "MO2 selected profile release transaction failed; the exact INI bytes were restored. $($_.Exception.Message)"
+    }
+    return $record
 }
 
 function Get-WorkspaceManifestPath($Config, [string]$Id) {
@@ -113,6 +171,55 @@ function Resolve-VerifiedSaveFixture($Config, [string]$SourceName, [string]$Sour
     }
 }
 
+function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$SourcePath, $SourceSnapshot, [string]$RequestedManifestPath, [string]$RequestedFixtureId) {
+    $configuredManifest = if ($Config.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$Config.defaults.newGameFixtureManifest } else { '' }
+    $manifestInput = if (-not [string]::IsNullOrWhiteSpace($RequestedManifestPath)) { $RequestedManifestPath } else { $configuredManifest }
+    if ([string]::IsNullOrWhiteSpace($manifestInput)) { throw 'Fixture inspection requires -FixtureManifestPath or defaults.newGameFixtureManifest.' }
+    $manifestPath = [IO.Path]::GetFullPath($manifestInput)
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Fixture manifest does not exist: $manifestPath" }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $fixtures = @($manifest.fixtures)
+    $selectedId = if (-not [string]::IsNullOrWhiteSpace($RequestedFixtureId)) { $RequestedFixtureId } elseif ($manifest.PSObject.Properties['defaultFixtureId']) { [string]$manifest.defaultFixtureId } else { '' }
+    if ([string]::IsNullOrWhiteSpace($selectedId)) { throw 'Fixture inspection requires -FixtureId or manifest.defaultFixtureId.' }
+    $matches = @($fixtures | Where-Object { [string]$_.id -ceq $selectedId })
+    if ($matches.Count -ne 1) { throw "Expected exactly one fixture named '$selectedId'; found $($matches.Count)." }
+    $selected = $matches[0]
+    $sourceSaves = [IO.Path]::GetFullPath((Join-Path $SourcePath 'saves'))
+    $fileStatus = @()
+    $essCount = 0
+    foreach ($file in @($selected.files)) {
+        $relative = [string]$file.relativePath
+        if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative)) { throw "Fixture '$selectedId' contains a missing or rooted relativePath." }
+        $sourceFile = [IO.Path]::GetFullPath((Join-Path $sourceSaves $relative))
+        if (-not $sourceFile.StartsWith($sourceSaves + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Fixture file escapes the source saves directory: $relative" }
+        $exists = Test-Path -LiteralPath $sourceFile -PathType Leaf
+        $actualBytes = if ($exists) { [long](Get-Item -LiteralPath $sourceFile).Length } else { $null }
+        $actualHash = if ($exists) { (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash } else { $null }
+        $expectedHash = if ($file.PSObject.Properties['sha256']) { [string]$file.sha256 } else { $null }
+        $expectedBytes = if ($file.PSObject.Properties['bytes']) { [long]$file.bytes } else { $null }
+        if ([IO.Path]::GetExtension($relative) -ieq '.ess') { $essCount++ }
+        $fileStatus += [pscustomobject][ordered]@{
+            relativePath = $relative; sourcePath = $sourceFile; exists = $exists
+            expectedSha256 = $expectedHash; actualSha256 = $actualHash
+            expectedBytes = $expectedBytes; actualBytes = $actualBytes
+            hashMatches = $exists -and -not [string]::IsNullOrWhiteSpace($expectedHash) -and $actualHash -ceq $expectedHash
+            bytesMatch = $exists -and ($null -eq $expectedBytes -or $actualBytes -eq $expectedBytes)
+        }
+    }
+    $expectedFingerprint = if ($manifest.PSObject.Properties['profileFingerprintSha256']) { [string]$manifest.profileFingerprintSha256 } else { $null }
+    $sourceProfileMatches = -not $manifest.PSObject.Properties['sourceProfile'] -or [string]::IsNullOrWhiteSpace([string]$manifest.sourceProfile) -or [string]$manifest.sourceProfile -ceq $SourceName
+    $allFilesMatch = @($fileStatus | Where-Object { -not $_.exists -or -not $_.hashMatches -or -not $_.bytesMatch }).Count -eq 0
+    return [pscustomobject][ordered]@{
+        manifestPath = $manifestPath; manifest = $manifest; fixture = $selected; fixtureId = $selectedId
+        sourceProfileName = $SourceName; sourceProfileDirectory = $SourcePath
+        expectedProfileFingerprintSha256 = $expectedFingerprint; actualProfileFingerprintSha256 = [string]$SourceSnapshot.sha256
+        profileFingerprintMatches = -not [string]::IsNullOrWhiteSpace($expectedFingerprint) -and $expectedFingerprint -ceq [string]$SourceSnapshot.sha256
+        sourceProfileMatches = $sourceProfileMatches; files = @($fileStatus); allFilesMatch = $allFilesMatch
+        essCount = $essCount
+        valid = $sourceProfileMatches -and $allFilesMatch -and $essCount -eq 1 -and -not [string]::IsNullOrWhiteSpace($expectedFingerprint) -and $expectedFingerprint -ceq [string]$SourceSnapshot.sha256
+    }
+}
+
 function Read-OwnedWorkspace($Config, [string]$Id, [string]$OwnedAccessId) {
     $path = Get-WorkspaceManifestPath -Config $Config -Id $Id
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Workspace does not exist: $Id" }
@@ -139,7 +246,58 @@ try {
     $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
     $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
 
-    if ($Command -eq 'create') {
+    if ($Command -in @('fixture-status', 'refresh-fixture')) {
+        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for fixture control.' }
+        $sourcePath = [IO.Path]::GetFullPath((Join-Path $profilesRoot $sourceName))
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
+        if ($Command -eq 'refresh-fixture') { $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName }
+        $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
+        $status = Get-VerifiedSaveFixtureStatus -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
+        if ($Command -eq 'fixture-status') {
+            $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($status.valid) { 'fixture-valid' } else { 'fixture-stale' }); data = $status }
+        }
+        else {
+            if (-not $status.sourceProfileMatches) { throw 'Fixture sourceProfile does not match the exact stable source profile; refusing refresh.' }
+            if ($status.essCount -ne 1) { throw "Fixture '$($status.fixtureId)' must contain exactly one .ess save before refresh; found $($status.essCount)." }
+            if (@($status.files | Where-Object { -not $_.exists }).Count -gt 0) { throw 'Fixture refresh requires every declared source save file to exist.' }
+            $manifest = $status.manifest
+            $manifest.profileFingerprintSha256 = [string]$sourceSnapshot.sha256
+            $selected = @($manifest.fixtures | Where-Object { [string]$_.id -ceq [string]$status.fixtureId })[0]
+            foreach ($file in @($selected.files)) {
+                $actual = @($status.files | Where-Object { [string]$_.relativePath -ceq [string]$file.relativePath })[0]
+                if ($file.PSObject.Properties['bytes']) { $file.bytes = [long]$actual.actualBytes } else { $file | Add-Member -NotePropertyName bytes -NotePropertyValue ([long]$actual.actualBytes) }
+                if ($file.PSObject.Properties['sha256']) { $file.sha256 = [string]$actual.actualSha256 } else { $file | Add-Member -NotePropertyName sha256 -NotePropertyValue ([string]$actual.actualSha256) }
+            }
+            $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+            $evidenceRoot = Join-Path (Split-Path -Parent ([string]$status.manifestPath)) ('.fixture-refresh-' + $status.fixtureId + '-' + $stamp)
+            $backupPath = Join-Path $evidenceRoot 'manifest.before.json'
+            $receiptPath = Join-Path $evidenceRoot 'fixture-refresh.receipt.json'
+            if ($PSCmdlet.ShouldProcess([string]$status.manifestPath, "refresh exact fixture '$($status.fixtureId)' fingerprints from stable profile '$sourceName'")) {
+                New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+                Copy-Item -LiteralPath ([string]$status.manifestPath) -Destination $backupPath
+                Write-WorkspaceJsonAtomic -Path ([string]$status.manifestPath) -Value $manifest
+                $verifiedSnapshot = Get-ProfileSnapshot -Path $sourcePath
+                $verified = Get-VerifiedSaveFixtureStatus -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $verifiedSnapshot -RequestedManifestPath ([string]$status.manifestPath) -RequestedFixtureId ([string]$status.fixtureId)
+                if (-not $verified.valid) {
+                    Copy-Item -LiteralPath $backupPath -Destination ([string]$status.manifestPath) -Force
+                    throw 'Fixture refresh postcondition failed; the exact manifest backup was restored.'
+                }
+                Write-WorkspaceJsonAtomic -Path $receiptPath -Value ([pscustomobject][ordered]@{
+                    contractVersion = '1.0.0'; operation = 'refresh-fixture'; fixtureId = [string]$status.fixtureId
+                    sourceProfileName = $sourceName; sourceProfileDirectory = $sourcePath; manifestPath = [string]$status.manifestPath
+                    backupPath = $backupPath; beforeSha256 = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+                    resultSha256 = (Get-FileHash -LiteralPath ([string]$status.manifestPath) -Algorithm SHA256).Hash
+                    expectedFingerprintBefore = [string]$status.expectedProfileFingerprintSha256
+                    actualFingerprint = [string]$verified.actualProfileFingerprintSha256; refreshedUtc = [DateTime]::UtcNow.ToString('o')
+                })
+                $status = $verified
+            }
+            $status | Add-Member -NotePropertyName backupPath -NotePropertyValue $backupPath -Force
+            $status | Add-Member -NotePropertyName receiptPath -NotePropertyValue $receiptPath -Force
+            $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'fixture-refreshed' }); data = $status }
+        }
+    }
+    elseif ($Command -eq 'create') {
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required; test workspaces never infer a stable source from the ordinary session default.' }
         $validation = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName
         $sourcePath = Join-Path $profilesRoot $sourceName
@@ -157,9 +315,10 @@ try {
             $fixture = Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '1.1.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
+            contractVersion = '1.2.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
-            sourceProfilePath = $sourcePath; sourceSnapshot = $sourceSnapshot; profile = $profileName; profilePath = $profilePath
+            sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
+            profile = $profileName; profilePath = $profilePath; profileName = $profileName; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             savePolicy = $SavePolicy; fixtureManifestPath = if ($fixture) { [string]$fixture.manifestPath } else { $null }
             saveFixture = $fixture; initialModNames = $initialMods; registeredMods = @(); inheritedSaves = $false
             ownershipRule = 'The workspace may mutate only its cloned profile and mod directories absent from initialModNames and registered by this workspace.'
@@ -265,8 +424,17 @@ try {
             if ($modPath -cne $expected -or -not $modPath.StartsWith($modsRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Owned mod cleanup target is unsafe: $modPath" }
             $cleanupMods += $modPath
         }
-        if ($PSCmdlet.ShouldProcess($profilePath, 'remove exact task-owned profile')) {
-            if (Test-Path -LiteralPath $profilePath -PathType Container) { Remove-Item -LiteralPath $profilePath -Recurse -Force }
+        $releaseEvidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-release')
+        $releaseApproved = $PSCmdlet.ShouldProcess($profilePath, "select stable profile '$($owned.data.sourceProfile)' and remove exact task-owned profile")
+        $profileSelection = Set-MO2SelectedProfileForRelease -Config $config -TaskProfile ([string]$owned.data.profile) -StableProfile ([string]$owned.data.sourceProfile) -EvidenceRoot $releaseEvidence -WhatIf:(-not $releaseApproved)
+        if ($releaseApproved) {
+            try {
+                if (Test-Path -LiteralPath $profilePath -PathType Container) { Remove-Item -LiteralPath $profilePath -Recurse -Force }
+            }
+            catch {
+                Write-WorkspaceBytesAtomic -Path ([string]$profileSelection.iniPath) -Bytes ([IO.File]::ReadAllBytes([string]$profileSelection.backupPath))
+                throw "Workspace profile removal failed; the exact prior MO2 INI bytes were restored. $($_.Exception.Message)"
+            }
             if ($CleanupOwnedMods) {
                 foreach ($modPath in $cleanupMods) { if (Test-Path -LiteralPath $modPath -PathType Container) { Remove-Item -LiteralPath $modPath -Recurse -Force } }
             }
@@ -274,14 +442,22 @@ try {
             $owned.data | Add-Member -NotePropertyName releasedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
             $owned.data | Add-Member -NotePropertyName profileRemoved -NotePropertyValue $true -Force
             $owned.data | Add-Member -NotePropertyName ownedModsRemoved -NotePropertyValue ([bool]$CleanupOwnedMods) -Force
+            $owned.data | Add-Member -NotePropertyName selectedProfileRelease -NotePropertyValue $profileSelection -Force
             Write-WorkspaceJsonAtomic -Path $owned.path -Value $owned.data
         }
-        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-released' }); data = @{ workspaceId = $WorkspaceId; profilePath = $profilePath; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods; releaseAccessRequired = $true; manifestPath = $owned.path } }
+        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-released' }); data = @{
+            workspaceId = $WorkspaceId; profile = [string]$owned.data.profile; profilePath = $profilePath
+            profileName = [string]$owned.data.profile; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
+            selectedProfileRelease = $profileSelection; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods
+            releaseAccessRequired = $true; manifestPath = $owned.path
+        } }
     }
 }
 catch {
     $result = [pscustomobject][ordered]@{ ok = $false; command = $Command; state = 'tool-error'; errors = @($_.Exception.Message); data = @{} }
 }
 
-$result | ConvertTo-Json -Depth 14
+$jsonParameters = @{ InputObject = $result; Depth = 18 }
+if ($Compact) { $jsonParameters['Compress'] = $true }
+ConvertTo-Json @jsonParameters
 if (-not $result.ok -and -not $NoExit) { exit 2 }

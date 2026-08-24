@@ -3,7 +3,9 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
-Version `0.7.1` retains cooperative access arbitration and adds bounded launch
+Version `0.8.0` retains cooperative access arbitration and adds a durable,
+session-scoped controller bundle, explicit profile identity fields, retained
+failed-to-run dialog cleanup, bounded launch
 pending state, helper-to-runtime PID adoption, structural Unlock handling, and
 exact-session `terminate-game` deadlock recovery. Recovery preserves MO2 and
 requires RootBuilder restoration before success. Test tasks should use
@@ -141,9 +143,10 @@ $validation = .\Invoke-MO2Control.ps1 validate `
 $prepared = .\Invoke-MO2Control.ps1 prepare `
   -AccessId $accessId -Label "weather-api-run" | ConvertFrom-Json
 $sessionId = $prepared.data.session.sessionId
+$controller = $prepared.data.controllerPath
 
 # open/launch/status/stop work uses the exact SessionId
-.\Invoke-MO2Control.ps1 release -SessionId $sessionId
+& $controller release -SessionId $sessionId
 .\Invoke-MO2Control.ps1 release-access -AccessId $accessId
 ```
 
@@ -158,7 +161,10 @@ session or call `release-access`.
 `prepare` requires a closed game/MO2 state, validates one exact profile and
 registered executable, and creates a durable evidence manifest on staging
 storage. It either binds the caller's exact access lease or, for legacy callers,
-atomically acquires an implicit lease. `launch` requires the returned session
+atomically acquires an implicit lease. It also copies the exact entry point,
+modules, and resolved configuration into the session evidence directory and
+returns `controllerPath`. Use that path for the rest of the lifecycle so a
+plugin reinstall cannot invalidate an active session. `launch` requires the returned session
 identity and uses MO2's supported command line:
 
 ```text
@@ -173,7 +179,9 @@ readiness, a later `status`, `close`, or `recover-close` still has durable PID,
 path, argument, and timestamp evidence for exact-process adoption.
 `status` is bounded and non-mutating. `stop-game` requests normal closure of the
 owned game/loader while preserving the exact owner MO2 PID, allowing controlled
-relaunches. `close` refuses while a game/loader exists and cooperatively resolves
+relaunches. After the game exits it acknowledges only a structurally classified
+retained `Failed to run` dialog; an unknown modal returns
+`game-stopped-needs-attention` without touching it. `close` refuses while a game/loader exists and cooperatively resolves
 MO2's structured `File` → `Exit` path and visible modal chain, including the VFS
 `Unlock` prompt. `stop` first closes the game and then uses the same MO2
 resolver. `release` ends only the exactly owned session after proving MO2 and
@@ -189,8 +197,8 @@ failed command then returns structured JSON without terminating that host.
 The retained cycle is:
 
 ```powershell
-.\Invoke-MO2Control.ps1 stop-game -SessionId $sessionId
-.\Invoke-MO2Control.ps1 launch -SessionId $sessionId
+& $controller stop-game -SessionId $sessionId
+& $controller launch -SessionId $sessionId
 ```
 
 Resume is accepted only from a bounded stopped/failure state, with no game

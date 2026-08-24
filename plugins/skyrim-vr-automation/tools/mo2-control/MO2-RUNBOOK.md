@@ -7,11 +7,12 @@ the Skyrim VR installation. The local machine configuration is
 the resolved machine configuration; do not rediscover paths or guess profile and
 executable names when the package can report them.
 
-Version 0.7.1 provides cooperative cross-task access leases, read-only
+Version 0.8.0 provides cooperative cross-task access leases, read-only
 inspection, single-owner `prepare`, exact
 `open` and `launch`, bounded `status`, graceful `stop-game`, MO2-only
 cooperative `close`, stranded-instance `recover-close`, and graceful full
-`stop`, immediate start receipts, and attributable RootBuilder recovery. A successful validation
+`stop`, durable per-session controller snapshots, exact retained-dialog cleanup,
+immediate start receipts, and attributable RootBuilder recovery. A successful validation
 authorizes no mutation by itself. Changes still require the user's task to put
 the relevant MO2 state, mod files, game files, or captured artifacts in scope.
 
@@ -135,11 +136,16 @@ Preview first, then bind a session to the owned access lease:
 $preview = .\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "short-test-name" -WhatIf | ConvertFrom-Json
 $prepared = .\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "short-test-name" | ConvertFrom-Json
 $sessionId = $prepared.data.session.sessionId
+$controller = $prepared.data.controllerPath
 ```
 
 `prepare` requires closed state, validates the exact profile/executable pair,
-creates `session.json`, and binds it to the exact access lease. It does not
-change MO2's selected profile or mod list. Legacy callers may omit AccessId;
+creates `session.json`, captures the exact controller modules and resolved
+machine configuration under the session, and binds it to the exact access
+lease. Use the returned `controllerPath` for every command that owns that
+session; it remains valid if a plugin update replaces the versioned cache from
+which `prepare` was called. `prepare` does not change MO2's selected profile or
+mod list. Legacy callers may omit AccessId;
 that creates an implicit one-session lease which `release` removes.
 
 ## Manual preparation for unimplemented mutations
@@ -164,8 +170,8 @@ that creates an implicit one-session lease which `release` removes.
 Open only the exact MO2/profile UI when no game launch is wanted:
 
 ```powershell
-.\Invoke-MO2Control.ps1 open -SessionId $sessionId
-.\Invoke-MO2Control.ps1 close -SessionId $sessionId
+& $controller open -SessionId $sessionId
+& $controller close -SessionId $sessionId
 ```
 
 These visible-window operations must run as the logged-on interactive user
@@ -176,8 +182,8 @@ or loader is present. It may invoke the exact accessible control named
 Launch only with the identity returned by `prepare`:
 
 ```powershell
-.\Invoke-MO2Control.ps1 launch -SessionId $sessionId
-.\Invoke-MO2Control.ps1 status -SessionId $sessionId
+& $controller launch -SessionId $sessionId
+& $controller status -SessionId $sessionId
 ```
 
 The implementation uses MO2's official `--profile NAME run --executable NAME`
@@ -188,8 +194,8 @@ For repeated measurements in one owned session, retain MO2 and cycle only the
 game:
 
 ```powershell
-.\Invoke-MO2Control.ps1 stop-game -SessionId $sessionId
-.\Invoke-MO2Control.ps1 launch -SessionId $sessionId
+& $controller stop-game -SessionId $sessionId
+& $controller launch -SessionId $sessionId
 ```
 
 `stop-game` never force-terminates and must prove the game/loader closed while
@@ -212,10 +218,11 @@ the actual route independently.
 
 ## Tidy session end
 
-1. Request graceful close with `stop -SessionId $sessionId`, then confirm with
+1. Request graceful close with `& $controller stop -SessionId $sessionId`, then confirm with
    `validate -RequireClosed`. `stop` never force-terminates. If it returns
    `stop-incomplete` because the retained MO2 owner has no closeable window,
-   use the bounded escalation `stop-game`, `terminate`, then `release`; the
+   use the same durable controller for the bounded escalation `stop-game`,
+   `terminate`, then `release`; the
    latter two commands prove game/RootBuilder absence and exact lock ownership.
    `release -SessionId` ends the evidence session. For an explicitly requested
    lease it deliberately retains access, so call `release-access -AccessId`
@@ -341,6 +348,17 @@ VFS handle. If it still reports `close-incomplete`, retain the audit, prove the
 game/loader set is empty, and only then consider explicit `terminate`. Finish
 with `release`; a process-name-wide kill is unnecessary.
 
+### Retained MO2 shows a Failed to run dialog
+
+Symptom: after Skyrim closes or fails to start, the retained exact MO2 owner
+shows a modal whose structure and text classify it as `failed-to-run`.
+
+Response: run `& $controller stop-game -SessionId $sessionId`. The controller
+targets only that structurally classified dialog, invokes its exact `OK` or
+`Close` control (or closes that exact known dialog), and records
+`mo2-retained-dialog-cleanup.json`. An unknown modal is never dismissed and
+returns `game-stopped-needs-attention` for attended handling.
+
 ### Stranded MO2 has no automation session
 
 Symptom: MO2 was opened manually or by an earlier failed parameter set, no
@@ -351,7 +369,9 @@ Response: acquire access, then preview and run
 logged-on interactive user. It accepts exactly one process whose executable
 path equals the configured `ModOrganizer.exe`, refuses while a game/loader or
 another lock exists, creates a retained recovery audit, and uses the same exact
-`File` → `Exit`, exact `Unlock`, and normal-modal-close policy. Run `release` using the same identity after
+`File` → `Exit`, exact `Unlock`, and normal-modal-close policy. The recovery
+result also returns a durable `controllerPath`; use it for `release` and every
+other command owning that recovery session. Run `release` using the same identity after
 closed-state proof, then release the retained access lease. Notepad++ and
 Tullius are outside the target set.
 

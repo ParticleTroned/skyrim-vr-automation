@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 Set-StrictMode -Version Latest
-$script:MO2ControlContractVersion = '0.7.1'
+$script:MO2ControlContractVersion = '0.8.0'
 
 function Resolve-MO2ControlPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -777,6 +777,40 @@ function Write-MO2JsonAtomic {
     }
 }
 
+function New-MO2DurableSessionController {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$SessionPath,
+        [switch]$WhatIf
+    )
+    $controllerDirectory = Join-Path $SessionPath 'controller'
+    $entryPath = Join-Path $controllerDirectory 'Invoke-MO2Control.ps1'
+    $configDirectory = Join-Path $controllerDirectory 'config'
+    $configPath = Join-Path $configDirectory 'machine.local.json'
+    $receiptPath = Join-Path $controllerDirectory 'controller-bundle.json'
+    $sourceFiles = @('Invoke-MO2Control.ps1', 'ConfigResolution.psm1', 'MO2Control.psm1')
+    if ($WhatIf) {
+        return [pscustomobject][ordered]@{ controllerPath = $entryPath; configPath = $configPath; receiptPath = $receiptPath; durable = $true; wouldCopy = $sourceFiles }
+    }
+    New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+    $files = @()
+    foreach ($name in $sourceFiles) {
+        $source = Join-Path $PSScriptRoot $name
+        $target = Join-Path $controllerDirectory $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "MO2 session controller source is missing: $source" }
+        Copy-Item -LiteralPath $source -Destination $target
+        $files += [pscustomobject][ordered]@{ name = $name; path = $target; sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
+    }
+    Write-MO2JsonAtomic -Path $configPath -Value $Config -CreateNew
+    $files += [pscustomobject][ordered]@{ name = 'config/machine.local.json'; path = $configPath; sha256 = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash }
+    Write-MO2JsonAtomic -Path $receiptPath -Value ([pscustomobject][ordered]@{
+        contractVersion = '1.0.0'; createdUtc = [DateTime]::UtcNow.ToString('o'); durable = $true
+        purpose = 'Session-scoped lifecycle controller retained independently of the versioned Codex plugin cache.'
+        controllerPath = $entryPath; configPath = $configPath; files = $files
+    }) -CreateNew
+    return [pscustomobject][ordered]@{ controllerPath = $entryPath; configPath = $configPath; receiptPath = $receiptPath; durable = $true; files = $files }
+}
+
 function Get-MO2OwnedSession {
     param(
         [Parameter(Mandatory)]$Config,
@@ -1266,6 +1300,7 @@ function Get-MO2KnownDialogKind {
     if (@($buttonNames | Where-Object { $_ -ieq 'Unlock' }).Count -eq 1) { return 'unlock-required' }
     $combined = ((@($Title) + @($Texts)) -join "`n")
     if ($combined -match '(?i)failed to write settings') { return 'failed-to-write-settings' }
+    if ($combined -match '(?i)failed to (run|start|launch)') { return 'failed-to-run' }
     return $null
 }
 
@@ -1386,6 +1421,55 @@ function Request-MO2AutomationWindowClose {
     }
     Initialize-MO2NativeWindowAccess
     return [MO2Control.NativeWindows]::RequestClose([IntPtr][int64]$Window.Current.NativeWindowHandle)
+}
+
+function Invoke-MO2RetainedSessionDialogCleanup {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Processes,
+        [ValidateRange(1, 60)][int]$TimeoutSeconds = 10
+    )
+    if ($Processes.Count -eq 0) {
+        return [pscustomobject][ordered]@{ cleared = $true; before = @(); actions = @(); remaining = @(); needsAttention = @() }
+    }
+    Assert-MO2ExactProcessTargets -Config $Config -Processes $Processes
+    $before = @(Get-MO2WindowSnapshot -Processes $Processes)
+    $actions = [Collections.Generic.List[object]]::new()
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $handled = $false
+        foreach ($record in $Processes) {
+            foreach ($window in @(Get-MO2AutomationWindows -ProcessId ([int]$record.id))) {
+                if ([string]$window.Current.AutomationId -eq 'MainWindow') { continue }
+                $kind = Get-MO2KnownDialogKind -Title ([string]$window.Current.Name) -Texts @(Get-MO2WindowTextElements -Window $window)
+                if ($kind -ne 'failed-to-run') { continue }
+                $accepted = $false
+                foreach ($name in @('OK', 'Close')) {
+                    foreach ($button in @(Get-MO2NamedButtons -Window $window -Name $name)) {
+                        $accepted = (Invoke-MO2AutomationButton -Button $button -ExpectedName $name) -or $accepted
+                    }
+                }
+                if (-not $accepted) { $accepted = Request-MO2AutomationWindowClose -Window $window }
+                $actions.Add([pscustomobject][ordered]@{
+                    timestampUtc = [DateTime]::UtcNow.ToString('o'); processId = [int]$record.id
+                    windowHandle = [int64]$window.Current.NativeWindowHandle; windowTitle = [string]$window.Current.Name
+                    dialogKind = $kind; action = 'acknowledge-retained-failed-to-run'; accepted = [bool]$accepted
+                })
+                $handled = $true
+            }
+        }
+        if (-not $handled) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $remaining = @(Get-MO2WindowSnapshot -Processes $Processes)
+    $remainingKnown = @($remaining | Where-Object { $_.visible -and $_.dialogKind -eq 'failed-to-run' })
+    $needsAttention = @($remaining | Where-Object {
+        $_.visible -and $_.automationId -ine 'MainWindow' -and $_.dialogKind -ne 'unlock-required' -and $_.dialogKind -ne 'failed-to-run'
+    })
+    return [pscustomobject][ordered]@{
+        cleared = $remainingKnown.Count -eq 0; before = $before; actions = @($actions)
+        remaining = $remaining; remainingKnown = $remainingKnown; needsAttention = $needsAttention
+    }
 }
 
 function Assert-MO2ExactProcessTargets {
@@ -1775,6 +1859,8 @@ function Invoke-MO2Prepare {
         $AccessId = 'access-{0}-{1}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')), ([guid]::NewGuid().ToString('N').Substring(0, 12))
     }
 
+    $controller = New-MO2DurableSessionController -Config $Config -SessionPath $sessionPath -WhatIf
+    $profileDirectory = Join-Path (Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory)) $profileName
     $manifest = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
         sessionId = $sessionId
@@ -1782,6 +1868,9 @@ function Invoke-MO2Prepare {
         createdUtc = [DateTime]::UtcNow.ToString('o')
         status = 'prepared'
         profile = $profileName
+        profileName = $profileName
+        profileDirectory = $profileDirectory
+        modListPath = (Join-Path $profileDirectory 'modlist.txt')
         executable = $executableName
         mo2Path = [string]$validation.data.config.mo2Executable
         arguments = $arguments
@@ -1791,6 +1880,9 @@ function Invoke-MO2Prepare {
         stoppedUtc = $null
         accessId = $AccessId
         acquisitionMode = $(if ($explicitAccess) { 'explicit-access' } else { 'implicit-session' })
+        controllerPath = [string]$controller.controllerPath
+        controllerConfigPath = [string]$controller.configPath
+        controllerReceiptPath = [string]$controller.receiptPath
     }
     $lock = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
@@ -1807,12 +1899,16 @@ function Invoke-MO2Prepare {
         status = 'prepared'
         createdUtc = $manifest.createdUtc
         profile = $profileName
+        profileName = $profileName
+        profileDirectory = $profileDirectory
+        modListPath = (Join-Path $profileDirectory 'modlist.txt')
         executable = $executableName
+        controllerPath = [string]$controller.controllerPath
         ownerPid = $PID
     }
 
     if ($WhatIf) {
-        return New-MO2ActionResult -Config $Config -Command 'prepare' -Ok $true -State 'dry-run' -Data @{ session = $manifest; sessionPath = $sessionPath; lockPath = $lockPath; accessId = $AccessId; explicitAccess = $explicitAccess; wouldCreate = @($sessionPath, (Join-Path $sessionPath 'session.json')); wouldCreateLock = -not $explicitAccess; wouldBindAccessLock = $explicitAccess } -Warnings $validation.warnings
+        return New-MO2ActionResult -Config $Config -Command 'prepare' -Ok $true -State 'dry-run' -Data @{ session = $manifest; sessionPath = $sessionPath; lockPath = $lockPath; accessId = $AccessId; explicitAccess = $explicitAccess; controller = $controller; controllerPath = [string]$controller.controllerPath; wouldCreate = @($sessionPath, (Join-Path $sessionPath 'session.json'), [string]$controller.controllerPath); wouldCreateLock = -not $explicitAccess; wouldBindAccessLock = $explicitAccess } -Warnings $validation.warnings
     }
 
     if (-not $explicitAccess -and (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
@@ -1821,6 +1917,7 @@ function Invoke-MO2Prepare {
 
     New-Item -ItemType Directory -Path $sessionPath -ErrorAction Stop | Out-Null
     try {
+        $controller = New-MO2DurableSessionController -Config $Config -SessionPath $sessionPath
         Write-MO2JsonAtomic -Path (Join-Path $sessionPath 'session.json') -Value $manifest -CreateNew
         if ($explicitAccess) {
             $currentAccess = Get-MO2OwnedAccessLease -Config $Config -AccessId $AccessId
@@ -1837,7 +1934,7 @@ function Invoke-MO2Prepare {
         throw "Failed to prepare session '$sessionId'. The evidence directory is retained at '$sessionPath'. $($_.Exception.Message)"
     }
 
-    return New-MO2ActionResult -Config $Config -Command 'prepare' -Ok $true -State 'prepared' -Data @{ session = $manifest; sessionPath = $sessionPath; lockPath = $lockPath; accessId = $AccessId; explicitAccess = $explicitAccess } -Warnings $validation.warnings
+    return New-MO2ActionResult -Config $Config -Command 'prepare' -Ok $true -State 'prepared' -Data @{ session = $manifest; sessionPath = $sessionPath; lockPath = $lockPath; accessId = $AccessId; explicitAccess = $explicitAccess; controller = $controller; controllerPath = [string]$controller.controllerPath } -Warnings $validation.warnings
 }
 
 function Set-MO2OwnedSessionGameProcesses {
@@ -2293,6 +2390,8 @@ function Invoke-MO2RecoverClose {
     if (-not $explicitAccess) {
         $AccessId = 'access-{0}-{1}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')), ([guid]::NewGuid().ToString('N').Substring(0, 12))
     }
+    $controller = New-MO2DurableSessionController -Config $Config -SessionPath $sessionPath -WhatIf
+    $profileDirectory = Join-Path (Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory)) ([string]$inspection.requested.profile)
     $manifest = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
         sessionId = $sessionId
@@ -2300,6 +2399,9 @@ function Invoke-MO2RecoverClose {
         createdUtc = $createdUtc
         status = 'recovery-closing'
         profile = [string]$inspection.requested.profile
+        profileName = [string]$inspection.requested.profile
+        profileDirectory = $profileDirectory
+        modListPath = (Join-Path $profileDirectory 'modlist.txt')
         executable = [string]$inspection.requested.executable
         mo2Path = [string]$inspection.config.mo2Executable
         ownerPid = [int]$targets[0].id
@@ -2308,6 +2410,9 @@ function Invoke-MO2RecoverClose {
         acquisitionMode = $(if ($explicitAccess) { 'explicit-access' } else { 'implicit-session' })
         processesBefore = $inspection.processes
         windowsBefore = @(Get-MO2WindowSnapshot -Processes $targets)
+        controllerPath = [string]$controller.controllerPath
+        controllerConfigPath = [string]$controller.configPath
+        controllerReceiptPath = [string]$controller.receiptPath
     }
     $lock = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
@@ -2324,16 +2429,21 @@ function Invoke-MO2RecoverClose {
         status = 'recovery-closing'
         createdUtc = $createdUtc
         profile = [string]$inspection.requested.profile
+        profileName = [string]$inspection.requested.profile
+        profileDirectory = $profileDirectory
+        modListPath = (Join-Path $profileDirectory 'modlist.txt')
         executable = [string]$inspection.requested.executable
+        controllerPath = [string]$controller.controllerPath
         ownerPid = [int]$targets[0].id
         recovery = $true
     }
     if ($WhatIf) {
-        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $true -State 'dry-run' -Data @{ session = $manifest; lockPath = $lockPath; sessionPath = $sessionPath; accessId = $AccessId; explicitAccess = $explicitAccess; wouldBindAccessLock = $explicitAccess; targets = $targets; wouldInvokeExactControls = @('File', 'Exit', 'Unlock'); wouldRequestModalWindowClose = $true; forceTermination = $false; unrelatedProcessesTouched = @() }
+        return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $true -State 'dry-run' -Data @{ session = $manifest; lockPath = $lockPath; sessionPath = $sessionPath; accessId = $AccessId; explicitAccess = $explicitAccess; controller = $controller; controllerPath = [string]$controller.controllerPath; wouldBindAccessLock = $explicitAccess; targets = $targets; wouldInvokeExactControls = @('File', 'Exit', 'Unlock'); wouldRequestModalWindowClose = $true; forceTermination = $false; unrelatedProcessesTouched = @() }
     }
 
     New-Item -ItemType Directory -Path $sessionPath -ErrorAction Stop | Out-Null
     try {
+        $controller = New-MO2DurableSessionController -Config $Config -SessionPath $sessionPath
         Write-MO2JsonAtomic -Path (Join-Path $sessionPath 'session.json') -Value $manifest -CreateNew
         if ($explicitAccess) {
             $currentAccess = Get-MO2OwnedAccessLease -Config $Config -AccessId $AccessId
@@ -2355,7 +2465,7 @@ function Invoke-MO2RecoverClose {
     $status = if ($close.closed) { 'mo2-closed' } else { 'close-incomplete' }
     Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty 'closedUtc'
     Write-MO2JsonAtomic -Path (Join-Path $sessionPath 'mo2-close.json') -Value $close
-    return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $close.closed -State $status -Data @{ sessionId = $sessionId; accessId = $AccessId; explicitAccess = $explicitAccess; lockPath = $lockPath; sessionPath = $sessionPath; close = $close; releaseRequired = $close.closed } -Errors $(if ($close.closed) { @() } else { @('MO2 remains after cooperative recovery close. The recovery lock and evidence were retained; no force termination was attempted.') })
+    return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $close.closed -State $status -Data @{ sessionId = $sessionId; accessId = $AccessId; explicitAccess = $explicitAccess; lockPath = $lockPath; sessionPath = $sessionPath; controller = $controller; controllerPath = [string]$controller.controllerPath; close = $close; releaseRequired = $close.closed } -Errors $(if ($close.closed) { @() } else { @('MO2 remains after cooperative recovery close. The recovery lock and evidence were retained; no force termination was attempted.') })
 }
 
 function Invoke-MO2StopGame {
@@ -2389,7 +2499,21 @@ function Invoke-MO2StopGame {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     $closed = $after.processes.game.Count -eq 0
-    $owned.data.status = if ($closed) { 'game-stopped' } else { 'game-stop-incomplete' }
+    $dialogCleanup = $null
+    $dialogNeedsAttention = $false
+    if ($closed -and $after.processes.mo2.Count -gt 0) {
+        $resolution = Resolve-MO2OwnedProcessTarget -Config $Config -Owned $owned -Processes @($after.processes.mo2) -AdoptDetachedOwner
+        if ($resolution.ok) {
+            $dialogCleanup = Invoke-MO2RetainedSessionDialogCleanup -Config $Config -Processes @($resolution.targets)
+            $dialogNeedsAttention = -not $dialogCleanup.cleared -or @($dialogCleanup.needsAttention).Count -gt 0
+        }
+        else {
+            $dialogCleanup = [pscustomobject][ordered]@{ cleared = $false; ownershipResolution = $resolution; needsAttention = @('Could not prove one exact retained MO2 owner for dialog cleanup.') }
+            $dialogNeedsAttention = $true
+        }
+        Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-retained-dialog-cleanup.json') -Value $dialogCleanup
+    }
+    $owned.data.status = if (-not $closed) { 'game-stop-incomplete' } elseif ($dialogNeedsAttention) { 'game-stopped-needs-attention' } else { 'game-stopped' }
     Write-MO2JsonAtomic -Path $owned.path -Value $owned.data
     $manifestPath = Join-Path ([string]$owned.data.sessionPath) 'session.json'
     $manifest = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $manifestPath -Raw)
@@ -2397,7 +2521,12 @@ function Invoke-MO2StopGame {
     $manifest.stoppedUtc = [DateTime]::UtcNow.ToString('o')
     Write-MO2JsonAtomic -Path $manifestPath -Value $manifest
 
-    return New-MO2ActionResult -Config $Config -Command 'stop-game' -Ok $closed -State $owned.data.status -Data @{ before = $before.processes; after = $after.processes; mo2Retained = $after.processes.mo2.Count -gt 0; forceTermination = $false; sessionPath = $owned.data.sessionPath } -Errors $(if ($closed) { @() } else { @('The game did not accept a graceful close request; no force termination was attempted.') })
+    $ok = $closed -and -not $dialogNeedsAttention
+    return New-MO2ActionResult -Config $Config -Command 'stop-game' -Ok $ok -State $owned.data.status -Data @{ before = $before.processes; after = $after.processes; mo2Retained = $after.processes.mo2.Count -gt 0; retainedDialogCleanup = $dialogCleanup; forceTermination = $false; sessionPath = $owned.data.sessionPath } -Errors $(
+        if (-not $closed) { @('The game did not accept a graceful close request; no force termination was attempted.') }
+        elseif ($dialogNeedsAttention) { @('The game stopped, but an unclassified or uncleared retained MO2 dialog needs attention; no unrelated window was touched.') }
+        else { @() }
+    )
 }
 
 function Invoke-MO2TerminateGame {
@@ -2656,7 +2785,7 @@ function Get-MO2ControlHelp {
             '.\Invoke-MO2Control.ps1 validate -RequireClosed',
             '.\Invoke-MO2Control.ps1 validate -Profile "Codex" -Executable "Launch MGO - Do Not Unlock" -Compact'
         )
-        note = 'Version 0.7.1 preserves the 0.7.0 lifecycle contract and allows recover-close to bind an already-owned access-only lease.'
+        note = 'Version 0.8.0 preserves the lifecycle contract, adds session-scoped durable controllers, explicit profile identity, and retained failed-to-run dialog classification.'
     }
 
     return [pscustomobject][ordered]@{
