@@ -2,7 +2,7 @@
 
 This repository provides external PowerShell automation for repeatable Skyrim
 VR development and testing. The controls cover Mod Organizer 2, SteamVR's null
-HMD, profile transactions, and shader-cache comparisons. CSX DevBench is an
+HMD, profile transactions, and reusable compiled shader-cache management. CSX DevBench is an
 optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
@@ -26,7 +26,8 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/profiler-control` — repeatable DevBench profiler capture and
   multi-state comparison reports.
 - `tools/shader-cache-control` — provider discovery, physical cache
-  snapshot/restore transactions, and comparison reports.
+  snapshot/restore transactions, compatibility-ranked known-working cache
+  catalogs, task seeding/restoration/promotion, and comparison reports.
 - `tools/process-control` — bounded exact-process execution with classified,
   evidence-backed retries for known transient failures.
 - `tools/build-test-control` — CTest-aware branch testing with a direct-test
@@ -47,7 +48,9 @@ new task to the bundled implementations and their operational contracts:
   bounded runtime shutdown.
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
 - `$profiler-control` captures bounded GPU/CPU timer evidence and compares runs.
-- `$shader-cache-control` compares preserved compiled-cache trees by SHA-256.
+- `$shader-cache-control` prepares tasks from compatible known-working compiled
+  caches, restores prior state, promotes verified results, and compares trees
+  by SHA-256.
 
 Install from the public Git marketplace:
 

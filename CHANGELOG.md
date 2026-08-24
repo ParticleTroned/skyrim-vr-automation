@@ -2,6 +2,18 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## 0.8.0 - 2026-08-24
+
+- Add immutable content-addressed compiled shader-cache catalogs with
+  receipt-proven provenance and explicit ABI, runtime, render-path, shader
+  source, build, preset, status, and tag metadata.
+- Add explainable compatibility selection plus transactional task preparation,
+  exact prior-cache restoration, displaced-result preservation, and opt-in
+  known-working promotion.
+- Route CSX test tasks through cache preparation before launch and completion
+  before MO2 workspace release to reduce avoidable recompilation without
+  weakening closed-state or ownership guarantees.
+
 ## 0.7.0 - 2026-08-23
 
 - Add a durable local automation-feedback mailbox with atomic receipts,

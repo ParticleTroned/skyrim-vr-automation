@@ -51,6 +51,9 @@ are:
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
+   If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
+   and Skyrim are still closed: catalog `prepare` the exact task cache before
+   launch, then catalog `complete` after shutdown and before workspace release.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
 6. Use `-StartOnly` when the outer host cannot safely wait for UI/game

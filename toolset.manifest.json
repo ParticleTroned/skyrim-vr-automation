@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "skyrim-vr-automation",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "license": "GPL-3.0-or-later",
   "publisher": "Treatid2",
   "preservedUtc": "2026-08-21T00:00:00Z",
@@ -50,8 +50,8 @@
     },
     {
       "name": "shader-cache-control",
-      "version": "2.0.0",
-      "entryPoint": "tools/shader-cache-control/Invoke-CSXShaderCacheTransaction.ps1"
+      "version": "3.0.0",
+      "entryPoint": "tools/shader-cache-control/Invoke-CSXShaderCacheCatalog.ps1"
     },
     {
       "name": "process-control",
