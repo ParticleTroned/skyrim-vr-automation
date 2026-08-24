@@ -28,7 +28,7 @@ try {
     $mo2Exe = Join-Path $mo2 'ModOrganizer.exe'; $loader = Join-Path $loaderMod 'loader.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null; New-Item -ItemType File -Path $loader -Force | Out-Null
     $ini = Join-Path $mo2 'ModOrganizer.ini'
-    "[General]`nselected_profile=@ByteArray(Codex)`n[customExecutables]`n1\title=@ByteArray(Test)`n1\binary=@ByteArray($loader)`n1\workingDirectory=@ByteArray($fixture)" | Set-Content -LiteralPath $ini -Encoding utf8
+    [IO.File]::WriteAllText($ini, "[General]`r`nselected_profile=@ByteArray(Codex)`r`n[customExecutables]`r`n1\title=@ByteArray(Test)`r`n1\binary=@ByteArray($loader)`r`n1\workingDirectory=@ByteArray($fixture)`r`n", [Text.UTF8Encoding]::new($false))
     $configPath = Join-Path $fixture 'config.json'; $lock = Join-Path $sessions 'lock.json'
     $fixtureManifestPath = Join-Path $fixture 'known-good-saves.json'
     $saveFiles = @('Save2_KnownGood.ess', 'Save2_KnownGood.skse') | ForEach-Object {
@@ -37,8 +37,8 @@ try {
     }
     [ordered]@{ contractVersion='1.0.0'; sourceProfile='Mad God Stable'; profileFingerprintSha256=(Get-TestProfileFingerprint $source); defaultFixtureId='interior'; fixtures=@([ordered]@{id='interior';label='Known-good interior';location='TestCell';loadName='Save2_KnownGood';files=$saveFiles}) } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $fixtureManifestPath -Encoding utf8
     [ordered]@{
-        contractVersion='0.4.0'; machine='fixture'; mo2=[ordered]@{root=$mo2;executable=$mo2Exe;ini=$ini;profilesDirectory=$profiles;modsDirectory=$mods;overwriteDirectory=(Join-Path $mo2 'overwrite');logsDirectory=(Join-Path $mo2 'logs');rootBuilderDefinitions=@();rootBuilderDataDirectory=(Join-Path $mo2 'rb');processNames=@('WorkspaceImpossibleMO2');gameProcessNames=@('WorkspaceImpossibleGame');runtimeProcessNames=@()};
-        defaults=[ordered]@{profile='Mad God Stable';testProfileSource='Mad God Stable';newGameFixtureManifest='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\known-good-saves.json';executable='Test'};storage=[ordered]@{sessionStaging=$sessions;archive=(Join-Path $fixture 'archive')};limits=[ordered]@{maxEnumeratedFiles=100;overwriteWarningFiles=10;overwriteBlockFiles=50;overwriteWarningBytes=1024;overwriteBlockBytes=4096;launchPendingGraceSeconds=30};session=[ordered]@{lockFile=$lock}
+        contractVersion='0.4.0'; machine='fixture'; mo2=[ordered]@{root=$mo2;executable=$mo2Exe;ini='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\MO2\ModOrganizer.ini';profilesDirectory='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\MO2\profiles';modsDirectory='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\MO2\mods';overwriteDirectory=(Join-Path $mo2 'overwrite');logsDirectory=(Join-Path $mo2 'logs');rootBuilderDefinitions=@();rootBuilderDataDirectory=(Join-Path $mo2 'rb');processNames=@('WorkspaceImpossibleMO2');gameProcessNames=@('WorkspaceImpossibleGame');runtimeProcessNames=@()};
+        defaults=[ordered]@{profile='Mad God Stable';testProfileSource='Mad God Stable';newGameFixtureManifest='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\known-good-saves.json';executable='Test'};storage=[ordered]@{sessionStaging='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\sessions';archive='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\archive'};limits=[ordered]@{maxEnumeratedFiles=100;overwriteWarningFiles=10;overwriteBlockFiles=50;overwriteWarningBytes=1024;overwriteBlockBytes=4096;launchPendingGraceSeconds=30};session=[ordered]@{lockFile='%SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT%\sessions\lock.json'}
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8
     Import-Module (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'mo2-control\MO2Control.psm1') -Force
     $config = Read-MO2ControlConfig -ConfigPath $configPath
@@ -56,6 +56,8 @@ try {
     if ($refreshedFixture.data.approval.reusableApprovalEligible -or [string]::IsNullOrWhiteSpace([string]$refreshedFixture.data.approval.oneShotReason)) { throw 'Shared fixture replacement was not explicitly classified as a one-shot approval.' }
     $created = & $entry create -ConfigPath $configPath -AccessId $accessId -Label weather -SavePolicy FreshGame -Confirm:$false | ConvertFrom-Json
     if (-not $created.ok -or $created.state -ne 'workspace-ready') { throw 'Workspace creation failed.' }
+    $expectedManifestPath = Join-Path (Join-Path $sessions 'workspaces') ($created.data.workspaceId + '.json')
+    if (-not (Test-Path -LiteralPath $expectedManifestPath -PathType Leaf)) { throw 'Workspace storage path did not expand its environment variable.' }
     if ($created.data.profileName -ne $created.data.profile -or $created.data.profileDirectory -ne $created.data.profilePath -or $created.data.modListPath -ne (Join-Path $created.data.profilePath 'modlist.txt')) { throw 'Workspace profile identity fields are not explicit and canonical.' }
     if (Test-Path -LiteralPath (Join-Path $created.data.profilePath 'saves\unknown.ess')) { throw 'Workspace inherited an unknown save.' }
     $verified = & $entry create -ConfigPath $configPath -AccessId $accessId -Label verified -SavePolicy VerifiedFixture -Confirm:$false | ConvertFrom-Json
@@ -86,7 +88,7 @@ try {
     if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace cleanup failed.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     if (-not $releasedAccess.ok) { throw 'Access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=26; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=28; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally {
     $env:SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT = $previousFixtureRoot

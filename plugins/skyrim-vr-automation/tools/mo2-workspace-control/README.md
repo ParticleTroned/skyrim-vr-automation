@@ -36,6 +36,9 @@ result reports the fixture ID, location, and `loadName` for a later game-load
 adapter. See `save-fixtures.example.json` for the portable schema.
 Environment variables in the manifest path, including `%LOCALAPPDATA%`, are
 expanded before the path is normalized.
+The controller applies the same expansion and unresolved-variable check to its
+configured MO2 INI, profiles, mods, and session-staging paths before any read
+or write.
 
 Use `fixture-status` to compare the manifest's expected stable-profile
 fingerprint and declared save hashes with their current actual values without

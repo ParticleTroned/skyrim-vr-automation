@@ -66,6 +66,13 @@ function Get-SafeName([string]$Value) {
     return $safe
 }
 
+function Resolve-WorkspaceConfiguredPath([string]$Path, [string]$Purpose) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw "$Purpose path is required." }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    if ($expanded -match '%[^%]+%') { throw "$Purpose path contains an unresolved environment variable: $Path" }
+    return [IO.Path]::GetFullPath($expanded)
+}
+
 function Get-ProfileSnapshot([string]$Path) {
     $records = @()
     foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Sort-Object FullName)) {
@@ -89,11 +96,11 @@ function Write-WorkspaceBytesAtomic([string]$Path, [byte[]]$Bytes) {
 }
 
 function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string]$StableProfile, [string]$EvidenceRoot, [switch]$WhatIf) {
-    $iniPath = [IO.Path]::GetFullPath([string]$Config.mo2.ini)
+    $iniPath = Resolve-WorkspaceConfiguredPath -Path ([string]$Config.mo2.ini) -Purpose 'MO2 INI'
     if (-not (Test-Path -LiteralPath $iniPath -PathType Leaf)) { throw "MO2 INI does not exist: $iniPath" }
     $beforeBytes = [IO.File]::ReadAllBytes($iniPath)
     $beforeText = [Text.Encoding]::UTF8.GetString($beforeBytes)
-    $selectionMatches = [regex]::Matches($beforeText, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)$')
+    $selectionMatches = [regex]::Matches($beforeText, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)\r?$')
     if ($selectionMatches.Count -ne 1) { throw "Expected exactly one selected_profile entry in MO2 INI; found $($selectionMatches.Count)." }
     $rawBeforeValue = $selectionMatches[0].Groups['value'].Value.Trim()
     $byteArrayMatch = [regex]::Match($rawBeforeValue, '^@ByteArray\((.*)\)$')
@@ -115,7 +122,7 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
             Write-WorkspaceBytesAtomic -Path $iniPath -Bytes ([Text.Encoding]::UTF8.GetBytes($afterText))
         }
         $verifiedText = [IO.File]::ReadAllText($iniPath, [Text.Encoding]::UTF8)
-        $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*$')
+        $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*\r?$')
         $verified = if ($verifiedMatches.Count -eq 1) { $verifiedMatches[0].Groups['value'].Value } else { $null }
         if ($verified -cne $StableProfile) { throw 'MO2 selected profile postcondition did not match the stable source.' }
         $receipt = [pscustomobject][ordered]@{
@@ -137,7 +144,8 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
 
 function Get-WorkspaceManifestPath($Config, [string]$Id) {
     if ([string]::IsNullOrWhiteSpace($Id) -or $Id -notmatch '^[a-z0-9-]+$') { throw 'WorkspaceId is missing or malformed.' }
-    return Join-Path (Join-Path ([string]$Config.storage.sessionStaging) 'workspaces') ($Id + '.json')
+    $stagingRoot = Resolve-WorkspaceConfiguredPath -Path ([string]$Config.storage.sessionStaging) -Purpose 'session staging'
+    return Join-Path (Join-Path $stagingRoot 'workspaces') ($Id + '.json')
 }
 
 function Resolve-VerifiedSaveFixture($Config, [string]$SourceName, [string]$SourcePath, $SourceSnapshot, [string]$RequestedManifestPath, [string]$RequestedFixtureId) {
@@ -260,8 +268,8 @@ try {
     $resolvedConfig = Resolve-MO2ControlConfigPath -ConfigPath $ConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control')
     if (-not $resolvedConfig.exists) { throw "MO2 configuration was not found: $($resolvedConfig.path)" }
     $config = Read-MO2ControlConfig -ConfigPath $resolvedConfig.path
-    $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
-    $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
+    $profilesRoot = Resolve-WorkspaceConfiguredPath -Path ([string]$config.mo2.profilesDirectory) -Purpose 'MO2 profiles directory'
+    $modsRoot = Resolve-WorkspaceConfiguredPath -Path ([string]$config.mo2.modsDirectory) -Purpose 'MO2 mods directory'
 
     if ($Command -in @('fixture-status', 'refresh-fixture')) {
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for fixture control.' }
