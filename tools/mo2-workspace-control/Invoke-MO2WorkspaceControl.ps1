@@ -33,6 +33,21 @@ $toolRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $toolRoot 'mo2-control\ConfigResolution.psm1') -Force
 Import-Module (Join-Path $toolRoot 'mo2-control\MO2Control.psm1') -Force
 
+function New-WorkspaceApprovalMetadata([string]$Subcommand) {
+    $hostExecutable = [string][Environment]::ProcessPath
+    if ([string]::IsNullOrWhiteSpace($hostExecutable)) { $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path }
+    $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
+    $oneShotCommands = @('refresh-fixture', 'release')
+    return [pscustomobject][ordered]@{
+        hostExecutable = $hostExecutable; entryPoint = $entryPoint; subcommand = $Subcommand
+        reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
+        reusableApprovalEligible = $Subcommand -notin $oneShotCommands
+        escalationUsuallyRequired = $Subcommand -notin @('inspect', 'fixture-status')
+        oneShotReason = if ($Subcommand -in $oneShotCommands) { 'Shared fixture replacement or recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
+        invocationRule = 'Use this literal prefix directly. Put changing access, workspace, mod, and evidence arguments afterward; do not hide the prefix in variables, -Command, pipelines, or a command string.'
+    }
+}
+
 function Write-WorkspaceJsonAtomic([string]$Path, $Value) {
     $parent = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
@@ -457,6 +472,7 @@ catch {
     $result = [pscustomobject][ordered]@{ ok = $false; command = $Command; state = 'tool-error'; errors = @($_.Exception.Message); data = @{} }
 }
 
+$result.data | Add-Member -NotePropertyName approval -NotePropertyValue (New-WorkspaceApprovalMetadata -Subcommand $Command) -Force
 $jsonParameters = @{ InputObject = $result; Depth = 18 }
 if ($Compact) { $jsonParameters['Compress'] = $true }
 ConvertTo-Json @jsonParameters

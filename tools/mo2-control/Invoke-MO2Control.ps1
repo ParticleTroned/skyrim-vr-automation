@@ -42,6 +42,28 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $configuration = $null
+
+function New-MO2ApprovalMetadata {
+    param([Parameter(Mandatory)][string]$Subcommand)
+    $hostExecutable = [string][Environment]::ProcessPath
+    if ([string]::IsNullOrWhiteSpace($hostExecutable)) {
+        $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path
+    }
+    $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
+    $oneShotCommands = @('recover-access', 'terminate-game', 'terminate')
+    $readOnlyCommands = @('inspect', 'validate', 'access-status', 'status', 'help')
+    return [pscustomobject][ordered]@{
+        hostExecutable = $hostExecutable
+        entryPoint = $entryPoint
+        subcommand = $Subcommand
+        reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
+        reusableApprovalEligible = $Subcommand -notin $oneShotCommands
+        escalationUsuallyRequired = $Subcommand -notin $readOnlyCommands
+        oneShotReason = if ($Subcommand -in $oneShotCommands) { 'Recovery ownership transfer or forced process termination must remain a one-shot approval.' } else { $null }
+        invocationRule = 'Use the literal host, entry-point, and subcommand shown here. Put changing IDs and paths afterward; do not wrap the call in -Command, variables, pipelines, or a command string.'
+    }
+}
+
 $sessionLocalConfig = Join-Path $PSScriptRoot 'config\machine.local.json'
 if ([string]::IsNullOrWhiteSpace($ConfigPath) -and (Test-Path -LiteralPath $sessionLocalConfig -PathType Leaf)) {
     # A prepare/recover-created controller bundle is self-contained. Prefer its
@@ -149,6 +171,7 @@ try {
     } }
 
     $result.data | Add-Member -NotePropertyName configuration -NotePropertyValue $configuration -Force
+    $result.data | Add-Member -NotePropertyName approval -NotePropertyValue (New-MO2ApprovalMetadata -Subcommand $Command) -Force
 }
 catch {
     $result = [pscustomobject][ordered]@{
@@ -164,6 +187,7 @@ catch {
             exceptionType = $_.Exception.GetType().FullName
             configuration = $configuration
             requestedConfigPath = $ConfigPath
+            approval = New-MO2ApprovalMetadata -Subcommand $Command
         }
     }
 }

@@ -14,6 +14,10 @@ edit `modlist.txt` ad hoc.
   stop-game, close, recover-close, stop, terminate, release, or recovery, read
   `../../tools/mo2-control/MO2-RUNBOOK.md` completely before acting. Read
   `../../tools/mo2-control/README.md` when command or schema details matter.
+- Before constructing any elevated MO2, workspace, or profile command, read
+  `../../tools/mo2-control/APPROVALS.md` completely and use the command's
+  returned `approval.reusablePrefix` when it is eligible. Never hide the
+  executable, entry point, or subcommand behind a variable or `-Command`.
 - For enabling, disabling, or restoring one exact mod marker, read
   `../../tools/mo2-profile-control/README.md` and inspect the entry point's
   parameter block before acting. For a DLL deployment, prefer the workspace
@@ -38,15 +42,17 @@ are:
 2. Start with `inspect`. Before any planned MO2 operation, call
    `request-access`, retain its exact `accessId`, and respect `access-busy`.
    An estimated duration is advisory only and never permits lease stealing.
-   Before any closed-state mutation, run `validate -AccessId $accessId
+   Before any closed-state mutation, run `validate -AccessId <literal-access-id>
    -RequireClosed` and account for every warning or block.
 3. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
 4. For a live run, call `prepare -AccessId` with the owned lease, retain its
    `sessionId` and returned `controllerPath`, then invoke every lifecycle
-   command through that session-scoped controller with the exact session
+   command through that literal session-scoped controller path with the exact session
    identity. The copied controller survives plugin cache replacement; do not
-   keep using the versioned plugin-cache entry point after prepare. Parse the JSON result; do not infer
+   keep using the versioned plugin-cache entry point after prepare. A shell
+   variable may retain data for local reasoning, but an approval request must
+   contain the literal path and subcommand reported by the tool. Parse the JSON result; do not infer
    success from process appearance alone.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.

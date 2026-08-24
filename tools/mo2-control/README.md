@@ -43,27 +43,27 @@ disabled, missing, or ambiguous in the requested profile.
 
 ## Quick start
 
-From this directory in PowerShell:
+Read `APPROVALS.md` before submitting an elevated command. Controllers report
+their exact direct invocation under `data.approval`; use its literal
+`reusablePrefix` when eligible. Approval requests must not use `$tool`,
+`$controller`, `-Command`, a pipeline, or a constructed command string.
 
-```powershell
-.\Invoke-MO2Control.ps1 help
-.\Invoke-MO2Control.ps1 inspect
-.\Invoke-MO2Control.ps1 request-access -Label "upscaling-api-tests" -EstimatedMinutes 20
-.\Invoke-MO2Control.ps1 validate -AccessId $accessId -RequireClosed
-.\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "upscaling-api-run"
-.\Invoke-MO2Control.ps1 prepare -Label "null-hmd-baseline" -WhatIf
-.\Invoke-MO2Control.ps1 recover-close -Label "stranded-mo2" -WhatIf
-.\Invoke-MO2Control.ps1 recover-rootbuilder -SessionId $sessionId -WhatIf
+Using the direct command shape (`<absolute-...>` values must be replaced with
+literal paths before execution):
+
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> help -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> inspect -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label upscaling-api-tests -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label upscaling-api-run -Compact
 ```
 
 Use `-Compact` for one-line JSON. Override the configured defaults only with an
 exact name:
 
-```powershell
-.\Invoke-MO2Control.ps1 validate `
-  -Profile "Codex" `
-  -Executable "Launch MGO - Do Not Unlock" `
-  -RequireClosed
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -Profile Codex -Executable "Launch MGO - Do Not Unlock" -RequireClosed -Compact
 ```
 
 Exit code `0` means the command completed without a failed check. Exit code `2`
@@ -130,24 +130,15 @@ If a task disappears while retaining a lease, `recover-access` requires the
 exact `accessId`, explicit `-ConfirmAbandoned`, and the same closed-state proof.
 An overdue estimate is never sufficient evidence of abandonment.
 
-The normal explicit workflow is:
+The normal explicit flow uses these separate direct calls. Read each JSON
+result, then substitute its literal returned identity into the next command:
 
-```powershell
-$access = .\Invoke-MO2Control.ps1 request-access `
-  -Label "weather-api-tests" -EstimatedMinutes 20 | ConvertFrom-Json
-$accessId = $access.data.access.accessId
-
-$validation = .\Invoke-MO2Control.ps1 validate `
-  -AccessId $accessId -RequireClosed | ConvertFrom-Json
-
-$prepared = .\Invoke-MO2Control.ps1 prepare `
-  -AccessId $accessId -Label "weather-api-run" | ConvertFrom-Json
-$sessionId = $prepared.data.session.sessionId
-$controller = $prepared.data.controllerPath
-
-# open/launch/status/stop work uses the exact SessionId
-& $controller release -SessionId $sessionId
-.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label weather-api-tests -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label weather-api-run -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> release -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
 For backward compatibility, `prepare` without `-AccessId` still acquires an
@@ -196,9 +187,9 @@ failed command then returns structured JSON without terminating that host.
 
 The retained cycle is:
 
-```powershell
-& $controller stop-game -SessionId $sessionId
-& $controller launch -SessionId $sessionId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> stop-game -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> launch -SessionId <literal-session-id> -Compact
 ```
 
 Resume is accepted only from a bounded stopped/failure state, with no game

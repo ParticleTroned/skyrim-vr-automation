@@ -29,6 +29,12 @@ location, archive, process names, and safety limits live in the ignored
 the doctor-reported configuration. Start from `config/machine.example.json`; do not
 commit the resulting machine file.
 
+Before any elevated invocation, read `APPROVALS.md`. Use a direct literal
+`pwsh.exe -NoProfile -NonInteractive -File <entrypoint> <subcommand>` shape and
+the result's `data.approval.reusablePrefix`. Variables in this runbook describe
+returned data only; they must not hide the executable, entry point, or
+subcommand in an approval request.
+
 `prepare` creates a uniquely named session directory in the configured staging
 location after authorization. The configured archive remains optional until
 bounded collection and verified archive commands are implemented. The game
@@ -62,10 +68,9 @@ install and overwrite are not long-term diagnostic stores.
 
 Run:
 
-```powershell
-Set-Location '<repository>\tools\mo2-control'
-.\Invoke-MO2Control.ps1 inspect
-.\Invoke-MO2Control.ps1 validate -RequireClosed
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> inspect -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -RequireClosed -Compact
 ```
 
 Proceed with a state-changing setup only when:
@@ -87,11 +92,9 @@ overwrite means “classify and relocate safely,” not “delete until green.�
 
 Before any planned MO2 use, request the shared resource:
 
-```powershell
-$access = .\Invoke-MO2Control.ps1 request-access `
-  -Label "short-task-name" -EstimatedMinutes 20 | ConvertFrom-Json
-$accessId = $access.data.access.accessId
-.\Invoke-MO2Control.ps1 validate -AccessId $accessId -RequireClosed
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label short-task-name -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -Compact
 ```
 
 If another task owns it, `state` is `access-busy`. The response includes its
@@ -104,8 +107,8 @@ Hold access only while operating MO2, Skyrim, its profile, or a live test
 session. Release it during code compilation, source editing, offline cache
 analysis, report writing, or any other phase that does not require MO2:
 
-```powershell
-.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
 The task remains responsible for its lease even when the estimate is overdue.
@@ -119,11 +122,8 @@ active RootBuilder deployment.
 Create a task workspace while holding access, then pass its returned profile
 explicitly to `prepare`:
 
-```powershell
-$workspace = ..\mo2-workspace-control\Invoke-MO2WorkspaceControl.ps1 create `
-  -AccessId $accessId -Label "short-test-name" -SavePolicy MainMenuOnly `
-  -Confirm:$false | ConvertFrom-Json
-$taskProfile = $workspace.data.profile
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
 ```
 
 At the end, release the evidence session, release the exact task workspace and
@@ -132,11 +132,9 @@ or delete a pre-existing shared mod.
 
 Preview first, then bind a session to the owned access lease:
 
-```powershell
-$preview = .\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "short-test-name" -WhatIf | ConvertFrom-Json
-$prepared = .\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "short-test-name" | ConvertFrom-Json
-$sessionId = $prepared.data.session.sessionId
-$controller = $prepared.data.controllerPath
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -WhatIf -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -Compact
 ```
 
 `prepare` requires closed state, validates the exact profile/executable pair,
@@ -169,9 +167,9 @@ that creates an implicit one-session lease which `release` removes.
 
 Open only the exact MO2/profile UI when no game launch is wanted:
 
-```powershell
-& $controller open -SessionId $sessionId
-& $controller close -SessionId $sessionId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> open -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> close -SessionId <literal-session-id> -Compact
 ```
 
 These visible-window operations must run as the logged-on interactive user
@@ -181,9 +179,9 @@ or loader is present. It may invoke the exact accessible control named
 
 Launch only with the identity returned by `prepare`:
 
-```powershell
-& $controller launch -SessionId $sessionId
-& $controller status -SessionId $sessionId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> launch -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> status -SessionId <literal-session-id> -Compact
 ```
 
 The implementation uses MO2's official `--profile NAME run --executable NAME`
@@ -193,9 +191,9 @@ reconstruct the loader path or mutate the selected profile.
 For repeated measurements in one owned session, retain MO2 and cycle only the
 game:
 
-```powershell
-& $controller stop-game -SessionId $sessionId
-& $controller launch -SessionId $sessionId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> stop-game -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> launch -SessionId <literal-session-id> -Compact
 ```
 
 `stop-game` never force-terminates and must prove the game/loader closed while
@@ -218,7 +216,8 @@ the actual route independently.
 
 ## Tidy session end
 
-1. Request graceful close with `& $controller stop -SessionId $sessionId`, then confirm with
+1. Request graceful close with the literal session controller's `stop
+   -SessionId <literal-session-id>`, then confirm with
    `validate -RequireClosed`. `stop` never force-terminates. If it returns
    `stop-incomplete` because the retained MO2 owner has no closeable window,
    use the same durable controller for the bounded escalation `stop-game`,
@@ -353,7 +352,8 @@ with `release`; a process-name-wide kill is unnecessary.
 Symptom: after Skyrim closes or fails to start, the retained exact MO2 owner
 shows a modal whose structure and text classify it as `failed-to-run`.
 
-Response: run `& $controller stop-game -SessionId $sessionId`. The controller
+Response: run the literal session controller's `stop-game -SessionId
+<literal-session-id>`. The controller
 targets only that structurally classified dialog, invokes its exact `OK` or
 `Close` control (or closes that exact known dialog), and records
 `mo2-retained-dialog-cleanup.json`. An unknown modal is never dismissed and
@@ -365,7 +365,7 @@ Symptom: MO2 was opened manually or by an earlier failed parameter set, no
 session lock exists, and a modal/VFS state prevents ordinary shutdown.
 
 Response: acquire access, then preview and run
-`recover-close -AccessId $accessId -Label "reason"` through the
+`recover-close -AccessId <literal-access-id> -Label "reason"` through the
 logged-on interactive user. It accepts exactly one process whose executable
 path equals the configured `ModOrganizer.exe`, refuses while a game/loader or
 another lock exists, creates a retained recovery audit, and uses the same exact

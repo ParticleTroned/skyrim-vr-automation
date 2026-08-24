@@ -10,30 +10,17 @@ RootBuilder deployment must be closed before `create`, `register-mod`, or
 `release`. Release any evidence session before mutating the workspace. All
 commands accept `-Compact` for one-line JSON.
 
-```powershell
-$workspace = .\Invoke-MO2WorkspaceControl.ps1 create `
-  -AccessId $accessId -Label 'weather-api' -SavePolicy MainMenuOnly | ConvertFrom-Json
-$workspaceId = $workspace.data.workspaceId
+For elevated use, follow `../mo2-control/APPROVALS.md`. Every result reports a
+literal command-specific `data.approval.reusablePrefix`. `create`,
+`register-mod`, and `ensure-mod-wins` are eligible for narrow reusable approval;
+`refresh-fixture` and `release` remain one-shot because they replace shared
+metadata or recursively remove exact owned paths.
 
-.\Invoke-MO2WorkspaceControl.ps1 register-mod `
-  -AccessId $accessId -WorkspaceId $workspaceId `
-  -ModName 'Codex Weather API Test 20260822' `
-  -ModDirectory '<MO2 mods>\Codex Weather API Test 20260822' `
-  -Placement Before -RelativeToMod 'Community Shaders' -Confirm:$false
-
-# Prefer this form for a newly deployed DLL mod. It enables the mod, places it
-# before every enabled loose-file provider of the exact path, and records the
-# provider inventory and verified postcondition.
-.\Invoke-MO2WorkspaceControl.ps1 register-mod `
-  -AccessId $accessId -WorkspaceId $workspaceId `
-  -ModName 'Codex Weather API Test 20260822' `
-  -ModDirectory '<MO2 mods>\Codex Weather API Test 20260822' `
-  -WinningPaths 'SKSE\Plugins\CommunityShaders.dll' -Confirm:$false
-
-.\Invoke-MO2WorkspaceControl.ps1 release `
-  -AccessId $accessId -WorkspaceId $workspaceId `
-  -CleanupOwnedMods -Confirm:$false
-.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label weather-api -SavePolicy MainMenuOnly -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> register-mod -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -ModName "Codex Weather API Test 20260822" -ModDirectory "<exact-mod-directory>" -WinningPaths "SKSE\Plugins\CommunityShaders.dll" -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> release -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -CleanupOwnedMods -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
 `MainMenuOnly` never authorizes loading a save. `FreshGame` records that a
