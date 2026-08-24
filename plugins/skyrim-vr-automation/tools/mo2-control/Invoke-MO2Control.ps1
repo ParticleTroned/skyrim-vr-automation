@@ -64,6 +64,22 @@ function New-MO2ApprovalMetadata {
     }
 }
 
+function Set-MO2ResultDataValue {
+    param(
+        [Parameter(Mandatory)]$Result,
+        [Parameter(Mandatory)][string]$Name,
+        $Value
+    )
+    if ($null -eq $Result.data) {
+        $Result.data = [ordered]@{}
+    }
+    if ($Result.data -is [Collections.IDictionary]) {
+        $Result.data[$Name] = $Value
+        return
+    }
+    $Result.data | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
 $sessionLocalConfig = Join-Path $PSScriptRoot 'config\machine.local.json'
 if ([string]::IsNullOrWhiteSpace($ConfigPath) -and (Test-Path -LiteralPath $sessionLocalConfig -PathType Leaf)) {
     # A prepare/recover-created controller bundle is self-contained. Prefer its
@@ -170,8 +186,8 @@ try {
         }
     } }
 
-    $result.data | Add-Member -NotePropertyName configuration -NotePropertyValue $configuration -Force
-    $result.data | Add-Member -NotePropertyName approval -NotePropertyValue (New-MO2ApprovalMetadata -Subcommand $Command) -Force
+    Set-MO2ResultDataValue -Result $result -Name configuration -Value $configuration
+    Set-MO2ResultDataValue -Result $result -Name approval -Value (New-MO2ApprovalMetadata -Subcommand $Command)
 }
 catch {
     $result = [pscustomobject][ordered]@{

@@ -8,6 +8,8 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   workspace, and profile controllers, document stable conversation-scoped
   prefix rules, and keep forced termination and overwrite/removal operations
   explicitly one-shot.
+- Preserve approval and configuration metadata in dictionary-backed lifecycle
+  results such as access acquisition and renewal.
 - Snapshot a self-contained lifecycle controller into every MO2 session so an
   installed plugin cache replacement cannot invalidate an active run.
 - Normalize MO2 profile directory/modlist identity, add compact workspace

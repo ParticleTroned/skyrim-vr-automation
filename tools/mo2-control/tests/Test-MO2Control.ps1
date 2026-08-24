@@ -142,6 +142,8 @@ selected_profile=@ByteArray(Codex)
     $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15 -WhatIf
     Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory) 'access request dry-run reports an advisory estimate without locking'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'access request dry-run creates no lock'
+    $entryAccessDryRun = & (Join-Path $packageRoot 'Invoke-MO2Control.ps1') request-access -ConfigPath $configPath -Label 'approval fixture' -EstimatedMinutes 5 -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-MO2Test ($entryAccessDryRun.ok -and $entryAccessDryRun.data.configuration.exists -and $entryAccessDryRun.data.approval.reusableApprovalEligible -and $entryAccessDryRun.data.approval.reusablePrefix[5] -eq 'request-access') 'dictionary-backed entry-point results retain configuration and approval metadata'
 
     $access = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15
     $accessId = [string]$access.data.access.accessId
