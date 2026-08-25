@@ -154,11 +154,31 @@ try {
     $profilePath = Join-Path $resolvedTestRoot 'mo2\profiles\Task\modlist.txt'
     $taskCache = Join-Path $modsRoot 'Task Cache\ShaderCache'
     $otherCache = Join-Path $modsRoot 'Other Cache\ShaderCache'
+    $expectedPluginRoot = Join-Path $modsRoot 'Expected Plugin\SKSE\Plugins'
+    $wrongPluginRoot = Join-Path $modsRoot 'Wrong Plugin\SKSE\Plugins'
     $overwriteCache = Join-Path $resolvedTestRoot 'mo2\overwrite\ShaderCache'
-    New-Item -ItemType Directory -Path $taskCache, $otherCache, $overwriteCache, (Split-Path -Parent $profilePath) -Force | Out-Null
+    New-Item -ItemType Directory -Path $taskCache, $otherCache, $expectedPluginRoot, $wrongPluginRoot, $overwriteCache, (Split-Path -Parent $profilePath) -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $taskCache '.codex-vfs-sentinel.txt') -Value 'task-owned cache provider' -Encoding utf8
     [IO.File]::WriteAllBytes((Join-Path $otherCache 'other-provider.bin'), [byte[]](4, 2))
-    Set-Content -LiteralPath $profilePath -Value @('+Task Cache', '+Other Cache') -Encoding utf8
+    $expectedPluginBytes = [byte[]](1, 4, 1, 5, 9)
+    $wrongPluginBytes = [byte[]](2, 7, 1, 8, 2)
+    $expectedPluginPath = Join-Path $expectedPluginRoot 'CommunityShaders.dll'
+    $wrongPluginPath = Join-Path $wrongPluginRoot 'CommunityShaders.dll'
+    [IO.File]::WriteAllBytes($expectedPluginPath, $expectedPluginBytes)
+    [IO.File]::WriteAllBytes($wrongPluginPath, $wrongPluginBytes)
+    $expectedPluginHash = (Get-FileHash -LiteralPath $expectedPluginPath -Algorithm SHA256).Hash
+    $wrongPluginHash = (Get-FileHash -LiteralPath $wrongPluginPath -Algorithm SHA256).Hash
+    [pscustomobject]@{
+        buildId = 'build-bound-fixture'
+        artifact = [pscustomobject]@{ fileName = 'CommunityShaders.dll'; sha256 = $expectedPluginHash; sizeBytes = $expectedPluginBytes.Length }
+        identity = [pscustomobject]@{ shaderCache = [pscustomobject]@{ abiId = 'abi-bound' } }
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $expectedPluginRoot 'CSX.BuildManifest.json') -Encoding utf8
+    [pscustomobject]@{
+        buildId = 'wrong-build-fixture'
+        artifact = [pscustomobject]@{ fileName = 'CommunityShaders.dll'; sha256 = $wrongPluginHash; sizeBytes = $wrongPluginBytes.Length }
+        identity = [pscustomobject]@{ shaderCache = [pscustomobject]@{ abiId = 'abi-bound' } }
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $wrongPluginRoot 'CSX.BuildManifest.json') -Encoding utf8
+    Set-Content -LiteralPath $profilePath -Value @('+Task Cache', '+Other Cache', '+Wrong Plugin', '+Expected Plugin') -Encoding utf8
 
     $boundCommon = @{
         CatalogRoot = $boundCatalogRoot
@@ -183,6 +203,16 @@ try {
     $wrongPath = Invoke-Catalog $wrongPathArgs
     Assert-Test (-not $wrongPath.ok -and $wrongPath.errors[0] -match 'does not match the exact winning MO2 provider') 'task preparation rejects a physical overwrite path when another loose-mod provider wins'
 
+    $wrongBuildArgs = @{} + $boundCommon
+    $wrongBuildArgs.Command = 'prepare'
+    $wrongBuildArgs.EvidenceDirectory = Join-Path $resolvedTestRoot 'wrong-build-evidence'
+    $wrongBuildArgs.Confirm = $false
+    $wrongBuild = Invoke-Catalog $wrongBuildArgs
+    Assert-Test (-not $wrongBuild.ok -and $wrongBuild.errors[0] -match "has build 'wrong-build-fixture'; expected 'build-bound-fixture'") 'provider-bound preparation rejects a different winning Community Shaders build'
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $wrongBuildArgs.EvidenceDirectory 'shader-cache-task.plan.json'))) 'a wrong DLL winner is rejected before a task cache plan is created'
+
+    Set-Content -LiteralPath $profilePath -Value @('+Task Cache', '+Other Cache', '+Expected Plugin', '+Wrong Plugin') -Encoding utf8
+
     $boundPrepareArgs = @{} + $boundCommon
     $boundPrepareArgs.Command = 'prepare'
     $boundPrepareArgs.EvidenceDirectory = $boundEvidence
@@ -190,7 +220,23 @@ try {
     $boundPrepareArgs.Confirm = $false
     $boundPrepare = Invoke-Catalog $boundPrepareArgs
     Assert-Test ($boundPrepare.ok -and [string]$boundPrepare.data.task.cacheBinding.modName -eq 'Task Cache') 'task preparation resolves and records the exact winning loose-mod cache provider'
+    Assert-Test ([string]$boundPrepare.data.task.cacheBinding.communityShadersPlugin.modName -eq 'Expected Plugin' -and [string]$boundPrepare.data.task.cacheBinding.communityShadersPlugin.buildId -eq 'build-bound-fixture') 'task preparation binds the expected winning Community Shaders build and provider'
     Assert-Test ([string]$boundPrepare.data.task.before.root -eq [IO.Path]::GetFullPath($taskCache)) 'task preparation snapshots the provider-backed cache instead of global overwrite'
+
+    [IO.File]::WriteAllBytes($expectedPluginPath, [byte[]](9, 9, 9))
+    $changedPluginComplete = Invoke-Catalog @{
+        Command = 'complete'
+        CatalogRoot = $boundCatalogRoot
+        EvidenceDirectory = $boundEvidence
+        WorkingSetStatus = 'unverified'
+        BlockingProcessNames = $blockers
+        Confirm = $false
+        Compact = $true
+        NoExit = $true
+    }
+    Assert-Test (-not $changedPluginComplete.ok -and $changedPluginComplete.errors[0] -match 'DLL hash does not match its build manifest') 'task completion rejects physical Community Shaders DLL drift'
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $boundEvidence 'shader-cache-task.completion.json'))) 'DLL drift leaves the cache transaction open'
+    [IO.File]::WriteAllBytes($expectedPluginPath, $expectedPluginBytes)
 
     $emptyComplete = Invoke-Catalog @{
         Command = 'complete'

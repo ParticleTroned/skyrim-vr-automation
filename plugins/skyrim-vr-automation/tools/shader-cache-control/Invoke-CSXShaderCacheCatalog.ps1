@@ -472,6 +472,88 @@ function Test-SamePath([string]$Left, [string]$Right) {
         [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Resolve-CommunityShadersPluginBinding(
+    [string]$BoundProfilePath,
+    [string]$BoundModsPath,
+    [string]$ExpectedBuildId,
+    [string]$ExpectedShaderCacheAbi) {
+    if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) { return $null }
+
+    $relativePluginPath = 'SKSE\Plugins\CommunityShaders.dll'
+    $providerResult = Invoke-Transaction 'providers' @{
+        ProfilePath = $BoundProfilePath
+        ModsPath = $BoundModsPath
+        RelativeCachePath = $relativePluginPath
+        DeepInventory = $false
+    }
+    $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
+    if ($null -eq $winner) {
+        throw "The exact profile has no enabled loose-mod provider for '$relativePluginPath', so build '$ExpectedBuildId' cannot be proven before launch."
+    }
+    if ([string]$winner.providerType -cne 'file') {
+        throw "The winning '$relativePluginPath' provider is not a file: $($winner.providerPath)"
+    }
+
+    $pluginPath = [IO.Path]::GetFullPath([string]$winner.providerPath)
+    if (-not (Test-Path -LiteralPath $pluginPath -PathType Leaf)) {
+        throw "The winning Community Shaders plugin does not exist: $pluginPath"
+    }
+    $manifestPath = Join-Path ([string]$winner.modRoot) 'SKSE\Plugins\CSX.BuildManifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "The winning Community Shaders provider '$($winner.modName)' has no CSX.BuildManifest.json, so expected build '$ExpectedBuildId' cannot be proven."
+    }
+
+    try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -Depth 40 }
+    catch { throw "The winning Community Shaders build manifest is invalid JSON: $manifestPath. $($_.Exception.Message)" }
+    $manifestBuildId = [string](Get-PropertyValue $manifest 'buildId' '')
+    if (-not [string]::Equals($manifestBuildId, $ExpectedBuildId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The winning Community Shaders provider '$($winner.modName)' has build '$manifestBuildId'; expected '$ExpectedBuildId'."
+    }
+
+    $artifact = Get-PropertyValue $manifest 'artifact' $null
+    $manifestArtifactHash = if ($null -ne $artifact) { [string](Get-PropertyValue $artifact 'sha256' '') } else { '' }
+    if ($manifestArtifactHash -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "The winning Community Shaders build manifest has no exact artifact SHA-256: $manifestPath"
+    }
+    $actualArtifactHash = (Get-FileHash -LiteralPath $pluginPath -Algorithm SHA256).Hash
+    if (-not [string]::Equals($actualArtifactHash, $manifestArtifactHash, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The winning Community Shaders DLL hash does not match its build manifest. Expected '$manifestArtifactHash'; observed '$actualArtifactHash'."
+    }
+    if ($null -ne $artifact -and (Test-Property $artifact 'sizeBytes')) {
+        $actualBytes = (Get-Item -LiteralPath $pluginPath).Length
+        if ([long]$artifact.sizeBytes -ne $actualBytes) {
+            throw "The winning Community Shaders DLL size does not match its build manifest. Expected '$($artifact.sizeBytes)'; observed '$actualBytes'."
+        }
+    }
+
+    $manifestAbi = ''
+    $identity = Get-PropertyValue $manifest 'identity' $null
+    if ($null -ne $identity) {
+        $shaderCache = Get-PropertyValue $identity 'shaderCache' $null
+        if ($null -ne $shaderCache) { $manifestAbi = [string](Get-PropertyValue $shaderCache 'abiId' '') }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedShaderCacheAbi) -and
+        -not [string]::Equals($manifestAbi, $ExpectedShaderCacheAbi, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The winning Community Shaders provider '$($winner.modName)' has shader-cache ABI '$manifestAbi'; expected '$ExpectedShaderCacheAbi'."
+    }
+
+    return [pscustomobject][ordered]@{
+        mode = 'mo2-winning-loose-plugin-provider'
+        profilePath = [string]$providerResult.data.profilePath
+        profileSha256 = [string]$providerResult.data.profileSha256
+        modsPath = [string]$providerResult.data.modsPath
+        relativePluginPath = [string]$providerResult.data.relativeCachePath
+        modName = [string]$winner.modName
+        modRoot = [string]$winner.modRoot
+        pluginPath = $pluginPath
+        manifestPath = [IO.Path]::GetFullPath($manifestPath)
+        lineNumber = [int]$winner.lineNumber
+        buildId = $manifestBuildId
+        artifactSha256 = $actualArtifactHash
+        shaderCacheAbi = $manifestAbi
+    }
+}
+
 function Resolve-TaskCacheBinding {
     $bindingValues = @($ProfilePath, $ModsPath, $CacheModName)
     $hasBindingInput = @($bindingValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
@@ -508,6 +590,7 @@ function Resolve-TaskCacheBinding {
     if (-not [string]::IsNullOrWhiteSpace($CachePath) -and -not (Test-SamePath $CachePath $resolvedCache)) {
         throw "CachePath does not match the exact winning MO2 provider. Supplied: $([IO.Path]::GetFullPath($CachePath)); winner: $resolvedCache"
     }
+    $pluginBinding = Resolve-CommunityShadersPluginBinding $ProfilePath $ModsPath $BuildId $ShaderCacheAbi
     return [pscustomobject][ordered]@{
         cachePath = $resolvedCache
         binding = [pscustomobject][ordered]@{
@@ -521,6 +604,7 @@ function Resolve-TaskCacheBinding {
             cachePath = $resolvedCache
             lineNumber = [int]$winner.lineNumber
             providerType = [string]$winner.providerType
+            communityShadersPlugin = $pluginBinding
         }
     }
 }
@@ -545,6 +629,20 @@ function Assert-TaskCacheBindingCurrent($Binding) {
         -not (Test-SamePath ([string]$winner.cachePath) ([string]$Binding.cachePath))) {
         $observed = if ($null -eq $winner) { '<none>' } else { "'$($winner.modName)' at '$($winner.cachePath)'" }
         throw "The winning MO2 shader-cache provider changed after prepare. Expected '$($Binding.modName)' at '$($Binding.cachePath)'; observed $observed."
+    }
+
+    if ((Test-Property $Binding 'communityShadersPlugin') -and $null -ne $Binding.communityShadersPlugin) {
+        $expectedPlugin = $Binding.communityShadersPlugin
+        $currentPlugin = Resolve-CommunityShadersPluginBinding `
+            ([string]$Binding.profilePath) `
+            ([string]$Binding.modsPath) `
+            ([string]$expectedPlugin.buildId) `
+            ([string]$expectedPlugin.shaderCacheAbi)
+        if (-not [string]::Equals([string]$currentPlugin.modName, [string]$expectedPlugin.modName, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-SamePath ([string]$currentPlugin.pluginPath) ([string]$expectedPlugin.pluginPath)) -or
+            -not [string]::Equals([string]$currentPlugin.artifactSha256, [string]$expectedPlugin.artifactSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "The winning Community Shaders plugin provider changed after shader-cache prepare. Expected '$($expectedPlugin.modName)' at '$($expectedPlugin.pluginPath)'."
+        }
     }
 }
 

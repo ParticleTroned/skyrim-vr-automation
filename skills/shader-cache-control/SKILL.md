@@ -43,7 +43,9 @@ replacement is never implied by a request to compare caches.
 2. With MO2 and Skyrim closed, call catalog `prepare` before the MO2 session
    with the exact `-ProfilePath`, `-ModsPath`, `-CacheModName`, and
    `-RequireMaterializedOutput`. Retain `shader-cache-task.plan.json` with the
-   task evidence. No compatible match is nonfatal unless the task requires
+   task evidence. Pass the exact `-BuildId` so provider-bound preparation also
+   proves the winning Community Shaders DLL manifest, artifact hash, and cache
+   ABI. No compatible match is nonfatal unless the task requires
    `-RequireMatch`. Never substitute an unproven global overwrite path for the
    bound winning provider.
 3. Never clear a live cache merely to get a clean experiment. Use the task plan

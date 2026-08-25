@@ -118,6 +118,11 @@ different. With no match it safely leaves the current tree in use; add
 Provider-bound preparation enumerates the exact profile, requires
 `-CacheModName` to be the winning enabled loose provider, records the modlist
 hash and physical provider path, and rejects a conflicting `-CachePath`.
+When `-BuildId` is supplied, preparation also fails closed unless the winning
+loose `SKSE\Plugins\CommunityShaders.dll` provider has a matching
+`CSX.BuildManifest.json`, artifact hash, and shader-cache ABI. The task plan
+records both bindings so a cache provider proof cannot mask a different DLL
+winner. Completion revalidates the DLL identity as well as the cache provider.
 Unbound paths whose parent is MO2 `overwrite` are refused because that physical
 tree is not proof of the runtime VFS write destination.
 
