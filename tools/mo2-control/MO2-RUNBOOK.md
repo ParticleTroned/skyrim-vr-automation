@@ -119,10 +119,14 @@ active RootBuilder deployment.
 
 ## Automated preparation
 
-Create a task workspace while holding access, then pass its returned profile
-explicitly to `prepare`:
+Prepare the configured stable source while holding access, create a task
+workspace from it, then pass the returned task profile explicitly to `prepare`.
+Source preparation moves every legacy `ShaderCache*` directory out of overwrite
+into a newly enabled stable-source mod; creation refuses to continue if any
+remain:
 
 ```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
 ```
 

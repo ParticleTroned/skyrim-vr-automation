@@ -117,6 +117,16 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($validation.data.selectedProfile -eq 'Codex') 'ByteArray profile is decoded'
     Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').Count -eq 1) 'registered executable is parsed exactly once'
     Assert-MO2Test (@($validation.checks | Where-Object { $_.name -eq 'registered-binary-owner-mod' -and $_.status -eq 'pass' }).Count -eq 1) 'enabled executable owner mod passes validation'
+    $legacySwap = Join-Path $overwrite 'ShaderCache.Swap'
+    New-Item -ItemType Directory -Path $legacySwap -Force | Out-Null
+    'compiled' | Set-Content -LiteralPath (Join-Path $legacySwap 'fixture.bin') -Encoding utf8
+    (Get-Item -LiteralPath $legacySwap).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-2)
+    $cacheInspection = Invoke-MO2Inspect -Config $config
+    $cacheValidation = Invoke-MO2Validate -Config $config -RequireClosed
+    Assert-MO2Test ($cacheInspection.ok -and @($cacheInspection.data.overwrite.shaderCaches).Count -eq 1) 'inspection inventories forbidden overwrite ShaderCache trees'
+    Assert-MO2Test ($cacheInspection.data.overwrite.shaderCaches[0].role -eq 'temporary-swap' -and $cacheInspection.data.overwrite.shaderCaches[0].stale) 'inspection classifies a persistent ShaderCache.Swap tree as stale temporary state'
+    Assert-MO2Test (-not $cacheValidation.ok -and @($cacheValidation.checks | Where-Object { $_.name -eq 'overwrite' -and $_.status -eq 'fail' }).Count -eq 1) 'validation blocks launch while a ShaderCache tree remains in overwrite'
+    Remove-Item -LiteralPath $legacySwap -Recurse -Force
     '-Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
     $disabledOwner = Invoke-MO2Validate -Config $config -RequireClosed
     Assert-MO2Test (-not $disabledOwner.ok) 'disabled executable owner mod blocks validation'

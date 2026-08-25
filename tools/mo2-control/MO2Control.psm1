@@ -299,6 +299,35 @@ function Get-MO2BoundedDirectoryStats {
     return [pscustomobject]$result
 }
 
+function Get-MO2OverwriteShaderCacheRecords {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][int]$MaximumFiles
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return @() }
+    $matches = @(Get-ChildItem -LiteralPath $Path -Directory -Recurse -Force -ErrorAction Stop | Where-Object { $_.Name -match '^(?i:ShaderCache)(?:[.]|$)' } | Sort-Object FullName)
+    $roots = @()
+    foreach ($match in $matches) {
+        if (@($roots | Where-Object { $match.FullName.StartsWith($_.path + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { continue }
+        $stats = Get-MO2BoundedDirectoryStats -Path $match.FullName -MaximumFiles $MaximumFiles
+        $role = switch -Regex ($match.Name) {
+            '^(?i:ShaderCache)$' { 'active'; break }
+            '^(?i:ShaderCache[.]Previous)$' { 'rollback'; break }
+            '^(?i:ShaderCache[.]Swap)$' { 'temporary-swap'; break }
+            default { 'legacy-other' }
+        }
+        $ageHours = [math]::Round(([DateTime]::UtcNow - $match.LastWriteTimeUtc).TotalHours, 2)
+        $roots += [pscustomobject][ordered]@{
+            name = $match.Name; role = $role; relativePath = [IO.Path]::GetRelativePath($Path, $match.FullName)
+            path = $match.FullName; fileCount = $stats.fileCount; bytes = $stats.bytes
+            truncated = $stats.truncated; errors = @($stats.errors); lastWriteTimeUtc = $match.LastWriteTimeUtc.ToString('o')
+            ageHours = $ageHours; stale = $role -eq 'temporary-swap' -and $ageHours -ge 1
+        }
+    }
+    return @($roots)
+}
+
 function Get-MO2JsonRecord {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -482,6 +511,9 @@ function Get-MO2InspectionData {
     $gameProcesses = @(Get-MO2ProcessRecords -Names @($Config.mo2.gameProcessNames))
     $runtimeProcesses = @(Get-MO2ProcessRecords -Names @($Config.mo2.runtimeProcessNames))
 
+    $overwrite = Get-MO2BoundedDirectoryStats -Path $overwriteRoot -MaximumFiles ([int]$Config.limits.maxEnumeratedFiles)
+    $overwrite | Add-Member -NotePropertyName shaderCaches -NotePropertyValue @(Get-MO2OverwriteShaderCacheRecords -Path $overwriteRoot -MaximumFiles ([int]$Config.limits.maxEnumeratedFiles))
+
     return [pscustomobject][ordered]@{
         machine = [string]$Config.machine
         config = [pscustomobject][ordered]@{
@@ -503,7 +535,7 @@ function Get-MO2InspectionData {
             game = @($gameProcesses)
             runtime = @($runtimeProcesses)
         }
-        overwrite = Get-MO2BoundedDirectoryStats -Path $overwriteRoot -MaximumFiles ([int]$Config.limits.maxEnumeratedFiles)
+        overwrite = $overwrite
         rootBuilder = Get-MO2RootBuilderRecords -Config $Config
         storage = [pscustomobject][ordered]@{
             staging = Get-MO2StorageRecord -Path ([string]$Config.storage.sessionStaging)
@@ -575,12 +607,14 @@ function Invoke-MO2Inspect {
     $checks += New-MO2Check -Name 'process-state' -Status 'info' -Message "MO2=$($data.processes.mo2.Count), game=$($data.processes.game.Count), runtime=$($data.processes.runtime.Count)."
     $overwriteNeedsAttention = (
         $data.overwrite.errors.Count -gt 0 -or
+        $data.overwrite.shaderCaches.Count -gt 0 -or
         $data.overwrite.truncated -or
         $data.overwrite.fileCount -ge [int]$Config.limits.overwriteWarningFiles -or
         $data.overwrite.bytes -ge [long]$Config.limits.overwriteWarningBytes
     )
     $checks += New-MO2Check -Name 'overwrite-scan' -Status $(if ($overwriteNeedsAttention) { 'warn' } else { 'pass' }) -Message $(
         if ($data.overwrite.errors.Count -gt 0) { 'Overwrite inspection completed with filesystem errors.' }
+        elseif ($data.overwrite.shaderCaches.Count -gt 0) { "Overwrite contains $($data.overwrite.shaderCaches.Count) forbidden ShaderCache tree(s); run workspace prepare-source before testing." }
         elseif ($data.overwrite.truncated) { "Overwrite inspection stopped at the configured limit of $($Config.limits.maxEnumeratedFiles) files." }
         elseif ($overwriteNeedsAttention) { "Overwrite needs attention: $($data.overwrite.fileCount) files using $($data.overwrite.bytes) bytes." }
         else { "Overwrite contains $($data.overwrite.fileCount) files using $($data.overwrite.bytes) bytes." }
@@ -664,6 +698,9 @@ function Invoke-MO2Validate {
     }
     elseif ($data.overwrite.errors.Count -gt 0) {
         $checks += New-MO2Check -Name 'overwrite' -Status 'fail' -Message 'MO2 overwrite inspection encountered filesystem errors.' -Details $data.overwrite
+    }
+    elseif ($data.overwrite.shaderCaches.Count -gt 0) {
+        $checks += New-MO2Check -Name 'overwrite' -Status 'fail' -Message "MO2 overwrite contains forbidden ShaderCache trees. Move them into an enabled stable-profile mod with workspace prepare-source before launch: $($data.overwrite.shaderCaches.relativePath -join ', ')." -Details $data.overwrite
     }
     elseif ($data.overwrite.truncated -or $data.overwrite.fileCount -ge [int]$Config.limits.overwriteBlockFiles -or $data.overwrite.bytes -ge [long]$Config.limits.overwriteBlockBytes) {
         $checks += New-MO2Check -Name 'overwrite' -Status 'fail' -Message "MO2 overwrite exceeds or cannot be proven below the automation safety limit: files=$($data.overwrite.fileCount), bytes=$($data.overwrite.bytes), truncated=$($data.overwrite.truncated)." -Details $data.overwrite

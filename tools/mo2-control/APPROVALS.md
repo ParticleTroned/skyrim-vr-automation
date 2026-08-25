@@ -52,8 +52,9 @@ Do not propose reusable approval for:
 
 - `recover-access`, because it transfers an abandoned lease;
 - `terminate-game` or `terminate`, because they force process termination;
-- workspace `refresh-fixture` or `release`, because they replace shared fixture
-  metadata or recursively remove exact owned workspace paths;
+- workspace `refresh-fixture`, `prepare-source`, or `release`, because they
+  replace shared fixture metadata, move overwrite cache trees into a shared
+  stable mod, or recursively remove exact owned workspace paths;
 - any profile-control mutation, because it overwrites `modlist.txt` under its
   exact backup transaction.
 

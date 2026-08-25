@@ -23,9 +23,11 @@ edit `modlist.txt` ad hoc.
   parameter block before acting. For a DLL deployment, prefer the workspace
   controller's `-WinningPaths` transaction; do not guess MO2 priority order.
 - For every independent test task, read
-  `../../tools/mo2-workspace-control/README.md` and create a unique task profile
-  from `defaults.testProfileSource` before preparing a session. Never use an
-  experimental alternate profile as an implicit template.
+  `../../tools/mo2-workspace-control/README.md`, run `prepare-source` to move
+  every `ShaderCache*` directory out of overwrite, and create a unique task
+  profile from `defaults.testProfileSource` before preparing a session. Never
+  use an experimental alternate profile as an implicit template, and never
+  hand off a task profile while a ShaderCache directory remains in overwrite.
 - Treat the repository-root `AGENTS.md` as binding operational policy.
 
 Resolve all paths from this skill's installed location. The main entry points

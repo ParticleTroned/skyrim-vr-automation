@@ -3,7 +3,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'register-mod', 'ensure-mod-wins', 'release')]
+    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'prepare-source', 'register-mod', 'ensure-mod-wins', 'release')]
     [string]$Command,
 
     [string]$ConfigPath,
@@ -37,13 +37,13 @@ function New-WorkspaceApprovalMetadata([string]$Subcommand) {
     $hostExecutable = [string][Environment]::ProcessPath
     if ([string]::IsNullOrWhiteSpace($hostExecutable)) { $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path }
     $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
-    $oneShotCommands = @('refresh-fixture', 'release')
+    $oneShotCommands = @('refresh-fixture', 'prepare-source', 'release')
     return [pscustomobject][ordered]@{
         hostExecutable = $hostExecutable; entryPoint = $entryPoint; subcommand = $Subcommand
         reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
         reusableApprovalEligible = $Subcommand -notin $oneShotCommands
         escalationUsuallyRequired = $Subcommand -notin @('inspect', 'fixture-status')
-        oneShotReason = if ($Subcommand -in $oneShotCommands) { 'Shared fixture replacement or recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
+        oneShotReason = if ($Subcommand -eq 'refresh-fixture') { 'Shared fixture replacement must remain a one-shot approval.' } elseif ($Subcommand -eq 'prepare-source') { 'Moving overwrite cache trees into a shared stable-profile mod must remain a one-shot approval.' } elseif ($Subcommand -eq 'release') { 'Recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
         invocationRule = 'Use this literal prefix directly. Put changing access, workspace, mod, and evidence arguments afterward; do not hide the prefix in variables, -Command, pipelines, or a command string.'
     }
 }
@@ -244,14 +244,129 @@ function Read-OwnedWorkspace($Config, [string]$Id, [string]$OwnedAccessId) {
     return [pscustomobject]@{ path = $path; data = $manifest }
 }
 
-function Assert-AccessAndClosed($Config, [string]$OwnedAccessId, [string]$Profile) {
+function Assert-AccessAndClosed($Config, [string]$OwnedAccessId, [string]$Profile, [switch]$AllowOverwriteShaderCaches) {
     if ([string]::IsNullOrWhiteSpace($OwnedAccessId)) { throw '-AccessId is required for workspace mutation.' }
     $access = Invoke-MO2AccessStatus -Config $Config -AccessId $OwnedAccessId
     if (-not $access.ok -or -not $access.data.owned) { throw 'The exact MO2 access lease is not owned by this task.' }
     if (-not [string]::IsNullOrWhiteSpace([string]$access.data.access.sessionId)) { throw 'Release the active MO2 evidence session before mutating a test workspace.' }
     $validation = Invoke-MO2Validate -Config $Config -Profile $Profile -RequireClosed -OwnedAccessId $OwnedAccessId
-    if (-not $validation.ok) { throw "MO2 closed-state validation failed: $($validation.errors -join '; ')" }
+    if (-not $validation.ok) {
+        $failedChecks = @($validation.checks | Where-Object status -eq 'fail')
+        $onlyExpectedCaches = $AllowOverwriteShaderCaches -and $failedChecks.Count -eq 1 -and $failedChecks[0].name -eq 'overwrite' -and @($validation.data.overwrite.shaderCaches).Count -gt 0
+        if (-not $onlyExpectedCaches) { throw "MO2 closed-state validation failed: $($validation.errors -join '; ')" }
+    }
     return $validation
+}
+
+function Get-OverwriteShaderCacheDirectories($Config) {
+    $overwriteRoot = [IO.Path]::GetFullPath([string]$Config.mo2.overwriteDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $overwriteRoot -PathType Container)) { return @() }
+    $matches = @(Get-ChildItem -LiteralPath $overwriteRoot -Directory -Recurse -Force | Where-Object { $_.Name -match '^(?i:ShaderCache)(?:[.]|$)' } | Sort-Object FullName)
+    $roots = @()
+    foreach ($match in $matches) {
+        $nested = @($roots | Where-Object { $match.FullName.StartsWith($_.FullName + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+        if (-not $nested) { $roots += $match }
+    }
+    return @($roots)
+}
+
+function Get-DirectorySummary([string]$Path) {
+    $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force)
+    return [pscustomobject][ordered]@{
+        files = $files.Count
+        bytes = [long](($files | Measure-Object -Property Length -Sum).Sum ?? 0)
+    }
+}
+
+function Move-OverwriteShaderCachesToStableMod($Config, [string]$SourceName, [string]$SourcePath, [string]$ModsRoot, [switch]$WhatIf) {
+    $overwriteRoot = [IO.Path]::GetFullPath([string]$Config.mo2.overwriteDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $cacheDirectories = @(Get-OverwriteShaderCacheDirectories -Config $Config)
+    if ($cacheDirectories.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            state = 'clean'; sourceProfile = $SourceName; overwriteDirectory = $overwriteRoot
+            movedDirectories = @(); modName = $null; modDirectory = $null; receiptPath = $null
+        }
+    }
+
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+    $modName = 'CSX Legacy Shader Cache - ' + $stamp
+    $modDirectory = [IO.Path]::GetFullPath((Join-Path $ModsRoot $modName))
+    if (-not $modDirectory.StartsWith($ModsRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Generated shader-cache mod path escaped the configured mods directory.' }
+    if (Test-Path -LiteralPath $modDirectory) { throw "Generated shader-cache mod already exists: $modDirectory" }
+    $modListPath = Join-Path $SourcePath 'modlist.txt'
+    if (-not (Test-Path -LiteralPath $modListPath -PathType Leaf)) { throw "Stable source modlist does not exist: $modListPath" }
+    $evidenceRoot = Join-Path (Join-Path ([string]$Config.storage.sessionStaging) 'source-preparation') ($stamp + '-' + (Get-SafeName $SourceName))
+    $profileEvidence = Join-Path $evidenceRoot 'profile-registration'
+    $receiptPath = Join-Path $evidenceRoot 'shader-cache-migration.receipt.json'
+    $moves = @($cacheDirectories | ForEach-Object {
+        $relative = [IO.Path]::GetRelativePath($overwriteRoot, $_.FullName)
+        if ([IO.Path]::IsPathRooted($relative) -or $relative.StartsWith('..')) { throw "Shader-cache source escaped overwrite: $($_.FullName)" }
+        $summary = Get-DirectorySummary -Path $_.FullName
+        [pscustomobject][ordered]@{
+            relativePath = $relative; sourcePath = $_.FullName
+            destinationPath = [IO.Path]::GetFullPath((Join-Path $modDirectory $relative))
+            files = $summary.files; bytes = $summary.bytes
+        }
+    })
+    if ($WhatIf) {
+        return [pscustomobject][ordered]@{
+            state = 'migration-planned'; sourceProfile = $SourceName; overwriteDirectory = $overwriteRoot
+            movedDirectories = $moves; modName = $modName; modDirectory = $modDirectory; receiptPath = $receiptPath
+        }
+    }
+
+    $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
+    $modListBefore = [IO.File]::ReadAllBytes($modListPath)
+    try {
+        New-Item -ItemType Directory -Path $modDirectory -Force | Out-Null
+        foreach ($move in $moves) {
+            $destinationParent = Split-Path -Parent ([string]$move.destinationPath)
+            if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) { New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null }
+            [IO.Directory]::Move([string]$move.sourcePath, [string]$move.destinationPath)
+        }
+        $registration = & $profileTool register -ProfilePath $modListPath -ModName $modName -ModDirectory $modDirectory -Placement End -RegisterEnabled -EvidenceDirectory $profileEvidence -BlockingProcessNames @('ModOrganizer', 'SkyrimVR', 'sksevr_loader') -Confirm:$false | ConvertFrom-Json
+        if (-not $registration.enabled) { throw 'Stable source profile did not enable the migrated shader-cache mod.' }
+        $remaining = @(Get-OverwriteShaderCacheDirectories -Config $Config)
+        if ($remaining.Count -ne 0) { throw "Overwrite shader-cache postcondition failed; remaining: $($remaining.FullName -join ', ')" }
+        foreach ($move in $moves) {
+            if (Test-Path -LiteralPath ([string]$move.sourcePath)) { throw "Shader-cache source still exists after move: $($move.sourcePath)" }
+            if (-not (Test-Path -LiteralPath ([string]$move.destinationPath) -PathType Container)) { throw "Shader-cache destination is missing after move: $($move.destinationPath)" }
+            $after = Get-DirectorySummary -Path ([string]$move.destinationPath)
+            if ($after.files -ne $move.files -or $after.bytes -ne $move.bytes) { throw "Shader-cache move summary mismatch: $($move.relativePath)" }
+        }
+        $receipt = [pscustomobject][ordered]@{
+            contractVersion = '1.0.0'; operation = 'move-overwrite-shader-caches-to-stable-mod'
+            sourceProfile = $SourceName; sourceProfileDirectory = $SourcePath; overwriteDirectory = $overwriteRoot
+            modName = $modName; modDirectory = $modDirectory; movedDirectories = $moves
+            profileRegistrationReceipt = [string]$registration.receiptPath; completedUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        Write-WorkspaceJsonAtomic -Path $receiptPath -Value $receipt
+        return [pscustomobject][ordered]@{
+            state = 'migrated'; sourceProfile = $SourceName; overwriteDirectory = $overwriteRoot
+            movedDirectories = $moves; modName = $modName; modDirectory = $modDirectory; receiptPath = $receiptPath
+        }
+    }
+    catch {
+        $failure = $_.Exception.Message
+        $rollbackErrors = @()
+        try { Write-WorkspaceBytesAtomic -Path $modListPath -Bytes $modListBefore } catch { $rollbackErrors += "modlist: $($_.Exception.Message)" }
+        foreach ($move in @($moves | Sort-Object { ([string]$_.relativePath).Length } -Descending)) {
+            if (Test-Path -LiteralPath ([string]$move.destinationPath) -PathType Container) {
+                try {
+                    $sourceParent = Split-Path -Parent ([string]$move.sourcePath)
+                    if (-not (Test-Path -LiteralPath $sourceParent -PathType Container)) { New-Item -ItemType Directory -Path $sourceParent -Force | Out-Null }
+                    [IO.Directory]::Move([string]$move.destinationPath, [string]$move.sourcePath)
+                }
+                catch { $rollbackErrors += "$($move.relativePath): $($_.Exception.Message)" }
+            }
+        }
+        try {
+            if ((Test-Path -LiteralPath $modDirectory -PathType Container) -and @(Get-ChildItem -LiteralPath $modDirectory -Force).Count -eq 0) { Remove-Item -LiteralPath $modDirectory -Force }
+        }
+        catch { $rollbackErrors += "mod directory: $($_.Exception.Message)" }
+        if ($rollbackErrors.Count -gt 0) { throw "Shader-cache migration failed. Rollback needs attention: $($rollbackErrors -join '; '). Original failure: $failure" }
+        throw "Shader-cache migration failed and was rolled back. $failure"
+    }
 }
 
 try {
@@ -312,11 +427,26 @@ try {
             $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'fixture-refreshed' }); data = $status }
         }
     }
+    elseif ($Command -eq 'prepare-source') {
+        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for source preparation.' }
+        $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName -AllowOverwriteShaderCaches
+        $sourcePath = [IO.Path]::GetFullPath((Join-Path $profilesRoot $sourceName))
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
+        $preparation = if ($PSCmdlet.ShouldProcess([string]$config.mo2.overwriteDirectory, "move every ShaderCache folder into a new enabled mod in stable profile '$sourceName'")) {
+            Move-OverwriteShaderCachesToStableMod -Config $config -SourceName $sourceName -SourcePath $sourcePath -ModsRoot $modsRoot
+        }
+        else {
+            Move-OverwriteShaderCachesToStableMod -Config $config -SourceName $sourceName -SourcePath $sourcePath -ModsRoot $modsRoot -WhatIf
+        }
+        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = [string]$preparation.state; data = $preparation }
+    }
     elseif ($Command -eq 'create') {
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required; test workspaces never infer a stable source from the ordinary session default.' }
         $validation = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName
         $sourcePath = Join-Path $profilesRoot $sourceName
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
+        $unmanagedCaches = @(Get-OverwriteShaderCacheDirectories -Config $config)
+        if ($unmanagedCaches.Count -gt 0) { throw "Overwrite contains ShaderCache folders. Run prepare-source for '$sourceName' before creating a task workspace: $($unmanagedCaches.FullName -join ', ')" }
         $workspaceId = '{0}-{1}-{2}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ').ToLowerInvariant()), (Get-SafeName $Label), ([guid]::NewGuid().ToString('N').Substring(0, 8))
         $profileName = 'Codex Task - ' + $workspaceId
         $profilePath = Join-Path $profilesRoot $profileName

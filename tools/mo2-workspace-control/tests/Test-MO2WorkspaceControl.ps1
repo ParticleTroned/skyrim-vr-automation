@@ -23,6 +23,14 @@ try {
     'known-good-save' | Set-Content -LiteralPath (Join-Path $source 'saves\Save2_KnownGood.ess') -Encoding utf8
     'known-good-cosave' | Set-Content -LiteralPath (Join-Path $source 'saves\Save2_KnownGood.skse') -Encoding utf8
     'existing-provider' | Set-Content -LiteralPath (Join-Path $loaderMod 'SKSE\Plugins\Example.dll') -Encoding utf8
+    foreach ($cachePath in @(
+        (Join-Path $mo2 'overwrite\ShaderCache'),
+        (Join-Path $mo2 'overwrite\ShaderCache.Previous'),
+        (Join-Path $mo2 'overwrite\Root\Data\ShaderCache.Swap')
+    )) {
+        New-Item -ItemType Directory -Path $cachePath -Force | Out-Null
+        ('compiled-' + [IO.Path]::GetFileName($cachePath)) | Set-Content -LiteralPath (Join-Path $cachePath 'fixture.bin') -Encoding utf8
+    }
     $mo2Exe = Join-Path $mo2 'ModOrganizer.exe'; $loader = Join-Path $loaderMod 'loader.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null; New-Item -ItemType File -Path $loader -Force | Out-Null
     $ini = Join-Path $mo2 'ModOrganizer.ini'
@@ -49,6 +57,14 @@ try {
     $fixtureStatus = $fixtureStatusRaw | ConvertFrom-Json
     if (-not $fixtureStatus.ok -or $fixtureStatus.state -ne 'fixture-valid') { throw 'Fixture status did not validate the original manifest.' }
     if (-not $fixtureStatus.data.approval.reusableApprovalEligible -or @($fixtureStatus.data.approval.reusablePrefix).Count -ne 6 -or $fixtureStatus.data.approval.reusablePrefix[4] -ne [IO.Path]::GetFullPath($entry) -or $fixtureStatus.data.approval.reusablePrefix[5] -ne 'fixture-status') { throw 'Fixture status did not expose its exact reusable approval prefix.' }
+    $blockedCreate = & $entry create -ConfigPath $configPath -AccessId $accessId -Label blocked-by-cache -SavePolicy FreshGame -Confirm:$false -NoExit | ConvertFrom-Json
+    if ($blockedCreate.ok -or $blockedCreate.errors[0] -notmatch 'prepare-source') { throw 'Workspace creation did not block unmanaged ShaderCache folders in overwrite.' }
+    $prepared = & $entry prepare-source -ConfigPath $configPath -AccessId $accessId -Confirm:$false -Compact | ConvertFrom-Json
+    if (-not $prepared.ok -or $prepared.state -ne 'migrated' -or @($prepared.data.movedDirectories).Count -ne 3) { throw "Stable source cache preparation failed: $($prepared | ConvertTo-Json -Depth 8 -Compress)" }
+    if ($prepared.data.approval.reusableApprovalEligible -or [string]::IsNullOrWhiteSpace([string]$prepared.data.approval.oneShotReason)) { throw 'Shader-cache migration was not classified as one-shot.' }
+    if (@(Get-ChildItem -LiteralPath (Join-Path $mo2 'overwrite') -Directory -Recurse -Force | Where-Object Name -Match '^(?i:ShaderCache)(?:[.]|$)').Count -ne 0) { throw 'ShaderCache directories remained in overwrite after preparation.' }
+    if ((Get-Content -LiteralPath (Join-Path $source 'modlist.txt') -Raw) -notmatch ('(?m)^\+' + [regex]::Escape([string]$prepared.data.modName) + '\r?$')) { throw 'Migrated shader-cache mod was not enabled in the stable source.' }
+    foreach ($move in @($prepared.data.movedDirectories)) { if (-not (Test-Path -LiteralPath ([string]$move.destinationPath) -PathType Container)) { throw "Migrated ShaderCache destination is missing: $($move.destinationPath)" } }
     'stable-profile-drift' | Set-Content -LiteralPath (Join-Path $source 'fixture-drift.txt') -Encoding utf8
     $staleStatus = & $entry fixture-status -ConfigPath $configPath -Compact | ConvertFrom-Json
     if ($staleStatus.state -ne 'fixture-stale' -or $staleStatus.data.expectedProfileFingerprintSha256 -eq $staleStatus.data.actualProfileFingerprintSha256) { throw 'Fixture drift did not report expected and actual fingerprints.' }
@@ -87,6 +103,6 @@ try {
     if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace cleanup failed.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     if (-not $releasedAccess.ok) { throw 'Access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=26; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=33; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally { if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }

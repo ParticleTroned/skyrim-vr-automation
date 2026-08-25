@@ -5,6 +5,14 @@ explicitly configured, known-good `defaults.testProfileSource`. It never uses
 the ordinary session default as an implicit template and never copies unknown
 or unlisted saves.
 
+Before `create`, run `prepare-source` under the same MO2 access lease. It scans
+overwrite recursively for every directory named `ShaderCache` or beginning
+`ShaderCache.`, including the legacy `ShaderCache.Previous` and
+`ShaderCache.Swap` trees. If any exist, it moves their complete relative trees
+into one newly named MO2 mod and enables that mod in the stable source profile
+under an exact modlist backup and receipt. `create` refuses to clone while any
+such directory remains in overwrite.
+
 The task must own an MO2 access lease. MO2, Skyrim, loaders, and active
 RootBuilder deployment must be closed before `create`, `register-mod`, or
 `release`. Release any evidence session before mutating the workspace. All
@@ -13,10 +21,12 @@ commands accept `-Compact` for one-line JSON.
 For elevated use, follow `../mo2-control/APPROVALS.md`. Every result reports a
 literal command-specific `data.approval.reusablePrefix`. `create`,
 `register-mod`, and `ensure-mod-wins` are eligible for narrow reusable approval;
-`refresh-fixture` and `release` remain one-shot because they replace shared
-metadata or recursively remove exact owned paths.
+`refresh-fixture`, `prepare-source`, and `release` remain one-shot because they
+replace shared metadata, move overwrite trees into a shared stable mod, or
+recursively remove exact owned paths.
 
 ```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label weather-api -SavePolicy MainMenuOnly -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> register-mod -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -ModName "Codex Weather API Test 20260822" -ModDirectory "<exact-mod-directory>" -WinningPaths "SKSE\Plugins\CommunityShaders.dll" -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> release -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -CleanupOwnedMods -Confirm:$false -Compact

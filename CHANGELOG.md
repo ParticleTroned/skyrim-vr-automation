@@ -4,6 +4,12 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Require task profiles to clone the configured primary/stable profile only
+  after recursively evacuating every legacy `ShaderCache*` directory from MO2
+  overwrite into a newly enabled, receipt-backed VFS mod.
+- Classify active, rollback, swap, and other legacy ShaderCache trees during
+  MO2 inspection, flag persistent swap state, and block launch until overwrite
+  is cache-free.
 - Publish exact direct-invocation approval metadata from the MO2 lifecycle,
   workspace, and profile controllers, document stable conversation-scoped
   prefix rules, and keep forced termination and overwrite/removal operations

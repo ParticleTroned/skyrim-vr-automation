@@ -41,6 +41,13 @@ Validation also resolves a registered executable stored under MO2's `mods`
 directory back to its owning mod. Launch is blocked when that exact mod is
 disabled, missing, or ambiguous in the requested profile.
 
+Overwrite is scanned recursively for `ShaderCache` and `ShaderCache.*`
+directories. Inspection classifies active, rollback (`.Previous`), temporary
+swap (`.Swap`), and other legacy trees and marks swap state older than one hour
+as stale. Validation blocks launch whenever any such tree remains, regardless
+of ordinary file-count thresholds; use workspace `prepare-source` to move the
+complete trees into an enabled stable-profile mod first.
+
 ## Quick start
 
 Read `APPROVALS.md` before submitting an elevated command. Controllers report
@@ -63,7 +70,7 @@ Use `-Compact` for one-line JSON. Override the configured defaults only with an
 exact name:
 
 ```text
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -Profile Codex -Executable "Launch MGO - Do Not Unlock" -RequireClosed -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -Profile <exact-profile-name> -Executable "Launch MGO - Do Not Unlock" -RequireClosed -Compact
 ```
 
 Exit code `0` means the command completed without a failed check. Exit code `2`
