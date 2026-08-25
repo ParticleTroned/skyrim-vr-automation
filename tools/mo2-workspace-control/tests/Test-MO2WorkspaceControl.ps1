@@ -26,7 +26,10 @@ try {
     $mo2Exe = Join-Path $mo2 'ModOrganizer.exe'; $loader = Join-Path $loaderMod 'loader.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null; New-Item -ItemType File -Path $loader -Force | Out-Null
     $ini = Join-Path $mo2 'ModOrganizer.ini'
-    "[General]`nselected_profile=@ByteArray(Codex)`n[customExecutables]`n1\title=@ByteArray(Test)`n1\binary=@ByteArray($loader)`n1\workingDirectory=@ByteArray($fixture)" | Set-Content -LiteralPath $ini -Encoding utf8
+    [IO.File]::WriteAllText(
+        $ini,
+        "[General]`r`nselected_profile=@ByteArray(Codex)`r`n[customExecutables]`r`n1\title=@ByteArray(Test)`r`n1\binary=@ByteArray($loader)`r`n1\workingDirectory=@ByteArray($fixture)`r`n",
+        [Text.UTF8Encoding]::new($false))
     $configPath = Join-Path $fixture 'config.json'; $lock = Join-Path $sessions 'lock.json'
     $fixtureManifestPath = Join-Path $fixture 'known-good-saves.json'
     $saveFiles = @('Save2_KnownGood.ess', 'Save2_KnownGood.skse') | ForEach-Object {

@@ -93,7 +93,7 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
     if (-not (Test-Path -LiteralPath $iniPath -PathType Leaf)) { throw "MO2 INI does not exist: $iniPath" }
     $beforeBytes = [IO.File]::ReadAllBytes($iniPath)
     $beforeText = [Text.Encoding]::UTF8.GetString($beforeBytes)
-    $selectionMatches = [regex]::Matches($beforeText, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)$')
+    $selectionMatches = [regex]::Matches($beforeText, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)\r?$')
     if ($selectionMatches.Count -ne 1) { throw "Expected exactly one selected_profile entry in MO2 INI; found $($selectionMatches.Count)." }
     $rawBeforeValue = $selectionMatches[0].Groups['value'].Value.Trim()
     $byteArrayMatch = [regex]::Match($rawBeforeValue, '^@ByteArray\((.*)\)$')
@@ -115,7 +115,7 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
             Write-WorkspaceBytesAtomic -Path $iniPath -Bytes ([Text.Encoding]::UTF8.GetBytes($afterText))
         }
         $verifiedText = [IO.File]::ReadAllText($iniPath, [Text.Encoding]::UTF8)
-        $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*$')
+        $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*\r?$')
         $verified = if ($verifiedMatches.Count -eq 1) { $verifiedMatches[0].Groups['value'].Value } else { $null }
         if ($verified -cne $StableProfile) { throw 'MO2 selected profile postcondition did not match the stable source.' }
         $receipt = [pscustomobject][ordered]@{
