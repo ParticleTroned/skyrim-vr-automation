@@ -9,6 +9,14 @@ param(
     [string]$CatalogRoot,
     [string]$ConfigPath,
     [string]$CachePath,
+
+    [string]$ProfilePath,
+
+    [string]$ModsPath,
+
+    [string]$CacheModName,
+
+    [string]$RelativeCachePath = 'ShaderCache',
     [string]$EvidenceDirectory,
     [string]$SourceCachePath,
     [string]$ExpectedSourceTreeSha256,
@@ -27,6 +35,8 @@ param(
     [switch]$AllowSourceMismatch,
     [string]$CompatibilityReason,
     [switch]$RequireMatch,
+
+    [switch]$RequireMaterializedOutput,
     [switch]$Promote,
     [ValidateSet('known-working', 'unverified', 'failed')]
     [string]$WorkingSetStatus = 'unverified',
@@ -455,9 +465,100 @@ function Invoke-Transaction([string]$Action, [hashtable]$Arguments) {
     return $parsed
 }
 
+function Test-SamePath([string]$Left, [string]$Right) {
+    return [string]::Equals(
+        [IO.Path]::GetFullPath($Left),
+        [IO.Path]::GetFullPath($Right),
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-TaskCacheBinding {
+    $bindingValues = @($ProfilePath, $ModsPath, $CacheModName)
+    $hasBindingInput = @($bindingValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
+    if (-not $hasBindingInput) {
+        $resolvedCache = Assert-SafeDirectory $CachePath 'live shader-cache' -MustExist
+        if ([IO.Path]::GetFileName((Split-Path -Parent $resolvedCache)) -ieq 'overwrite') {
+            throw 'Refusing an unbound MO2 overwrite ShaderCache path. Supply -ProfilePath, -ModsPath, and -CacheModName so prepare can bind the exact winning loose-mod provider.'
+        }
+        return [pscustomobject][ordered]@{ cachePath = $resolvedCache; binding = $null }
+    }
+
+    if (@($bindingValues | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+        throw 'MO2 cache binding requires -ProfilePath, -ModsPath, and -CacheModName together.'
+    }
+
+    $providerResult = Invoke-Transaction 'providers' @{
+        ProfilePath = $ProfilePath
+        ModsPath = $ModsPath
+        RelativeCachePath = $RelativeCachePath
+        DeepInventory = $false
+    }
+    $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
+    if ($null -eq $winner) {
+        throw "The exact profile has no enabled loose-mod provider for '$RelativeCachePath'. Create and enable a task-owned cache mod before prepare."
+    }
+    if (-not [string]::Equals([string]$winner.modName, $CacheModName, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Expected cache mod '$CacheModName' is not the winning enabled '$RelativeCachePath' provider. Current winner: '$($winner.modName)'."
+    }
+    if ([string]$winner.providerType -cne 'directory') {
+        throw "The winning '$RelativeCachePath' provider is not a directory: $($winner.providerPath)"
+    }
+
+    $resolvedCache = Assert-SafeDirectory ([string]$winner.cachePath) 'winning live shader-cache' -MustExist
+    if (-not [string]::IsNullOrWhiteSpace($CachePath) -and -not (Test-SamePath $CachePath $resolvedCache)) {
+        throw "CachePath does not match the exact winning MO2 provider. Supplied: $([IO.Path]::GetFullPath($CachePath)); winner: $resolvedCache"
+    }
+    return [pscustomobject][ordered]@{
+        cachePath = $resolvedCache
+        binding = [pscustomobject][ordered]@{
+            mode = 'mo2-winning-loose-provider'
+            profilePath = [string]$providerResult.data.profilePath
+            profileSha256 = [string]$providerResult.data.profileSha256
+            modsPath = [string]$providerResult.data.modsPath
+            relativeCachePath = [string]$providerResult.data.relativeCachePath
+            modName = [string]$winner.modName
+            modRoot = [string]$winner.modRoot
+            cachePath = $resolvedCache
+            lineNumber = [int]$winner.lineNumber
+            providerType = [string]$winner.providerType
+        }
+    }
+}
+
+function Assert-TaskCacheBindingCurrent($Binding) {
+    if ($null -eq $Binding) { return }
+    if ([string]$Binding.mode -cne 'mo2-winning-loose-provider') {
+        throw "Unsupported task cache binding mode: $($Binding.mode)"
+    }
+    $providerResult = Invoke-Transaction 'providers' @{
+        ProfilePath = [string]$Binding.profilePath
+        ModsPath = [string]$Binding.modsPath
+        RelativeCachePath = [string]$Binding.relativeCachePath
+        DeepInventory = $false
+    }
+    if ([string]$providerResult.data.profileSha256 -cne [string]$Binding.profileSha256) {
+        throw 'The task MO2 modlist changed after shader-cache prepare; refusing to complete against an unproven provider order.'
+    }
+    $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
+    if ($null -eq $winner -or
+        -not [string]::Equals([string]$winner.modName, [string]$Binding.modName, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-SamePath ([string]$winner.cachePath) ([string]$Binding.cachePath))) {
+        $observed = if ($null -eq $winner) { '<none>' } else { "'$($winner.modName)' at '$($winner.cachePath)'" }
+        throw "The winning MO2 shader-cache provider changed after prepare. Expected '$($Binding.modName)' at '$($Binding.cachePath)'; observed $observed."
+    }
+}
+
+function Get-MaterializedCacheEntries($Inventory) {
+    $markerNames = @('.codex-vfs-sentinel.txt', '.gitkeep')
+    return @($Inventory.entries | Where-Object {
+        [IO.Path]::GetFileName([string]$_.relativePath) -notin $markerNames
+    })
+}
+
 function Prepare-TaskCache($Storage) {
     Assert-CompatibilityInput
-    $resolvedCache = Assert-SafeDirectory $CachePath 'live shader-cache' -MustExist
+    $cacheResolution = Resolve-TaskCacheBinding
+    $resolvedCache = [string]$cacheResolution.cachePath
     $evidence = Assert-SafeDirectory $EvidenceDirectory 'shader-cache task evidence'
     $planPath = Join-Path $evidence 'shader-cache-task.plan.json'
     if (Test-Path -LiteralPath $planPath) { throw "Refusing to overwrite an existing task cache plan: $planPath" }
@@ -466,7 +567,7 @@ function Prepare-TaskCache($Storage) {
 
     if ($WhatIfPreference) {
         $current = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
-        return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; current = $current.data; selection = $selection; action = $(if ($null -eq $selection.selected) { 'use-current-no-match' } elseif ([string]$selection.selected.treeSha256 -ieq [string]$current.data.treeSha256) { 'use-current-exact' } else { 'seed-selected' }) }
+        return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; current = $current.data; selection = $selection; cacheBinding = $cacheResolution.binding; requireMaterializedOutput = [bool]$RequireMaterializedOutput; action = $(if ($null -eq $selection.selected) { 'use-current-no-match' } elseif ([string]$selection.selected.treeSha256 -ieq [string]$current.data.treeSha256) { 'use-current-exact' } else { 'seed-selected' }) }
     }
 
     $snapshot = Invoke-Transaction 'snapshot' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
@@ -478,6 +579,8 @@ function Prepare-TaskCache($Storage) {
         createdUtc = [DateTime]::UtcNow.ToString('o')
         catalog = $Storage
         cachePath = $resolvedCache
+        cacheBinding = $cacheResolution.binding
+        requireMaterializedOutput = [bool]$RequireMaterializedOutput
         evidenceDirectory = $evidence
         request = New-CompatibilityRecord
         selection = $selection
@@ -509,27 +612,48 @@ function Prepare-TaskCache($Storage) {
     $plan.action = $action
     $plan.seedReceiptPath = $(if ($null -ne $seed) { [string]$seed.data.seedReceiptPath } else { $null })
     Write-JsonAtomic $planPath $plan
-    return [pscustomobject][ordered]@{ state = 'prepared'; planPath = $planPath; action = $action; selection = $selection; before = $snapshot.data.inventory; seed = $seed }
+    return [pscustomobject][ordered]@{ state = 'prepared'; planPath = $planPath; action = $action; selection = $selection; cacheBinding = $cacheResolution.binding; requireMaterializedOutput = [bool]$RequireMaterializedOutput; before = $snapshot.data.inventory; seed = $seed }
 }
 
 function Complete-TaskCache($Storage) {
-    $resolvedCache = Assert-SafeDirectory $CachePath 'live shader-cache' -MustExist
     $evidence = Assert-SafeDirectory $EvidenceDirectory 'shader-cache task evidence' -MustExist
     $planPath = Join-Path $evidence 'shader-cache-task.plan.json'
     $completionPath = Join-Path $evidence 'shader-cache-task.completion.json'
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) { throw "Task cache plan does not exist: $planPath" }
     if (Test-Path -LiteralPath $completionPath) { throw "Refusing to overwrite an existing task cache completion: $completionPath" }
     $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -Depth 40
-    if ([IO.Path]::GetFullPath([string]$plan.cachePath) -ne $resolvedCache) { throw 'Task cache plan owns a different live cache path.' }
+    $resolvedCache = Assert-SafeDirectory ([string]$plan.cachePath) 'planned live shader-cache' -MustExist
+    if (-not [string]::IsNullOrWhiteSpace($CachePath) -and -not (Test-SamePath $CachePath $resolvedCache)) { throw 'Task cache plan owns a different live cache path.' }
     if ([IO.Path]::GetFullPath([string]$plan.catalog.path) -ne [IO.Path]::GetFullPath([string]$Storage.path)) { throw 'Task cache plan owns a different catalog root.' }
     if ($Promote -and $WorkingSetStatus -ne 'known-working') { throw '-Promote requires -WorkingSetStatus known-working.' }
+    $cacheBinding = if ((Test-Property $plan 'cacheBinding') -and $null -ne $plan.cacheBinding) { $plan.cacheBinding } else { $null }
+    Assert-TaskCacheBindingCurrent $cacheBinding
+    $requireMaterialized = [bool]$RequireMaterializedOutput -or
+        ((Test-Property $plan 'requireMaterializedOutput') -and [bool]$plan.requireMaterializedOutput)
 
     if ($WhatIfPreference) {
         $current = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
-        return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; completionPath = $completionPath; current = $current.data; wouldRestore = $true; wouldPromote = [bool]$Promote }
+        $materialized = @(Get-MaterializedCacheEntries $current.data)
+        return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; completionPath = $completionPath; current = $current.data; cacheBinding = $cacheBinding; requireMaterializedOutput = $requireMaterialized; materializedFiles = $materialized.Count; wouldRestore = $true; wouldPromote = [bool]$Promote }
     }
 
     $currentBeforeRestore = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
+    $materializedEntries = @(Get-MaterializedCacheEntries $currentBeforeRestore.data)
+    if ($requireMaterialized -and $materializedEntries.Count -eq 0) {
+        $failurePath = Join-Path $evidence 'shader-cache-task.materialization-failure.json'
+        $failure = [pscustomobject][ordered]@{
+            contractVersion = $contractVersion
+            state = 'materialization-missing'
+            observedUtc = [DateTime]::UtcNow.ToString('o')
+            planPath = $planPath
+            cachePath = $resolvedCache
+            cacheBinding = $cacheBinding
+            inventory = $currentBeforeRestore.data
+            ignoredMarkerNames = @('.codex-vfs-sentinel.txt', '.gitkeep')
+        }
+        Write-JsonAtomic $failurePath $failure
+        throw "Expected materialized shader-cache output at '$resolvedCache', but the exact bound tree contains no files beyond automation markers. The task transaction remains open and the live tree was not restored. Evidence: $failurePath"
+    }
     $restore = Invoke-Transaction 'restore' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
     $promoted = $null
     if ($Promote) {
@@ -550,7 +674,8 @@ function Complete-TaskCache($Storage) {
         state = 'complete'
         completedUtc = [DateTime]::UtcNow.ToString('o')
         planPath = $planPath
-        workingTree = [pscustomobject][ordered]@{ status = $WorkingSetStatus; inventory = $currentBeforeRestore.data; preservedPath = [string]$restore.data.displacedPath }
+        cacheBinding = $cacheBinding
+        workingTree = [pscustomobject][ordered]@{ status = $WorkingSetStatus; inventory = $currentBeforeRestore.data; materializedFiles = $materializedEntries.Count; preservedPath = [string]$restore.data.displacedPath }
         restoredTreeSha256 = [string]$restore.data.baseline.treeSha256
         promoted = $promoted
     }

@@ -33,21 +33,30 @@ replacement is never implied by a request to compare caches.
 
 ## Task cache lifecycle
 
-1. For a Skyrim task that may compile CSX shaders, determine the exact cache
-   path, shader-cache ABI, game runtime, render path, shader-source SHA-256,
-   build identity, preset SHA-256, and task tags. Do not infer semantic
-   compatibility from names or timestamps.
-2. With MO2 and Skyrim closed, call catalog `prepare` before the MO2 session.
-   Retain `shader-cache-task.plan.json` with the task evidence. No compatible
-   match is nonfatal unless the task requires `-RequireMatch`.
+1. For a Skyrim task that may compile CSX shaders, create and enable a uniquely
+   named task-owned loose mod containing
+   `ShaderCache\.codex-vfs-sentinel.txt`, and make it the winning loose
+   `ShaderCache` provider. Determine the exact shader-cache ABI, game runtime,
+   render path, shader-source SHA-256, build identity, preset SHA-256, and task
+   tags. Do not infer the runtime write target, semantic compatibility, or
+   priority from names or timestamps.
+2. With MO2 and Skyrim closed, call catalog `prepare` before the MO2 session
+   with the exact `-ProfilePath`, `-ModsPath`, `-CacheModName`, and
+   `-RequireMaterializedOutput`. Retain `shader-cache-task.plan.json` with the
+   task evidence. No compatible match is nonfatal unless the task requires
+   `-RequireMatch`. Never substitute an unproven global overwrite path for the
+   bound winning provider.
 3. Never clear a live cache merely to get a clean experiment. Use the task plan
    and exact seeding transaction. A source mismatch requires both
    `-AllowSourceMismatch` and a written `-CompatibilityReason`; it never
    bypasses ABI, runtime, render-path, known-working, or required-tag gates.
 4. After MO2 and Skyrim are closed, call catalog `complete` before releasing
-   the task workspace. It preserves the task result and restores the exact
-   pre-task cache. Promote only after the run provides affirmative evidence
-   that the result is known-working.
+   the task workspace. It revalidates the profile and winning provider,
+   preserves the task result, and restores the exact pre-task cache. If
+   materialization is missing, retain the task mod and open transaction,
+   diagnose the VFS routing, and retry completion only after real output is
+   present. Promote only after the run provides affirmative evidence that the
+   result is known-working.
 5. Preserve the plan, transaction receipts, completion receipt, catalog
    manifest, source/build/preset identities, profiler evidence, and any cache
    comparison report together. Do not delete content-addressed objects or edit

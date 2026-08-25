@@ -88,17 +88,26 @@ First admit a receipt-proven snapshot:
   -Confirm:$false
 ```
 
-Prepare a closed task cache immediately before launching MO2:
+For an MO2 task, create and enable a uniquely named task cache mod containing
+`ShaderCache\.codex-vfs-sentinel.txt`. Put it at the winning loose-mod priority,
+then bind preparation to that exact provider. Do not infer global `overwrite` as
+the write target: MO2 can route new VFS files into an enabled provider or an
+executable-specific output mod.
+
+Prepare the closed task cache immediately before launching MO2:
 
 ```powershell
 .\Invoke-CSXShaderCacheCatalog.ps1 prepare `
-  -CachePath 'D:\MO2\mods\Task Cache\ShaderCache' `
+  -ProfilePath 'D:\MO2\profiles\Task Profile\modlist.txt' `
+  -ModsPath 'D:\MO2\mods' `
+  -CacheModName 'Codex Task Cache - task-id' `
   -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
   -ShaderCacheAbi '<exact ABI>' `
   -ShaderSourceSha256 '<exact source-tree SHA-256>' `
   -BuildId '<build identity>' `
   -PresetSha256 '<preset SHA-256>' `
   -RequiredTags quality,full-render `
+  -RequireMaterializedOutput `
   -Confirm:$false
 ```
 
@@ -106,12 +115,16 @@ Prepare a closed task cache immediately before launching MO2:
 selects the best compatible known-working snapshot and seeds it only when it is
 different. With no match it safely leaves the current tree in use; add
 `-RequireMatch` when a task must not proceed without a catalog baseline.
+Provider-bound preparation enumerates the exact profile, requires
+`-CacheModName` to be the winning enabled loose provider, records the modlist
+hash and physical provider path, and rejects a conflicting `-CachePath`.
+Unbound paths whose parent is MO2 `overwrite` are refused because that physical
+tree is not proof of the runtime VFS write destination.
 
 After the game and MO2 are closed, complete the cache transaction:
 
 ```powershell
 .\Invoke-CSXShaderCacheCatalog.ps1 complete `
-  -CachePath 'D:\MO2\mods\Task Cache\ShaderCache' `
   -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
   -WorkingSetStatus known-working `
   -Promote -Label 'verified task result' `
@@ -125,6 +138,15 @@ or failed task result is still preserved as evidence but is not added to the
 catalog. A shader-source mismatch remains excluded unless
 `-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
 this exception does not bypass ABI, runtime, render-path, status, or tag gates.
+
+For a provider-bound plan, `complete` re-enumerates the profile and fails closed
+if the modlist or winning provider changed. When preparation used
+`-RequireMaterializedOutput`, completion ignores only the automation sentinel
+and `.gitkeep`; if no real cache file exists, it writes
+`shader-cache-task.materialization-failure.json`, leaves the transaction open,
+and does not restore or remove the live provider tree. Complete the cache before
+releasing the task workspace so a routing defect cannot delete the only copy of
+compiled output.
 
 `seed` requires the existing snapshot receipt for the same live cache and
 evidence directory, verifies the exact source tree, stages it, swaps it into

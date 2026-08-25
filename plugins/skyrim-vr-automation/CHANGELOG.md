@@ -4,6 +4,14 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Bind task shader caches to the exact winning MO2 loose provider and fail
+  completion closed when no physical compiled output materializes, preserving
+  the provider and open transaction for diagnosis instead of deleting an empty
+  task mod as a successful cache save.
+- Add the repository-local Git launcher required by agent policy, with
+  command-scoped `safe.directory` handling and exact exit-code propagation.
+- Prefer direct plugin MCP tools for live DevBench work, retaining the bundled
+  client for offline validation and controller-only receipt behavior.
 - Add exact named MO2 config registration, listing, resolution, and persistent
   selection for machines that switch between multiple portable modlists.
 - Resolve explicit config paths and environment overrides before a named

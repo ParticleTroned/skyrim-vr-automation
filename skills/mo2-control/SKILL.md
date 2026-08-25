@@ -68,8 +68,10 @@ are:
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
    If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
-   and Skyrim are still closed: catalog `prepare` the exact task cache before
-   launch, then catalog `complete` after shutdown and before workspace release.
+   and Skyrim are still closed: create a task-owned winning loose cache mod,
+   bind catalog `prepare` to its exact profile/provider with materialization
+   required, then catalog `complete` after shutdown and before workspace
+   release. A missing-output failure retains the task mod and open transaction.
 6. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
 7. Use `-StartOnly` when the outer host cannot safely wait for UI/game

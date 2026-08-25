@@ -5,7 +5,12 @@ description: "Inspect and call the loopback MCP tools exposed by a running CSX D
 
 # DevBench Control
 
-Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
+Prefer the plugin-provided MCP tools directly for live discovery, calls, waits,
+screenshots, and performance capture whenever they are callable. Use the
+bundled client only for controller behavior that direct MCP does not expose,
+offline validation, or a required durable receipt. Never choose the loopback
+HTTP path merely for convenience or routine live calls, and do not construct
+HTTP or MCP requests ad hoc.
 
 ## Contract
 

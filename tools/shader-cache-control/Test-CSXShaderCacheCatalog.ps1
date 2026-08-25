@@ -148,6 +148,94 @@ try {
     Assert-Test (Test-Path -LiteralPath $complete.data.task.workingTree.preservedPath -PathType Container) 'task completion retains the displaced compiled result as evidence'
     Assert-Test ($complete.data.task.promoted.state -eq 'captured') 'known-working task output receives a distinct immutable snapshot manifest'
 
+    $boundCatalogRoot = Join-Path $resolvedTestRoot 'bound-catalog'
+    $boundEvidence = Join-Path $resolvedTestRoot 'bound-task-evidence'
+    $modsRoot = Join-Path $resolvedTestRoot 'mo2\mods'
+    $profilePath = Join-Path $resolvedTestRoot 'mo2\profiles\Task\modlist.txt'
+    $taskCache = Join-Path $modsRoot 'Task Cache\ShaderCache'
+    $otherCache = Join-Path $modsRoot 'Other Cache\ShaderCache'
+    $overwriteCache = Join-Path $resolvedTestRoot 'mo2\overwrite\ShaderCache'
+    New-Item -ItemType Directory -Path $taskCache, $otherCache, $overwriteCache, (Split-Path -Parent $profilePath) -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $taskCache '.codex-vfs-sentinel.txt') -Value 'task-owned cache provider' -Encoding utf8
+    [IO.File]::WriteAllBytes((Join-Path $otherCache 'other-provider.bin'), [byte[]](4, 2))
+    Set-Content -LiteralPath $profilePath -Value @('+Task Cache', '+Other Cache') -Encoding utf8
+
+    $boundCommon = @{
+        CatalogRoot = $boundCatalogRoot
+        ProfilePath = $profilePath
+        ModsPath = $modsRoot
+        CacheModName = 'Task Cache'
+        ShaderCacheAbi = 'abi-bound'
+        ShaderSourceSha256 = $shaderSource
+        GameRuntime = 'SkyrimVR-1.4.15'
+        RenderPath = 'vr'
+        BuildId = 'build-bound-fixture'
+        Tags = @('task-cache')
+        BlockingProcessNames = $blockers
+        Compact = $true
+        NoExit = $true
+    }
+    $wrongPathArgs = @{} + $boundCommon
+    $wrongPathArgs.Command = 'prepare'
+    $wrongPathArgs.CachePath = $overwriteCache
+    $wrongPathArgs.EvidenceDirectory = Join-Path $resolvedTestRoot 'wrong-path-evidence'
+    $wrongPathArgs.Confirm = $false
+    $wrongPath = Invoke-Catalog $wrongPathArgs
+    Assert-Test (-not $wrongPath.ok -and $wrongPath.errors[0] -match 'does not match the exact winning MO2 provider') 'task preparation rejects a physical overwrite path when another loose-mod provider wins'
+
+    $boundPrepareArgs = @{} + $boundCommon
+    $boundPrepareArgs.Command = 'prepare'
+    $boundPrepareArgs.EvidenceDirectory = $boundEvidence
+    $boundPrepareArgs.RequireMaterializedOutput = $true
+    $boundPrepareArgs.Confirm = $false
+    $boundPrepare = Invoke-Catalog $boundPrepareArgs
+    Assert-Test ($boundPrepare.ok -and [string]$boundPrepare.data.task.cacheBinding.modName -eq 'Task Cache') 'task preparation resolves and records the exact winning loose-mod cache provider'
+    Assert-Test ([string]$boundPrepare.data.task.before.root -eq [IO.Path]::GetFullPath($taskCache)) 'task preparation snapshots the provider-backed cache instead of global overwrite'
+
+    $emptyComplete = Invoke-Catalog @{
+        Command = 'complete'
+        CatalogRoot = $boundCatalogRoot
+        EvidenceDirectory = $boundEvidence
+        WorkingSetStatus = 'unverified'
+        BlockingProcessNames = $blockers
+        Confirm = $false
+        Compact = $true
+        NoExit = $true
+    }
+    $materializationFailurePath = Join-Path $boundEvidence 'shader-cache-task.materialization-failure.json'
+    Assert-Test (-not $emptyComplete.ok -and $emptyComplete.errors[0] -match 'no files beyond automation markers') 'task completion fails closed when the bound cache has no compiled output'
+    Assert-Test ((Test-Path -LiteralPath $materializationFailurePath -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $boundEvidence 'shader-cache-task.completion.json'))) 'missing materialization preserves evidence and leaves the task transaction open'
+    Assert-Test (Test-Path -LiteralPath (Join-Path $taskCache '.codex-vfs-sentinel.txt') -PathType Leaf) 'failed materialization does not restore or remove the live provider tree'
+
+    [IO.File]::WriteAllBytes((Join-Path $taskCache 'compiled-during-bound-task.bin'), [byte[]](6, 2, 6, 4))
+    $boundComplete = Invoke-Catalog @{
+        Command = 'complete'
+        CatalogRoot = $boundCatalogRoot
+        EvidenceDirectory = $boundEvidence
+        WorkingSetStatus = 'unverified'
+        BlockingProcessNames = $blockers
+        Confirm = $false
+        Compact = $true
+        NoExit = $true
+    }
+    Assert-Test ($boundComplete.ok -and [int]$boundComplete.data.task.workingTree.materializedFiles -eq 1) 'task completion preserves materialized output from the exact bound provider'
+    Assert-Test (Test-Path -LiteralPath (Join-Path $boundComplete.data.task.workingTree.preservedPath 'compiled-during-bound-task.bin') -PathType Leaf) 'provider-backed compiled output survives restoration in the evidence tree'
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $taskCache 'compiled-during-bound-task.bin'))) 'task completion restores the exact pre-task provider tree'
+
+    $unboundOverwrite = Invoke-Catalog @{
+        Command = 'prepare'
+        CatalogRoot = (Join-Path $resolvedTestRoot 'unbound-catalog')
+        CachePath = $overwriteCache
+        EvidenceDirectory = (Join-Path $resolvedTestRoot 'unbound-evidence')
+        ShaderCacheAbi = 'abi-unbound'
+        ShaderSourceSha256 = $shaderSource
+        BlockingProcessNames = $blockers
+        Confirm = $false
+        Compact = $true
+        NoExit = $true
+    }
+    Assert-Test (-not $unboundOverwrite.ok -and $unboundOverwrite.errors[0] -match 'Refusing an unbound MO2 overwrite') 'catalog refuses to infer global overwrite as the effective MO2 cache target'
+
     $finalList = Invoke-Catalog @{ Command = 'list'; CatalogRoot = $catalogRoot; Compact = $true; NoExit = $true }
     Assert-Test (@($finalList.data.snapshots).Count -eq 2 -and @($finalList.data.issues).Count -eq 0) 'catalog retains both known-working trees and validates all manifests'
 }
