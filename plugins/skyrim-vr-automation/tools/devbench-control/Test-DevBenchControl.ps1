@@ -39,6 +39,93 @@ Assert-Test (-not $inventory.satisfied -and $inventory.blockingMenus[0] -eq 'Inv
 $modal = Test-DevBenchNoBlockingMenu -MenuState ([pscustomobject]@{ openMenus = @('HUD Menu'); messageBoxOpen = $true })
 Assert-Test (-not $modal.satisfied) 'message boxes remain blocking'
 
+function New-TestUpscalingProfile([string]$Method = 'dlss', [bool]$RenderScale = $true) {
+    [pscustomobject]@{
+        method = [pscustomobject]@{ name = $Method; value = $(if ($Method -eq 'dlss') { 3 } elseif ($Method -eq 'fsr') { 2 } else { 1 }) }
+        qualityMode = [pscustomobject]@{ name = $(if ($RenderScale) { 'hoshipa' } else { 'native_aa' }); value = $(if ($RenderScale) { 1 } else { 0 }) }
+        renderScaleMode = $RenderScale
+        dlssProfile = [pscustomobject]@{ name = 'K'; value = 1 }
+        fsrRuntime = [pscustomobject]@{ name = 'fsr3'; value = 0 }
+    }
+}
+
+function New-TestRenderScaleStatus([bool]$RenderScale = $true) {
+    $eye = { param([uint32]$Frame) [pscustomobject]@{ frame = $Frame; evaluated = $true; valid = $true } }
+    $presentationEye = { param([uint32]$Frame) [pscustomobject]@{ frame = $Frame; valid = $true; path = 'VendorEvaluated'; loadingOrMenuContext = $false; transitionCooldown = $false } }
+    [pscustomobject]@{
+        frame = 105
+        modeStatus = $(if ($RenderScale) { 'Active' } else { 'Disabled' })
+        vendorWorkGate = [pscustomobject]@{
+            active = $false; completedWorldFrame = $true; loadingMenu = $false; loadingPresentationActive = $false
+            postLoadResetPending = $false; relatchQueued = $false; relatchInProgress = $false; relatchFramePending = $false
+            relatchPostLoadSettle = $false; recoveryPending = $false; relatchPending = $false; profileTransitionPending = $false
+        }
+        fsrDispatch = [pscustomobject]@{
+            actualDispatchBothEyesValid = $true; actualDispatchBackendConverged = $true; actualRuntimeFallbackObserved = $false
+            shaderCompilationActive = $false; contractReady = $true; contractLifecyclePhase = 'Ready'
+        }
+        controller = [pscustomobject]@{
+            state = $(if ($RenderScale) { 'Active' } else { 'Idle' })
+            presentationPhase = $(if ($RenderScale) { 'released' } else { 'idle' })
+            terminalFailureSignaled = $false; terminalDeviceLossSignaled = $false; unresolvedPhysicalMutationEpoch = 0
+            targetEpoch = 7
+            stable = [pscustomobject]@{ valid = $RenderScale; active = $RenderScale; contractGeneration = $(if ($RenderScale) { 4 } else { 0 }) }
+            fidelity = [pscustomobject]@{
+                active = $RenderScale; bothEyesValid = $RenderScale; evaluationEyeMask = $(if ($RenderScale) { 3 } else { 0 })
+                invariantEyeMask = $(if ($RenderScale) { 3 } else { 0 }); lastMismatchMask = 0
+                eyes = @((& $eye 105), (& $eye 105))
+            }
+            presentation = [pscustomobject]@{
+                consecutiveBothEyesVendorFrames = $(if ($RenderScale) { 3 } else { 0 })
+                eyes = @((& $presentationEye 105), (& $presentationEye 104))
+            }
+            postLoadRecovery = [pscustomobject]@{ active = $false }
+            memoryTrim = [pscustomobject]@{ pending = $false }
+            retirement = [pscustomobject]@{ pendingSets = 0; fencePending = $false; capacityBlocked = $false }
+            engineTargetRetirement = [pscustomobject]@{ pending = $false }
+            dlssLifecycle = [pscustomobject]@{ resourcesPresent = $true; readyForContract = $true; phase = 'Ready'; failures = 0 }
+        }
+    }
+}
+
+$renderProfile = New-TestUpscalingProfile
+$renderSnapshot = [pscustomobject]@{
+    profilePresence = 27; flags = 57; activeOperationId = 0
+    transitionState = [pscustomobject]@{ name = 'active'; value = 6 }
+    renderScaleStatus = [pscustomobject]@{ name = 'active'; value = 5 }
+    observedConditions = [pscustomobject]@{ names = @() }
+    profiles = [pscustomobject]@{ requested = $renderProfile; effective = $renderProfile; stable = $renderProfile }
+    dimensions = [pscustomobject]@{ displayEyeWidth = 2468; displayEyeHeight = 2740; renderEyeWidth = 2096; renderEyeHeight = 2328 }
+}
+$renderStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $renderSnapshot -RenderScaleStatus (New-TestRenderScaleStatus)
+Assert-Test ($renderStable.satisfied -and $renderStable.stereoEvidence -eq 'render_scale_fidelity') 'render-scale stability requires a latched coherent stereo contract'
+$gatedStatus = New-TestRenderScaleStatus
+$gatedStatus.vendorWorkGate.loadingMenu = $true
+$renderGated = Test-DevBenchUpscalingStable -UpscalingSnapshot $renderSnapshot -RenderScaleStatus $gatedStatus
+Assert-Test (-not $renderGated.satisfied -and $renderGated.reasons -match 'loadingMenu') 'loading presentation prevents a stable render-scale verdict'
+
+$nativeProfile = New-TestUpscalingProfile -Method 'dlss' -RenderScale $false
+$nativeSnapshot = [pscustomobject]@{
+    profilePresence = 11; flags = 1; activeOperationId = 0
+    transitionState = [pscustomobject]@{ name = 'idle'; value = 0 }
+    renderScaleStatus = [pscustomobject]@{ name = 'disabled'; value = 0 }
+    observedConditions = [pscustomobject]@{ names = @() }
+    profiles = [pscustomobject]@{ requested = $nativeProfile; effective = $nativeProfile; stable = $nativeProfile }
+    dimensions = [pscustomobject]@{ displayEyeWidth = 2468; displayEyeHeight = 2740; renderEyeWidth = 2468; renderEyeHeight = 2740 }
+}
+$nativeStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
+Assert-Test ($nativeStable.satisfied -and $nativeStable.stereoEvidence -eq 'native_pipeline_frames') 'native-resolution stability uses converged profiles and advancing world frames'
+$nativeFsrProfile = New-TestUpscalingProfile -Method 'fsr' -RenderScale $false
+$nativeSnapshot.profiles.requested = $nativeFsrProfile
+$nativeSnapshot.profiles.effective = $nativeFsrProfile
+$nativeFsrStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
+Assert-Test ($nativeFsrStable.satisfied -and $nativeFsrStable.method -eq 'fsr') 'native-resolution stability follows the effective method without prescribing DLSS or FSR'
+$mismatchedProfile = New-TestUpscalingProfile -Method 'fsr' -RenderScale $false
+$nativeSnapshot.profiles.effective = $nativeProfile
+$nativeSnapshot.profiles.requested = $mismatchedProfile
+$nativeMismatch = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
+Assert-Test (-not $nativeMismatch.satisfied -and $nativeMismatch.reasons -contains 'requested and effective profiles differ') 'native-resolution stability rejects profile divergence'
+
 $expectations = Get-DevBenchRuntimeExpectations -Runtime ([pscustomobject]@{ port = 8921; pid = 123; exe = 'SkyrimVR.exe'; buildId = 'build-1'; dllPath = 'C:\Test\CommunityShaders.dll'; artifactSha256 = 'ABC' })
 Assert-Test ($expectations.port -eq 8921 -and $expectations.pid -eq 123 -and $expectations.exe -eq 'SkyrimVR.exe') 'runtime expectations preserve process identity fields'
 Assert-Test ($expectations.buildId -eq 'build-1' -and $expectations.artifactPath -like '*CommunityShaders.dll' -and $expectations.artifactSha256 -eq 'ABC') 'runtime expectations preserve build and deployed artifact identity'
@@ -60,6 +147,10 @@ Assert-Test ($entryPointText -match "phase = 'initialize'; recovery = 'outer-wai
 Assert-Test ($entryPointText -match '\$null -eq \$headers') 'bounded waits establish or re-establish the MCP session inside the polling loop'
 Assert-Test ($entryPointText -match '\[switch\]\$AcceptAlreadyLoaded') 'playerLoaded exposes an explicit compatibility opt-out for freshness'
 Assert-Test ($entryPointText -match '\$playerTransitionObserved') 'playerLoaded requires an observed unloaded-to-loaded transition by default'
+Assert-Test ($entryPointText -match "Condition 'upscalingStable' requires -ExpectedCell") 'upscalingStable cannot accept a stale source scene'
+Assert-Test ($entryPointText -match '\$stableCandidateCount -ge \$StableSamples') 'upscalingStable requires consecutive stable observations'
+Assert-Test ($entryPointText -match '\$stableFrameAdvance -ge \$MinimumStableFrameAdvance') 'upscalingStable requires advancing world frames'
+Assert-Test ($entryPointText -match 'elapsedMs = \[Math\]::Round') 'bounded waits report measured elapsed time'
 
 [pscustomobject][ordered]@{ ok = $failures.Count -eq 0; passed = $passes.Count; failed = $failures.Count; passes = @($passes); failures = @($failures) } | ConvertTo-Json -Depth 10
 if ($failures.Count -gt 0) { exit 1 }

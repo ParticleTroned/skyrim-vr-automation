@@ -10,6 +10,9 @@ client.
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}'
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}' -RequireSuccess
 .\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu -TimeoutSeconds 30
+.\Invoke-DevBenchControl.ps1 wait -Condition upscalingStable `
+  -ExpectedCell WindhelmExterior01 -TimeoutSeconds 120 `
+  -StableSamples 2 -MinimumStableFrameAdvance 5
 .\Invoke-DevBenchControl.ps1 wait -Condition toolAvailable `
   -Tool communityshaders.profiler_api -TimeoutSeconds 600 `
   -ProgressLogPath C:\Evidence\CommunityShaders.log
@@ -68,6 +71,25 @@ unloaded state before accepting loaded. This prevents the prior world's cached
 `true` from satisfying an asynchronous load. Use `-AcceptAlreadyLoaded` only
 when the caller intentionally wants a current-state check rather than proof of
 a new load transition.
+
+`upscalingStable` is the fail-closed barrier for paced cell-transition tests.
+It requires the exact `-ExpectedCell`, a loaded player, no blocking menu, and a
+CSX profile that remains unchanged across advancing frames. The destination's
+requested settings determine the method, quality, and render-scale state; the
+barrier does not impose a profile. When render-scale is active it additionally
+requires its physical contract to be latched and active, both
+eyes to be valid and vendor-evaluated on the same presentation path, clean
+vendor lifecycle state, and no relatch, recovery, fallback, retirement, or
+memory-trim work. Native-resolution DLSS, FSR, TAA/AA, and DLAA use the
+authoritative upscaling service: requested and effective profiles must agree,
+the controller must be idle, and no transition or recovery condition may be
+present. Native-resolution stereo confidence comes from consecutive advancing
+world frames because the render-scale logger intentionally has no active
+physical stereo contract in that mode.
+
+The barrier never sends a console command and never repairs a failed state. An
+unsatisfied or timed-out barrier fails the wait. A transition loop must stop at
+that point and must not queue another `coc` command.
 
 Runtime identity is refreshed after a waited-for service registers. The binding
 reports listener process identity, every available CSX producer registry,

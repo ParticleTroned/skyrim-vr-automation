@@ -17,7 +17,7 @@ param(
     [string]$ArtifactPath,
     [string]$ExpectedBuildId,
     [string]$ExpectedArtifactSha256,
-    [ValidateSet('noBlockingMenu', 'playerLoaded', 'toolAvailable', 'serviceReady')]
+    [ValidateSet('noBlockingMenu', 'playerLoaded', 'upscalingStable', 'toolAvailable', 'serviceReady')]
     [string]$Condition = 'noBlockingMenu',
     [ValidateRange(1, 600)]
     [int]$TimeoutSeconds = 30,
@@ -33,6 +33,11 @@ param(
     [string]$ProgressLogPath,
     [string[]]$IgnoredMenus = @('HUD Menu'),
     [switch]$AcceptAlreadyLoaded,
+    [string]$ExpectedCell,
+    [ValidateRange(2, 20)]
+    [int]$StableSamples = 2,
+    [ValidateRange(1, 1000)]
+    [int]$MinimumStableFrameAdvance = 5,
     [switch]$NoExit,
     [switch]$Compact
 )
@@ -343,12 +348,19 @@ try {
     }
     else {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
-        $requiredTool = if ($Condition -eq 'noBlockingMenu') { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
+        if ($Condition -eq 'upscalingStable' -and [string]::IsNullOrWhiteSpace($ExpectedCell)) { throw "Condition 'upscalingStable' requires -ExpectedCell so the prior scene cannot satisfy the barrier." }
+        $requiredTools = switch ($Condition) {
+            'noBlockingMenu' { @('menu') }
+            'playerLoaded' { @('inspect') }
+            'upscalingStable' { @('inspect', 'menu', 'communityshaders.upscaling_api', 'communityshaders.renderscale') }
+            default { @() }
+        }
         $waitArguments = @{}
         if ($Condition -eq 'serviceReady') {
             try { $waitArguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
         }
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $waitStartedUtc = [DateTime]::UtcNow
         $attempts = 0
         $observation = $null
         $currentDelay = $PollMilliseconds
@@ -358,6 +370,10 @@ try {
         $lastCpu = $null
         $playerTransitionObserved = $false
         $playerInitialState = $null
+        $stableCandidateCount = 0
+        $stableFirstFrame = 0u
+        $stableLastFrame = 0u
+        $stableSignature = $null
         do {
             $attempts++
             if ($null -eq $headers) {
@@ -383,7 +399,8 @@ try {
                     continue
                 }
             }
-            if ($requiredTool -and @($tools | Where-Object name -eq $requiredTool).Count -ne 1) {
+            $missingRequiredTools = @($requiredTools | Where-Object { $requiredName = $_; @($tools | Where-Object name -eq $requiredName).Count -ne 1 })
+            if ($missingRequiredTools.Count -gt 0) {
                 try {
                     $currentList = Invoke-McpRequest -Endpoint $endpoint -Headers $headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
                     if ($currentList.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($currentList.json.error | ConvertTo-Json -Compress)" }
@@ -397,8 +414,9 @@ try {
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
                 }
-                if (@($tools | Where-Object name -eq $requiredTool).Count -ne 1) {
-                    $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; phase = 'tool-registration'; requiredTool = $requiredTool; authoritativeToolCount = $tools.Count }
+                $missingRequiredTools = @($requiredTools | Where-Object { $requiredName = $_; @($tools | Where-Object name -eq $requiredName).Count -ne 1 })
+                if ($missingRequiredTools.Count -gt 0) {
+                    $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; phase = 'tool-registration'; requiredTools = @($requiredTools); missingTools = @($missingRequiredTools); authoritativeToolCount = $tools.Count }
                     Start-Sleep -Milliseconds $currentDelay
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
@@ -430,6 +448,79 @@ try {
                 catch {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; state = $null; retryable = $true; probeError = $_.Exception.Message }
+                }
+            }
+            elseif ($Condition -eq 'upscalingStable') {
+                try {
+                    $state = @(Invoke-ToolRpc -Name 'inspect' -Arguments @{ kind = 'state' } -Headers $headers).content | Select-Object -First 1
+                    $scene = @(Invoke-ToolRpc -Name 'inspect' -Arguments @{ kind = 'scene' } -Headers $headers).content | Select-Object -First 1
+                    $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
+                    $menuState = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                    $buildId = if ($runtimeIdentity -and $runtimeIdentity.build) { [string]$runtimeIdentity.build.buildId } else { $ExpectedBuildId }
+                    $upscalingArguments = @{
+                        contractMajor = 1
+                        clientId = 'devbench-control'
+                        commandId = "stable-$([guid]::NewGuid().ToString('N'))"
+                        action = 'snapshot'
+                    }
+                    $renderScaleArguments = @{ action = 'status' }
+                    if (-not [string]::IsNullOrWhiteSpace($buildId)) {
+                        $upscalingArguments['expectedBuildId'] = $buildId
+                        $renderScaleArguments['expectedBuildId'] = $buildId
+                    }
+                    $upscaling = @(Invoke-ToolRpc -Name 'communityshaders.upscaling_api' -Arguments $upscalingArguments -Headers $headers).content | Select-Object -First 1
+                    $renderScale = @(Invoke-ToolRpc -Name 'communityshaders.renderscale' -Arguments $renderScaleArguments -Headers $headers).content | Select-Object -First 1
+                    $stability = Test-DevBenchUpscalingStable -UpscalingSnapshot $upscaling -RenderScaleStatus $renderScale
+                    $cellMatches = [string]::Equals([string]$scene.cell, $ExpectedCell, [StringComparison]::OrdinalIgnoreCase)
+                    $instantaneousStable = [bool]$state.playerLoaded -and $cellMatches -and $menuState.satisfied -and $stability.satisfied
+                    if ($instantaneousStable) {
+                        if ($stableSignature -eq $stability.signature -and [uint32]$stability.frame -gt $stableLastFrame) {
+                            $stableCandidateCount++
+                        }
+                        else {
+                            $stableCandidateCount = 1
+                            $stableFirstFrame = [uint32]$stability.frame
+                            $stableSignature = $stability.signature
+                        }
+                        $stableLastFrame = [uint32]$stability.frame
+                    }
+                    else {
+                        $stableCandidateCount = 0
+                        $stableFirstFrame = 0u
+                        $stableLastFrame = 0u
+                        $stableSignature = $null
+                    }
+                    $stableFrameAdvance = if ($stableFirstFrame -ne 0 -and $stableLastFrame -ge $stableFirstFrame) { $stableLastFrame - $stableFirstFrame } else { 0u }
+                    $observation = [pscustomobject][ordered]@{
+                        satisfied = $instantaneousStable -and $stableCandidateCount -ge $StableSamples -and $stableFrameAdvance -ge $MinimumStableFrameAdvance
+                        retryable = $false
+                        expectedCell = $ExpectedCell
+                        actualCell = [string]$scene.cell
+                        cellMatches = $cellMatches
+                        playerLoaded = [bool]$state.playerLoaded
+                        menu = $menuState
+                        upscaling = $stability
+                        stableSamples = $stableCandidateCount
+                        requiredStableSamples = $StableSamples
+                        stableFirstFrame = $stableFirstFrame
+                        stableLastFrame = $stableLastFrame
+                        stableFrameAdvance = $stableFrameAdvance
+                        requiredFrameAdvance = $MinimumStableFrameAdvance
+                        probeError = $null
+                    }
+                }
+                catch {
+                    if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                    $stableCandidateCount = 0
+                    $stableFirstFrame = 0u
+                    $stableLastFrame = 0u
+                    $stableSignature = $null
+                    $observation = [pscustomobject][ordered]@{
+                        satisfied = $false
+                        retryable = $true
+                        expectedCell = $ExpectedCell
+                        probeError = $_.Exception.Message
+                    }
                 }
             }
             else {
@@ -504,7 +595,19 @@ try {
             Start-Sleep -Milliseconds $currentDelay
             if ($Condition -in @('toolAvailable', 'serviceReady')) { $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2) }
         } while ([DateTime]::UtcNow -lt $deadline)
-        $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; observation = $observation }
+        $waitCompletedUtc = [DateTime]::UtcNow
+        $data = [pscustomobject][ordered]@{
+            condition = $Condition
+            satisfied = [bool]$observation.satisfied
+            attempts = $attempts
+            timeoutSeconds = $TimeoutSeconds
+            initialPollMilliseconds = $PollMilliseconds
+            maxPollMilliseconds = $MaxPollMilliseconds
+            startedUtc = $waitStartedUtc.ToString('o')
+            completedUtc = $waitCompletedUtc.ToString('o')
+            elapsedMs = [Math]::Round(($waitCompletedUtc - $waitStartedUtc).TotalMilliseconds, 3)
+            observation = $observation
+        }
         if ($observation.satisfied -and -not $SkipRuntimeIdentityVerification) { $evidencePath = Write-RuntimeEvidence $runtimeIdentity }
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }
