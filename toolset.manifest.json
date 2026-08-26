@@ -60,7 +60,7 @@
     },
     {
       "name": "process-control",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "entryPoint": "tools/process-control/Invoke-BoundedProcess.ps1"
     },
     {

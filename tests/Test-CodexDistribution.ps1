@@ -49,6 +49,7 @@ try {
         'tools\shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1',
         'tools\shader-cache-control\Invoke-CSXShaderCacheCatalog.ps1',
         'tools\process-control\Invoke-BoundedProcess.ps1'
+        'tools\process-control\Invoke-WindowsThreadContext.ps1'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $simulatedCache $entryPoint) -PathType Leaf)) { throw "Installed entry point is missing: $entryPoint" }
     }

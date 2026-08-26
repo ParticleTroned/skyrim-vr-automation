@@ -22,6 +22,7 @@ $tests = @(
     @{ Name = 'shader-cache-control'; Path = 'tools\shader-cache-control\Test-CSXShaderCacheControl.ps1'; Arguments = @() },
     @{ Name = 'shader-cache-catalog'; Path = 'tools\shader-cache-control\Test-CSXShaderCacheCatalog.ps1'; Arguments = @() },
     @{ Name = 'process-control'; Path = 'tools\process-control\Test-BoundedProcess.ps1'; Arguments = @() },
+    @{ Name = 'windows-thread-context'; Path = 'tools\process-control\Test-WindowsThreadContext.ps1'; Arguments = @() },
     @{ Name = 'build-test-control'; Path = 'tools\build-test-control\Test-CSXBuildTests.ps1'; Arguments = @() },
     @{ Name = 'doctor'; Path = 'tools\doctor\Test-AutomationDoctor.ps1'; Arguments = @() },
     @{ Name = 'git-launcher'; Path = 'tests\Test-GitLauncher.ps1'; Arguments = @() },

@@ -4,6 +4,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add exact-identity AMD64 live-thread context capture with bit-preserving
+  pointer/register conversions validated under Windows PowerShell and
+  PowerShell 7.
 - Bind task shader caches to the exact winning MO2 loose provider and fail
   completion closed when no physical compiled output materializes, preserving
   the provider and open transaction for diagnosis instead of deleting an empty
