@@ -49,6 +49,11 @@
       "entryPoint": "tools/devbench-control/Invoke-DevBenchControl.ps1"
     },
     {
+      "name": "render-scale-qualification",
+      "version": "1.0.0",
+      "entryPoint": "tools/render-scale-qualification/Invoke-CSXRenderScaleQualification.ps1"
+    },
+    {
       "name": "profiler-control",
       "version": "1.1.0",
       "entryPoint": "tools/profiler-control/Measure-CSXProfiler.ps1"

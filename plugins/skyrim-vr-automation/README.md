@@ -26,6 +26,9 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/devbench-control` — a small MCP client for the DevBench endpoint
   exposed by a running CSX build, with listener/process/build/artifact binding
   and normalized semantic results.
+- `tools/render-scale-qualification` — the bounded
+  `csx-render-scale-pr-v1` COC, menu-transition, and stereo visual suite for
+  render-scale pull requests, with deterministic evidence and PR summaries.
 - `tools/profiler-control` — repeatable DevBench profiler capture and
   multi-state comparison reports.
 - `tools/shader-cache-control` — provider discovery, physical cache
@@ -40,7 +43,7 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its six skills connect a
+The repository publishes a Codex marketplace plugin. Its seven skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
@@ -50,6 +53,8 @@ new task to the bundled implementations and their operational contracts:
 - `$steamvr-null-hmd` routes backed-up SteamVR null-HMD apply/restore and
   bounded runtime shutdown.
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
+- `$coc-stability` runs load-synchronized COC transitions through the
+  server-side stability waiter and refuses fixed-delay substitutes.
 - `$profiler-control` captures bounded GPU/CPU timer evidence and compares runs.
 - `$shader-cache-control` prepares tasks from compatible known-working compiled
   caches, restores prior state, promotes verified results, and compares trees
@@ -99,6 +104,26 @@ environment variable:
 $env:CSX_DEVBENCH_RUNTIME_PATH = 'C:\Path\To\overwrite\SKSE\Plugins\devbench\runtime.json'
 .\tools\devbench-control\Invoke-DevBenchControl.ps1 list
 ```
+
+Run the render-scale qualification against an exact running build and preserve
+its evidence outside the repository. Copy `fixture.example.json`, replace every
+placeholder with the controlled save/camera/stabilizer/GPU/HMD identity, and
+record the real SHA-256 values. PR mode also requires a matching baseline:
+
+```powershell
+$buildId = '<64-character CSX build ID>'
+.\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
+    -EvidenceDirectory C:\Evidence\render-scale-candidate `
+    -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
+    -ExpectedBuildId $buildId -GpuVendor NVIDIA `
+    -FixtureManifestPath C:\Evidence\render-scale-fixture.json `
+    -PrMode -BaselinePath C:\Evidence\render-scale-baseline
+```
+
+The automated phase is capped at ten minutes after exact runtime binding and
+includes two 30-second recovery barriers. Complete the offline visual review
+and regenerate the final PR summary with `-FinalizeReview` before claiming a
+pass.
 
 For SteamVR, pass nonstandard paths with `-SettingsPath` and `-SteamVRRoot`.
 The bundled null-HMD profile is resolved relative to the controller script.

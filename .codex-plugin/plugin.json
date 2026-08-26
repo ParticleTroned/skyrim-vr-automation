@@ -1,7 +1,7 @@
 {
   "name": "skyrim-vr-automation",
-  "version": "0.8.0+codex.20260825100301",
-  "description": "Codex skills for transactional Skyrim VR automation, local feedback, DevBench profiling, and reusable shader-cache management.",
+  "version": "0.8.0+codex.20260826201741",
+  "description": "Codex skills and tools for transactional Skyrim VR automation, DevBench qualification and profiling, local feedback, and reusable shader-cache management.",
   "author": {
     "name": "Treatid2",
     "url": "https://github.com/Treatid2"
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Skyrim VR Automation",
     "shortDescription": "Safe Skyrim VR test and profiling controls.",
-    "longDescription": "Adds safety-bounded workflows for explicitly selected Mod Organizer 2 modlists and exact-profile sessions, transactional profile edits, compatibility-ranked compiled shader-cache reuse, backed-up SteamVR null-HMD switching, identity-bound DevBench calls, profiler captures, bounded process retries, and a durable local automation-feedback mailbox.",
+    "longDescription": "Adds safety-bounded workflows for explicitly selected Mod Organizer 2 modlists and exact-profile sessions, transactional profile edits, compatibility-ranked compiled shader-cache reuse, backed-up SteamVR null-HMD switching, identity-bound DevBench calls, render-scale PR qualification, profiler captures, bounded process retries, and a durable local automation-feedback mailbox.",
     "developerName": "Treatid2",
     "category": "Developer Tools",
     "capabilities": [
@@ -39,8 +39,10 @@
       "Inspect my configured MO2 environment safely.",
       "Switch SteamVR to null HMD with a recoverable backup.",
       "Run a bounded Skyrim VR test session through MO2.",
+      "Run a load-synchronized COC stability and transition-throughput test.",
       "Record and triage local feedback about the automation toolkit.",
       "Capture and compare CSX profiler evidence.",
+      "Run the bounded CSX render-scale PR qualification suite and produce its PR summary.",
       "Prepare this task with the best compatible known-working compiled shader cache."
     ]
   }

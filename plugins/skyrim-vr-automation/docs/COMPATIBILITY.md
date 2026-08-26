@@ -15,6 +15,18 @@ loopback interface. The runtime metadata path must be supplied explicitly or by
 `profiler-control` uses that same runtime contract to collect and compare the
 resolved CSX GPU/CPU timer block. Its totals are not whole-frame GPU time.
 
+`coc-stability` requires the server-side render-scale qualification begin and
+wait actions. It stops when the exact waiter contract is unavailable instead
+of substituting loading-menu checks, client polling, or fixed delays.
+
+`render-scale-qualification` requires exact CSX runtime/build binding, verifies
+any supplied artifact binding, and depends on the server-side render-scale
+qualification waiter, the upscaling and feature APIs, and HMD-submission
+screenshot sequences. Its frozen protocol includes all five DLSS trace actions
+introduced by
+`b46edeaed14c41ad41225641c3a4943f1db25db6`: status, reset, start, stop, and
+read. A server that does not advertise the full contract fails preflight.
+
 ## MO2
 
 MO2 Control reads a configuration matching
