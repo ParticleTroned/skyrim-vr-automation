@@ -10,12 +10,18 @@ fixed-delay scenario.
 
 Read [references/protocol.md](references/protocol.md) before operating the game.
 
-Use plugin-provided direct DevBench MCP tools for live calls and polling. Use
-the bundled DevBench controller only for the `upscalingStable` barrier, because
-the direct server does not expose its exact-cell, CSX-convergence, stereo, and
-advancing-frame predicate as one atomic wait.
+Use plugin-provided direct DevBench MCP tools for every live operation. Start
+continuous diagnostics once, then use one server-side stability waiter per
+transition. The waiter must observe the exact destination, CSX profile
+convergence, and the applicable two-eye presentation contract internally and
+return only when the first coherent stable state is observed.
 
-The next transition may start immediately after the barrier succeeds. If the
-barrier or the current transition times out, stop the run without dispatching
-another game command. Preserve the partial evidence and classify the run as a
-failed stability run, not as completed performance evidence.
+Do not replace the waiter with loading-menu checks, fixed delays, repeated
+full-status responses, menu operations, or a PowerShell polling controller. If
+the direct server does not expose the required waiter, stop and record the
+capability gap instead of running a different protocol.
+
+Dispatch the next transition immediately after the waiter succeeds. If the
+waiter or current transition times out, stop without dispatching another game
+command. Preserve the partial evidence and classify the run as failed
+stability evidence, not completed performance evidence.

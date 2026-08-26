@@ -6,8 +6,8 @@
 - Run the requested number of measured transitions.
 - Do not use a fixed inter-transition delay.
 - Default transition deadline: 120 seconds.
-- Default stability proof: two matching samples spanning at least five game
-  frames.
+- Stability ends at the first coherent state that satisfies the applicable
+  exact-cell, profile, lifecycle, and two-eye presentation contract.
 
 Start-cell establishment is not a measured transition. If needed, issue one
 isolated COC to the configured start cell, wait for the same stability barrier,
@@ -15,41 +15,30 @@ and only then start the diagnostic sessions and measured run.
 
 ## Non-overlap invariant
 
-Exactly one transition may be unresolved. Never build a scenario containing
-the complete alternating sequence. A console result of `queued: true` proves
-only admission; it does not prove that the load completed.
+Exactly one transition may be unresolved. A console result of `queued: true`
+proves only admission; it does not prove that the load completed.
 
 For each measured transition:
 
-1. Preserve the source scene, DevBench health, upscaling snapshot, render-scale
-   status, and dispatch timestamp.
-2. Start one asynchronous DevBench scenario containing only:
-   - `console`: the exact `coc <target>` command;
-   - wait for `Loading Menu` to open;
-   - wait for `Loading Menu` to close;
-   - wait until `playerLoaded`;
-   - wait until `noBlockingMenu`.
-3. Poll only that scenario run ID. Do not send another gameplay command.
-4. If it does not complete within 120 seconds, stop the test fail-closed.
-5. After it completes, invoke the bundled controller:
+1. Preserve the source scene and take the dispatch timestamp on the DevBench
+   server clock.
+2. Submit the exact `coc <target>` command and one bounded server-side
+   stability waiter. The waiter continuously observes live state without
+   returning each intermediate snapshot to the client.
+3. Require `playerLoaded` and the exact destination cell before testing CSX
+   stability. This prevents the source world's still-loaded state from passing
+   before the queued COC executes.
+4. Stop the timer at the first coherent stable observation. Return that
+   observation with one final upscaling snapshot and one render-scale health
+   record.
+5. When and only when the waiter reports `satisfied: true`, preserve its
+   evidence and immediately dispatch the next transition.
 
-   ```powershell
-   pwsh ./tools/devbench-control/Invoke-DevBenchControl.ps1 wait `
-     -RuntimePath <exact-runtime.json> `
-     -Condition upscalingStable `
-     -ExpectedCell <exact-target> `
-     -TimeoutSeconds 120 `
-     -PollMilliseconds 100 `
-     -StableSamples 2 `
-     -MinimumStableFrameAdvance 5 `
-     -EvidenceDirectory <task-evidence-directory> `
-     -EvidenceLabel <transition-label>
-   ```
-
-6. Preserve the returned scene, profile signature, frames, stereo-evidence
-   class, attempts, and elapsed time.
-7. When and only when the barrier reports `satisfied: true`, dispatch the next
-   transition immediately.
+Do not wait for loading-menu open/close events, query or manipulate menus, add
+a fixed recovery delay, or transfer repeated full status responses. These are
+not stability requirements and add observer overhead. If no direct MCP waiter
+can evaluate this predicate server-side, stop fail-closed and report the
+missing capability; do not substitute a PowerShell polling loop.
 
 The exact target-cell requirement prevents the source world's cached loaded
 state from satisfying the barrier before the queued `coc` executes.
@@ -59,16 +48,19 @@ state from satisfying the barrier before the queued `coc` executes.
 Shared requirements for every method:
 
 - exact destination cell and loaded player;
-- no blocking menu;
 - provider check complete;
 - no active operation, restart requirement, loading transition, method
   transition, relatch, first-world-frame wait, post-load recovery, provider
   wait, or resource recovery;
 - requested and effective profiles agree;
 - positive render and display dimensions;
-- identical profile signature across consecutive advancing frames;
 - no terminal failure, device loss, unresolved physical mutation, vendor work
   gate, pending memory trim, or resource retirement.
+
+The stability decision uses the first internally coherent observation. The
+diagnostic session remains continuous throughout the run, so historical
+stretch, fallback, fidelity, lifecycle, and recovery counters are retained as
+evidence but do not delay a currently stable frame.
 
 When render-scale is active, additionally require:
 
@@ -86,11 +78,14 @@ When render-scale is active, additionally require:
   is ready, no runtime fallback is observed, and shader compilation is idle.
 
 For native-resolution DLSS, FSR, TAA/AA, or DLAA, render-scale fidelity is
-intentionally inactive. Require the render-scale controller to be idle and the
-render-scale latched/active flags to be clear. Requested and effective native
-profiles must agree across advancing world frames. Record the stereo-evidence
-class as `native_pipeline_frames`; do not claim the stronger render-scale
-two-eye contract.
+intentionally inactive. The render-scale controller may remain `Active` while
+its applied and stable contracts are valid and inactive. Require render-scale
+status to be disabled, latched/active flags to be clear, render and display
+dimensions to match, and both presentation eyes to be valid, frame-coherent,
+non-transitional, and on `NativeOriginal`. Requested, effective, and stable
+native profiles must agree. Record the stereo-evidence class as
+`native_pipeline_frames`; do not claim the stronger render-scale fidelity
+contract.
 
 Do not prescribe the method, quality mode, or render-scale policy. VR
 Stabilizer, environment rules, or the user's setup may legitimately select a
@@ -107,6 +102,10 @@ Before transition 1:
 3. Reset and start the render-scale stress session.
 4. Reset and start `cpu_performance_*` telemetry when exposed.
 
+These sessions measure continuously. Do not restart them between transitions.
+The per-transition waiter observes their live state; it does not initiate a new
+measurement.
+
 After the final stability barrier, stop CPU telemetry and then stop the
 render-scale stress session. The render-scale stop result contains the final
 iteration record. Do not enable the load-presentation readback probe unless a
@@ -118,10 +117,8 @@ contaminate a transition-throughput measurement.
 For each transition report:
 
 - target and ordinal;
-- scenario load elapsed milliseconds;
-- post-load CSX stability-barrier elapsed milliseconds;
-- total transition-to-stable milliseconds;
-- start and stable frames;
+- dispatch-to-first-stable elapsed milliseconds using server timestamps;
+- dispatch and stable frames;
 - profile signature, method, render-scale state, and stereo-evidence class;
 - relatch/recovery, stretch, fallback, fidelity, and lifecycle deltas.
 
