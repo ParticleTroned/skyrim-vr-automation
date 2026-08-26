@@ -471,7 +471,14 @@ try {
                     $upscaling = @(Invoke-ToolRpc -Name 'communityshaders.upscaling_api' -Arguments $upscalingArguments -Headers $headers).content | Select-Object -First 1
                     $renderScale = @(Invoke-ToolRpc -Name 'communityshaders.renderscale' -Arguments $renderScaleArguments -Headers $headers).content | Select-Object -First 1
                     $stability = Test-DevBenchUpscalingStable -UpscalingSnapshot $upscaling -RenderScaleStatus $renderScale
-                    $cellMatches = [string]::Equals([string]$scene.cell, $ExpectedCell, [StringComparison]::OrdinalIgnoreCase)
+                    $actualCell = if ($scene.cell -is [string]) {
+                        [string]$scene.cell
+                    }
+                    elseif ($scene.cell -and $scene.cell.PSObject.Properties['editorId']) {
+                        [string]$scene.cell.editorId
+                    }
+                    else { $null }
+                    $cellMatches = [string]::Equals($actualCell, $ExpectedCell, [StringComparison]::OrdinalIgnoreCase)
                     $instantaneousStable = [bool]$state.playerLoaded -and $cellMatches -and $menuState.satisfied -and $stability.satisfied
                     if ($instantaneousStable) {
                         if ($stableSignature -eq $stability.signature -and [uint32]$stability.frame -gt $stableLastFrame) {
@@ -495,7 +502,7 @@ try {
                         satisfied = $instantaneousStable -and $stableCandidateCount -ge $StableSamples -and $stableFrameAdvance -ge $MinimumStableFrameAdvance
                         retryable = $false
                         expectedCell = $ExpectedCell
-                        actualCell = [string]$scene.cell
+                        actualCell = $actualCell
                         cellMatches = $cellMatches
                         playerLoaded = [bool]$state.playerLoaded
                         menu = $menuState
