@@ -12,6 +12,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   launch.
 - Classify replay scheduler receipts without postconditions as unverified, and
   make `-RequireSuccess` reject them instead of reporting interaction success.
+- Make verified-fixture discovery non-throwing when its manifest is absent,
+  return exact configuration/example guidance, and expose the same state in the
+  automation doctor.
 - Require task profiles to clone the configured primary/stable profile only
   after recursively evacuating every legacy `ShaderCache*` directory from MO2
   overwrite into a newly enabled, receipt-backed VFS mod.

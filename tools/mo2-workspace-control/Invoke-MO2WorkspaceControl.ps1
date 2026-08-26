@@ -189,9 +189,32 @@ function Resolve-VerifiedSaveFixture($Config, [string]$SourceName, [string]$Sour
 function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$SourcePath, $SourceSnapshot, [string]$RequestedManifestPath, [string]$RequestedFixtureId) {
     $configuredManifest = if ($Config.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$Config.defaults.newGameFixtureManifest } else { '' }
     $manifestInput = if (-not [string]::IsNullOrWhiteSpace($RequestedManifestPath)) { $RequestedManifestPath } else { $configuredManifest }
-    if ([string]::IsNullOrWhiteSpace($manifestInput)) { throw 'Fixture inspection requires -FixtureManifestPath or defaults.newGameFixtureManifest.' }
+    $manifestSource = if (-not [string]::IsNullOrWhiteSpace($RequestedManifestPath)) { 'parameter' } elseif (-not [string]::IsNullOrWhiteSpace($configuredManifest)) { 'configuration' } else { 'none' }
+    $exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'save-fixtures.example.json'))
+    $guidance = @(
+        'Copy and adapt tools/mo2-workspace-control/save-fixtures.example.json outside the checkout.',
+        'Set defaults.newGameFixtureManifest in the stable per-user machine configuration, or pass -FixtureManifestPath explicitly.',
+        'Declare one .ess save plus any matching co-save files, then run fixture-status again to validate exact hashes and the stable-profile fingerprint.'
+    )
+    if ([string]::IsNullOrWhiteSpace($manifestInput)) {
+        return [pscustomobject][ordered]@{
+            configured = $false; discoveryState = 'manifest-not-configured'; manifestSource = $manifestSource
+            manifestPath = $null; manifestExists = $false; exampleManifestPath = $exampleManifestPath
+            configurationProperty = 'defaults.newGameFixtureManifest'; guidance = $guidance
+            sourceProfileName = $SourceName; sourceProfileDirectory = $SourcePath
+            actualProfileFingerprintSha256 = [string]$SourceSnapshot.sha256; valid = $false
+        }
+    }
     $manifestPath = [IO.Path]::GetFullPath($manifestInput)
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Fixture manifest does not exist: $manifestPath" }
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return [pscustomobject][ordered]@{
+            configured = $true; discoveryState = 'manifest-missing'; manifestSource = $manifestSource
+            manifestPath = $manifestPath; manifestExists = $false; exampleManifestPath = $exampleManifestPath
+            configurationProperty = 'defaults.newGameFixtureManifest'; guidance = $guidance
+            sourceProfileName = $SourceName; sourceProfileDirectory = $SourcePath
+            actualProfileFingerprintSha256 = [string]$SourceSnapshot.sha256; valid = $false
+        }
+    }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $fixtures = @($manifest.fixtures)
     $selectedId = if (-not [string]::IsNullOrWhiteSpace($RequestedFixtureId)) { $RequestedFixtureId } elseif ($manifest.PSObject.Properties['defaultFixtureId']) { [string]$manifest.defaultFixtureId } else { '' }
@@ -225,6 +248,8 @@ function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$So
     $sourceProfileMatches = -not $manifest.PSObject.Properties['sourceProfile'] -or [string]::IsNullOrWhiteSpace([string]$manifest.sourceProfile) -or [string]$manifest.sourceProfile -ceq $SourceName
     $allFilesMatch = @($fileStatus | Where-Object { -not $_.exists -or -not $_.hashMatches -or -not $_.bytesMatch }).Count -eq 0
     return [pscustomobject][ordered]@{
+        configured = $true; discoveryState = 'manifest-ready'; manifestSource = $manifestSource; manifestExists = $true
+        exampleManifestPath = $exampleManifestPath; configurationProperty = 'defaults.newGameFixtureManifest'; guidance = $guidance
         manifestPath = $manifestPath; manifest = $manifest; fixture = $selected; fixtureId = $selectedId
         sourceProfileName = $SourceName; sourceProfileDirectory = $SourcePath
         expectedProfileFingerprintSha256 = $expectedFingerprint; actualProfileFingerprintSha256 = [string]$SourceSnapshot.sha256
@@ -384,9 +409,11 @@ try {
         $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
         $status = Get-VerifiedSaveFixtureStatus -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
         if ($Command -eq 'fixture-status') {
-            $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($status.valid) { 'fixture-valid' } else { 'fixture-stale' }); data = $status }
+            $fixtureState = if ([string]$status.discoveryState -eq 'manifest-not-configured') { 'fixture-not-configured' } elseif ([string]$status.discoveryState -eq 'manifest-missing') { 'fixture-manifest-missing' } elseif ($status.valid) { 'fixture-valid' } else { 'fixture-stale' }
+            $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $fixtureState; data = $status }
         }
         else {
+            if ([string]$status.discoveryState -ne 'manifest-ready') { throw "Fixture refresh requires an existing manifest. $(@($status.guidance)[0])" }
             if (-not $status.sourceProfileMatches) { throw 'Fixture sourceProfile does not match the exact stable source profile; refusing refresh.' }
             if ($status.essCount -ne 1) { throw "Fixture '$($status.fixtureId)' must contain exactly one .ess save before refresh; found $($status.essCount)." }
             if (@($status.files | Where-Object { -not $_.exists }).Count -gt 0) { throw 'Fixture refresh requires every declared source save file to exist.' }

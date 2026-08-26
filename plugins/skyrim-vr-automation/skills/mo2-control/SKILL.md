@@ -65,6 +65,9 @@ are:
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
+   If fixture discovery reports `fixture-not-configured` or
+   `fixture-manifest-missing`, follow its returned example path and guidance;
+   do not guess a save or manifest path.
    If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
    and Skyrim are still closed: catalog `prepare` the exact task cache before
    launch, then catalog `complete` after shutdown and before workspace release.

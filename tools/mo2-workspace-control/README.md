@@ -47,7 +47,12 @@ adapter. See `save-fixtures.example.json` for the portable schema.
 
 Use `fixture-status` to compare the manifest's expected stable-profile
 fingerprint and declared save hashes with their current actual values without
-changing anything. `refresh-fixture` is the separately authorized repair path:
+changing anything. When no manifest is configured, or the configured file is
+missing, `fixture-status` returns `fixture-not-configured` or
+`fixture-manifest-missing` with the exact configuration property, portable
+example path, current stable-profile fingerprint, and creation guidance; this
+discovery state is not a tool error. The doctor reports the same configuration
+as an optional warning. `refresh-fixture` is the separately authorized repair path:
 it requires the exact access lease and closed-state proof, preserves the prior
 manifest and a receipt, refreshes only the selected declared fixture, and
 verifies the postcondition. It never invents a replacement save path.

@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+[CmdletBinding()]
+param([switch]$DiscoveryOnly)
+
 $ErrorActionPreference = 'Stop'
 $entry = Join-Path (Split-Path -Parent $PSScriptRoot) 'Invoke-MO2WorkspaceControl.ps1'
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('mo2-workspace-control-' + [guid]::NewGuid().ToString('N'))
@@ -57,6 +60,23 @@ try {
     $fixtureStatus = $fixtureStatusRaw | ConvertFrom-Json
     if (-not $fixtureStatus.ok -or $fixtureStatus.state -ne 'fixture-valid') { throw 'Fixture status did not validate the original manifest.' }
     if (-not $fixtureStatus.data.approval.reusableApprovalEligible -or @($fixtureStatus.data.approval.reusablePrefix).Count -ne 6 -or $fixtureStatus.data.approval.reusablePrefix[4] -ne [IO.Path]::GetFullPath($entry) -or $fixtureStatus.data.approval.reusablePrefix[5] -ne 'fixture-status') { throw 'Fixture status did not expose its exact reusable approval prefix.' }
+    $unconfiguredPath = Join-Path $fixture 'config-no-fixture.json'
+    $unconfigured = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $unconfigured.defaults.PSObject.Properties.Remove('newGameFixtureManifest')
+    $unconfigured | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $unconfiguredPath -Encoding utf8
+    $unconfiguredStatus = & $entry fixture-status -ConfigPath $unconfiguredPath -Compact | ConvertFrom-Json
+    if (-not $unconfiguredStatus.ok -or $unconfiguredStatus.state -ne 'fixture-not-configured' -or @($unconfiguredStatus.data.guidance).Count -lt 3 -or -not (Test-Path -LiteralPath $unconfiguredStatus.data.exampleManifestPath -PathType Leaf)) { throw 'Fixture discovery did not explain an unconfigured manifest.' }
+    $missingPath = Join-Path $fixture 'config-missing-fixture.json'
+    $unconfigured.defaults | Add-Member -NotePropertyName newGameFixtureManifest -NotePropertyValue (Join-Path $fixture 'missing.json')
+    $unconfigured | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $missingPath -Encoding utf8
+    $missingStatus = & $entry fixture-status -ConfigPath $missingPath -Compact | ConvertFrom-Json
+    if (-not $missingStatus.ok -or $missingStatus.state -ne 'fixture-manifest-missing' -or -not $missingStatus.data.configured -or $missingStatus.data.manifestExists) { throw 'Fixture discovery did not distinguish a configured missing manifest.' }
+    if ($DiscoveryOnly) {
+        $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
+        if (-not $releasedAccess.ok) { throw 'Discovery-only access release failed.' }
+        [pscustomobject]@{ ok = $true; assertions = 2; mode = 'discovery-only' } | ConvertTo-Json
+        return
+    }
     $blockedCreate = & $entry create -ConfigPath $configPath -AccessId $accessId -Label blocked-by-cache -SavePolicy FreshGame -Confirm:$false -NoExit | ConvertFrom-Json
     if ($blockedCreate.ok -or $blockedCreate.errors[0] -notmatch 'prepare-source') { throw 'Workspace creation did not block unmanaged ShaderCache folders in overwrite.' }
     $prepared = & $entry prepare-source -ConfigPath $configPath -AccessId $accessId -Confirm:$false -Compact | ConvertFrom-Json
@@ -103,6 +123,6 @@ try {
     if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace cleanup failed.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     if (-not $releasedAccess.ok) { throw 'Access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=33; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=35; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally { if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }
