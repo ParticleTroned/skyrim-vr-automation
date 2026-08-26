@@ -1,8 +1,9 @@
 {
   "schema": "csx-render-scale-pr-v1",
-  "protocolRevision": 1,
+  "protocolRevision": 2,
   "name": "CSX VR render-scale PR qualification",
   "requiredMethodsCommit": "b46edeaed14c41ad41225641c3a4943f1db25db6",
+  "transitionTimingOrigin": "qualification_dispatch",
   "fixtureManifestSchema": "csx-render-scale-fixture-v1",
   "timeBudget": {
     "orchestrationMs": 600000,

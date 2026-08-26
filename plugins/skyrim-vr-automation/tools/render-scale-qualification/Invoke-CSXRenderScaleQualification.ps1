@@ -195,6 +195,11 @@ function Invoke-EmergencyCleanup {
     param([Collections.Generic.List[string]]$Warnings)
     try {
         $cleanupConnection = New-CSXMcpConnection -Runtime $script:runtime -ClientName 'CSXRenderScaleQualificationCleanup'
+        $cleanupHealth = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'inspect' -Arguments ([ordered]@{
+            kind = 'health'
+        }) -TimeoutSeconds 5
+        $cleanupIdentity = Assert-AuthoritativeRuntimeBinding -BindingIdentity $script:bindingIdentity -Health $cleanupHealth
+        Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'cleanup\runtime-identity.json') -Value $cleanupIdentity | Out-Null
         if ($script:visualStartMayBeOwned -and -not $script:activeVisualRequestId) {
             $uncertainScreenshot = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
                 contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-uncertain-screenshot-status"; action = 'status'
@@ -226,8 +231,13 @@ function Invoke-EmergencyCleanup {
         }
         $status = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'qualification_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
         $transitionId = Get-CSXPathValue $status 'qualification.transitionId' (Get-CSXPropertyValue $status 'transitionId')
-        if ($transitionId -and [uint64]$transitionId -in @($script:ownedTransitionIds)) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'qualification_cancel'; transitionId = [uint64]$transitionId; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
+        $transitionOwnerId = [string](Get-CSXPathValue $status 'qualification.ownerId')
+        if ($transitionId -and $transitionOwnerId -eq $script:runId -and
+            [uint64]$transitionId -in @($script:ownedTransitionIds)) {
+            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+                action = 'qualification_cancel'; transitionId = [uint64]$transitionId
+                ownerId = $script:runId; expectedBuildId = $script:expectedBuildId
+            }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
         }
         $trace = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
         if ($script:traceMayBeOwned -and [bool](Get-CSXPathValue $trace 'capture.active' $false)) {
@@ -256,6 +266,7 @@ function Invoke-EmergencyCleanup {
             }
         }
         $ownedQualificationStillActive = [bool](Get-CSXPathValue $postQualification 'qualification.active' $false) -and
+            [string](Get-CSXPathValue $postQualification 'qualification.ownerId') -eq $script:runId -and
             [uint64](Get-CSXPathValue $postQualification 'qualification.transitionId' 0) -in @($script:ownedTransitionIds)
         if ($ownedQualificationStillActive -or
             ($script:traceMayBeOwned -and ([bool](Get-CSXPathValue $postTrace 'capture.active' $true) -or [bool](Get-CSXPathValue $traceRead 'capture.summary.active' $true))) -or
@@ -866,6 +877,7 @@ $script:ownsCpuCapture = $false
 $script:traceMayBeOwned = $false
 $script:ownedTransitionIds = [Collections.Generic.HashSet[uint64]]::new()
 $script:phase = 'preflight'
+$script:evidenceWritable = $false
 $protocolRecord = $null
 
 try {
@@ -879,6 +891,7 @@ try {
         if (@(Get-ChildItem -LiteralPath $script:evidenceRoot -Force).Count -ne 0) { throw 'EvidenceDirectory must be new or empty; existing evidence is never overwritten.' }
     }
     else { New-Item -ItemType Directory -Path $script:evidenceRoot -Force | Out-Null }
+    $script:evidenceWritable = $true
     Copy-Item -LiteralPath $protocolRecord.path -Destination (Join-Path $script:evidenceRoot 'protocol.json')
     $runtimeFull = [IO.Path]::GetFullPath($RuntimePath)
     if (-not (Test-Path -LiteralPath $runtimeFull -PathType Leaf)) { throw "Runtime metadata does not exist: $runtimeFull" }
@@ -897,7 +910,7 @@ try {
     $requiredTools = @('scenario', 'console', 'inspect', 'communityshaders.renderscale', 'communityshaders.upscaling_api', 'communityshaders.feature_api', 'communityshaders.screenshot')
     foreach ($name in $requiredTools) { if (@($tools | Where-Object name -eq $name).Count -ne 1) { throw "Authoritative tools/list did not expose exactly one '$name'." } }
     $renderDescriptor = @($tools | Where-Object name -eq 'communityshaders.renderscale')[0]
-    Assert-ToolActions $renderDescriptor @('qualification_status', 'qualification_begin', 'qualification_wait', 'qualification_cancel', 'dlss_trace_status', 'dlss_trace_reset', 'dlss_trace_start', 'dlss_trace_stop', 'dlss_trace_read', 'reset', 'start', 'stop', 'apply', 'cpu_performance_reset', 'cpu_performance_start', 'cpu_performance_stop')
+    Assert-ToolActions $renderDescriptor @('qualification_status', 'qualification_begin', 'qualification_dispatch', 'qualification_wait', 'qualification_cancel', 'dlss_trace_status', 'dlss_trace_reset', 'dlss_trace_start', 'dlss_trace_stop', 'dlss_trace_read', 'reset', 'start', 'stop', 'apply', 'cpu_performance_reset', 'cpu_performance_start', 'cpu_performance_stop')
     Assert-ToolActions (@($tools | Where-Object name -eq 'communityshaders.screenshot')[0]) @('capabilities', 'status', 'sequence_start', 'request_get', 'request_cancel')
 
     # The hard wall-clock deadline starts only after exact runtime/tool binding.
@@ -911,6 +924,12 @@ try {
     $script:boundHealth = $health
     $rawSessionIdentity = Assert-AuthoritativeRuntimeBinding -BindingIdentity $script:bindingIdentity -Health $health
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'binding\raw-session-identity.json') -Value $rawSessionIdentity | Out-Null
+    $qualificationStatus = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+        action = 'qualification_status'; expectedBuildId = $script:expectedBuildId
+    })
+    if ([bool](Get-CSXPathValue $qualificationStatus 'qualification.active' $false)) {
+        throw 'A render-scale qualification transition is already active.'
+    }
     $scene = Invoke-BoundTool -Tool 'inspect' -Arguments ([ordered]@{ kind = 'scene' })
     $cell = Get-SceneCellEditorId $scene
     if (-not [string]::Equals($cell, [string]$script:protocol.fixture.startCellEditorId, [StringComparison]::OrdinalIgnoreCase)) { throw "Start fixture must already be $($script:protocol.fixture.startCellEditorId); actual cell is '$cell'." }
@@ -1216,7 +1235,14 @@ catch {
         $timeEvidence.within600Seconds = $timeEvidence.orchestrationElapsedMs -le 600000
     }
     $timeEvidence.performanceElapsedMs = [Math]::Round($performanceWatch.Elapsed.TotalMilliseconds, 3)
-    try {
+    if (-not $script:evidenceWritable) {
+        $result = [pscustomobject][ordered]@{
+            ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null
+            summaryPath = $null; reviewTemplatePath = $null
+            errors = @($failures) + @($infrastructureFailures)
+        }
+    }
+    else { try {
         if (-not (Test-Path -LiteralPath $script:evidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $script:evidenceRoot -Force | Out-Null }
         if ($script:connection) { Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'mcp-transcript.json') -Value @($script:connection.transcript) | Out-Null }
         if (-not (Test-Path -LiteralPath (Join-Path $script:evidenceRoot 'visual-index.json') -PathType Leaf)) {
@@ -1232,7 +1258,7 @@ catch {
         $updated = Update-CSXQualificationReport -EvidenceDirectory $script:evidenceRoot
         $result = [pscustomobject][ordered]@{ ok = $false; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewTemplatePath = $null; errors = @($updated.report.errors) }
     }
-    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; reviewTemplatePath = $null; errors = @($failures) + @($infrastructureFailures) + @("Evidence finalization failed: $($_.Exception.Message)") } }
+    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; reviewTemplatePath = $null; errors = @($failures) + @($infrastructureFailures) + @("Evidence finalization failed: $($_.Exception.Message)") } } }
 }
 
 $result | ConvertTo-Json -Depth 100 -Compress:$Compact

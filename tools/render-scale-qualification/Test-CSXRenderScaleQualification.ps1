@@ -16,6 +16,7 @@ try {
     $record = Get-CSXQualificationProtocol -Path $protocolPath
     $protocol = $record.protocol
     Assert-Test ($record.sha256 -match '^[a-f0-9]{64}$') 'Protocol hash is not SHA-256.'
+    Assert-Test ([int]$protocol.protocolRevision -eq 2 -and $protocol.transitionTimingOrigin -eq 'qualification_dispatch') 'Protocol does not freeze dispatch-to-stable timing.'
     Assert-Test ($protocol.requiredMethodsCommit -eq 'b46edeaed14c41ad41225641c3a4943f1db25db6') 'Required methods commit is not frozen.'
     $reorderedProtocol = ($protocol | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100)
     $first = $reorderedProtocol.menuAssay.nvidiaMatrix[0]
@@ -40,9 +41,26 @@ try {
     $toolCallBody = [regex]::Match($moduleSource, '(?s)function Invoke-CSXMcpTool.*?(?=function Get-CSXRemainingMilliseconds)').Value
     Assert-Test ($toolCallBody -match 'Invoke-WebRequest' -and $toolCallBody -notmatch 'Invoke-CSXRetriedWebRequest') 'Mutating MCP tools/call can still be replayed.'
 
+    $runner = Join-Path $PSScriptRoot 'Invoke-CSXRenderScaleQualification.ps1'
+    $runnerSource = Get-Content -LiteralPath $runner -Raw
+    Assert-Test ($runnerSource -match '(?s)cleanupHealth.*?Assert-AuthoritativeRuntimeBinding' -and
+        $runnerSource -match '(?s)qualification\.ownerId.*?script:runId') 'Emergency cleanup is not bound to the runtime and transition owner.'
+    $protectedEvidence = Join-Path $fixture 'protected-evidence'
+    New-Item -ItemType Directory -Path $protectedEvidence -Force | Out-Null
+    $sentinelPath = Join-Path $protectedEvidence 'sentinel.txt'
+    [IO.File]::WriteAllText($sentinelPath, 'preserve-me')
+    $protectedResult = (& $runner -EvidenceDirectory $protectedEvidence -RuntimePath (Join-Path $fixture 'missing-runtime.json') `
+        -ExpectedBuildId ('f' * 64) -GpuVendor NVIDIA -FixtureManifestPath (Join-Path $fixture 'missing-fixture.json') `
+        -NoExit -Compact) | ConvertFrom-Json -Depth 100
+    Assert-Test ($protectedResult.status -eq 'INFRASTRUCTURE_ERROR' -and
+        @(Get-ChildItem -LiteralPath $protectedEvidence -Force).Count -eq 1 -and
+        [IO.File]::ReadAllText($sentinelPath) -eq 'preserve-me') 'A rejected nonempty evidence directory was modified.'
+
     $cocNvidia = New-CSXCocScenario -Protocol $protocol -GpuVendor NVIDIA -FsrRuntime fsr4 -ExpectedBuildId ('a' * 64) -RunId test
-    Assert-Test (@($cocNvidia.steps).Count -eq 60) 'COC scenario is not exactly begin/coc/wait x20.'
+    Assert-Test (@($cocNvidia.steps).Count -eq 80) 'COC scenario is not exactly begin/dispatch/coc/wait x20.'
     Assert-Test (@($cocNvidia.steps | Where-Object tool -eq 'console').Count -eq 20) 'COC scenario does not contain exactly 20 console COCs.'
+    $cocDispatches = @($cocNvidia.steps | Where-Object label -like 'coc-*-dispatch')
+    Assert-Test ($cocDispatches.Count -eq 20 -and @($cocDispatches.args.ownerId | Sort-Object -Unique)[0] -eq 'test') 'COC dispatch marks are incomplete or not owner-bound.'
     $cocWaits = @($cocNvidia.steps | Where-Object label -like 'coc-*-wait')
     Assert-Test ($cocWaits.Count -eq 20 -and @($cocWaits.args.timeoutMs | Sort-Object -Unique)[0] -eq 120000) 'COC waiter ceiling is incorrect.'
     Assert-Test ($cocWaits[0].args.target.method -eq 'dlss' -and $cocWaits[0].args.target.dlssProfile -eq 'K' -and -not $cocWaits[0].args.target.renderScaleMode) 'NVIDIA interior target is not exact DLAA/K.'
@@ -51,18 +69,20 @@ try {
 
     $nvidiaMenu = New-CSXMenuScenario -Protocol $protocol -GpuVendor NVIDIA -FsrRuntime fsr3 -ExpectedBuildId ('b' * 64) -ExpectedCellEditorId WindhelmExterior01 -RunId test
     Assert-Test (@($nvidiaMenu.scenario.steps | Where-Object label -like 'menu-*-wait').Count -eq 25) 'NVIDIA menu matrix does not contain 25 waits.'
+    Assert-Test (@($nvidiaMenu.scenario.steps | Where-Object label -like 'menu-*-dispatch').Count -eq 25) 'NVIDIA menu matrix does not contain 25 dispatch marks.'
     Assert-Test (@($nvidiaMenu.scenario.steps | Where-Object { $_.label -like 'menu-*-dlss_trace_read' }).Count -eq @($protocol.menuAssay.nvidiaMatrix | Where-Object method -eq dlss).Count) 'NVIDIA DLSS transitions are not individually traced.'
     $lastNvidiaWait = @($nvidiaMenu.scenario.steps | Where-Object label -eq 'menu-25-wait')[0]
     Assert-Test ($lastNvidiaWait.args.target.method -eq 'fsr' -and $lastNvidiaWait.args.target.qualityMode -eq 1) 'NVIDIA matrix does not end at FSR Hoshipa.'
 
     $amdMenu = New-CSXMenuScenario -Protocol $protocol -GpuVendor AMD -FsrRuntime fsr3 -ExpectedBuildId ('c' * 64) -ExpectedCellEditorId WindhelmExterior01 -RunId test
     Assert-Test (@($amdMenu.scenario.steps | Where-Object label -like 'menu-*-wait').Count -eq 25) 'AMD menu matrix does not contain 25 waits.'
+    Assert-Test (@($amdMenu.scenario.steps | Where-Object label -like 'menu-*-dispatch').Count -eq 25) 'AMD menu matrix does not contain 25 dispatch marks.'
     Assert-Test (@($amdMenu.scenario.steps | Where-Object { $_.label -like 'menu-*-apply' -and $_.args.method -ne 'fsr' }).Count -eq 0) 'AMD matrix attempts a non-FSR apply.'
     Assert-Test (@($amdMenu.scenario.steps | Where-Object label -like 'amd-capability-dlss_trace_*').Count -eq 4) 'AMD matrix omitted the zero-dispatch DLSS trace lifecycle check.'
 
     $recovery = New-CSXRecoveryScenario -Protocol $protocol -ExpectedBuildId ('d' * 64) -RunId test -FsrRuntime fsr4 -RecoveryLabel one
     Assert-Test (@($recovery.steps | Where-Object { $null -ne (Get-CSXPropertyValue $_ 'wait') }).Count -eq 1 -and [int]$recovery.steps[0].wait -eq 30000) 'Recovery does not contain exactly one 30 second server wait.'
-    Assert-Test (@($recovery.steps | Where-Object { [string](Get-CSXPathValue $_ 'args.action') -in @('qualification_begin', 'qualification_wait', 'qualification_cancel') }).Count -eq 0) 'Recovery incorrectly uses a fresh-transition waiter.'
+    Assert-Test (@($recovery.steps | Where-Object { [string](Get-CSXPathValue $_ 'args.action') -in @('qualification_begin', 'qualification_dispatch', 'qualification_wait', 'qualification_cancel') }).Count -eq 0) 'Recovery incorrectly uses a fresh-transition waiter.'
     Assert-Test (@($recovery.steps | Where-Object { (Get-CSXPropertyValue $_ 'tool') -eq 'communityshaders.screenshot' }).Count -eq 1) 'Recovery omitted screenshot readiness.'
 
     $visualRequest = New-CSXVisualSequenceRequest -Protocol $protocol -RunId test -Replicate 1 -DestinationDirectory $fixture

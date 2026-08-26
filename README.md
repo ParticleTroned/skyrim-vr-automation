@@ -113,11 +113,22 @@ driver against the live D3D adapter; the save, camera, stabilizer, and HMD
 manifest fields are operator-attested and are labeled that way in evidence.
 Copy `status.adapter.deviceId` and `status.adapter.driverVersion` exactly into
 the GPU block, then record the operator and UTC time in the attestation block.
+Use a new or empty evidence directory for each run.
 
 A local qualification omits `-PrMode`. After visual finalization its verdict is
 `LOCAL_PASS` and its summary is `qualification-summary.md`, so it cannot be
-mistaken for PR evidence. PR mode additionally requires the intended baseline
-Build ID:
+mistaken for PR evidence:
+
+```powershell
+$buildId = '<64-character CSX build ID>'
+.\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
+    -EvidenceDirectory C:\Evidence\render-scale-local `
+    -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
+    -ExpectedBuildId $buildId -GpuVendor NVIDIA `
+    -FixtureManifestPath C:\Evidence\render-scale-fixture.json
+```
+
+PR mode additionally requires an accepted baseline with a different Build ID:
 
 ```powershell
 $buildId = '<64-character CSX build ID>'
@@ -132,10 +143,23 @@ $baselineBuildId = '<64-character baseline CSX build ID>'
 ```
 
 The automated phase is capped at ten minutes after exact runtime binding and
-includes two 30-second recovery barriers. Complete the offline visual review
-and regenerate the final PR summary with `-FinalizeReview` before claiming a
-pass. `INFRASTRUCTURE_ERROR` identifies transport, runtime-binding, or evidence
-finalization failures separately from a qualification `FAIL`.
+includes two 30-second recovery barriers. A successful capture phase returns
+`REVIEW_PENDING` with exit code 3. Copy `visual-review.template.json` to
+`visual-review.json` without changing its artifact bindings. Fill in a reviewer
+ID, set `reviewer.kind` to `human` or `image_model`, and record an ISO-8601
+`reviewedUtc`. Set every sample's seven verdicts to `pass` for local mode or
+`no_regression` for PR mode, set `overallVerdict` to `pass`, then finalize:
+
+```powershell
+.\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
+    -EvidenceDirectory C:\Evidence\render-scale-local `
+    -FinalizeReview
+```
+
+Final `PASS` or `LOCAL_PASS` returns 0, qualification `FAIL` returns 2,
+`REVIEW_PENDING` returns 3, and `INFRASTRUCTURE_ERROR` returns 4. Infrastructure
+errors include transport, exact runtime/tool/capability/fixture/baseline
+binding, and evidence-finalization setup failures.
 
 For SteamVR, pass nonstandard paths with `-SettingsPath` and `-SteamVRRoot`.
 The bundled null-HMD profile is resolved relative to the controller script.

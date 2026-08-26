@@ -77,11 +77,14 @@ function Get-CSXObjectSha256 {
 
 function Assert-CSXProtocol {
     param([Parameter(Mandatory)]$Protocol)
-    if ([string]$Protocol.schema -ne 'csx-render-scale-pr-v1' -or [int]$Protocol.protocolRevision -ne 1) {
-        throw 'The protocol must be csx-render-scale-pr-v1 revision 1.'
+    if ([string]$Protocol.schema -ne 'csx-render-scale-pr-v1' -or [int]$Protocol.protocolRevision -ne 2) {
+        throw 'The protocol must be csx-render-scale-pr-v1 revision 2.'
     }
     if ([string]$Protocol.requiredMethodsCommit -ne 'b46edeaed14c41ad41225641c3a4943f1db25db6') {
         throw 'The protocol does not bind the required DLSS trace methods commit.'
+    }
+    if ([string]$Protocol.transitionTimingOrigin -ne 'qualification_dispatch') {
+        throw 'The protocol must measure transitions from the server dispatch mark.'
     }
     if ([string]$Protocol.fixtureManifestSchema -ne 'csx-render-scale-fixture-v1' -or [int]$Protocol.thresholds.stressRecordSchemaVersion -ne 13) {
         throw 'The protocol must bind fixture schema v1 and stress-record schema v13.'
@@ -95,13 +98,13 @@ function Assert-CSXProtocol {
         [string]$Protocol.fixture.interiorCellEditorId -ne 'WhiterunDragonsreach' -or
         [string]$Protocol.cocAssay.firstTarget -ne 'WhiterunDragonsreach' -or
         [string]$Protocol.cocAssay.secondTarget -ne 'WindhelmExterior01') {
-        throw 'Protocol revision 1 requires the exact Windhelm/Dragonsreach COC fixture.'
+        throw 'Protocol revision 2 requires the exact Windhelm/Dragonsreach COC fixture.'
     }
     $foveation = $Protocol.fixture.foveation
     if (-not [bool]$foveation.foveatedVendorDispatch -or [double]$foveation.foveatedCenterArea -ne 0.3 -or
         -not [bool]$foveation.peripheryTAAEnable -or [double]$foveation.peripheryTAACenterArea -ne 0.3 -or
         [double]$foveation.peripheryTAAOuterScale -ne 0.7) {
-        throw 'Protocol revision 1 requires foveation 0.3 plus periphery TAA 0.3/0.7.'
+        throw 'Protocol revision 2 requires foveation 0.3 plus periphery TAA 0.3/0.7.'
     }
     $nvidiaInterior = $Protocol.fixture.profiles.nvidiaInterior
     $amdInterior = $Protocol.fixture.profiles.amdInterior
@@ -112,11 +115,11 @@ function Assert-CSXProtocol {
         [int]$amdInterior.qualityModeValue -ne 0 -or [bool]$amdInterior.renderScaleMode -or
         [string]$sharedExterior.method -ne 'fsr' -or [int]$sharedExterior.qualityModeValue -ne 1 -or
         -not [bool]$sharedExterior.renderScaleMode) {
-        throw 'Protocol revision 1 requires exact NVIDIA DLAA/K, AMD AA, and shared FSR Hoshipa profiles.'
+        throw 'Protocol revision 2 requires exact NVIDIA DLAA/K, AMD AA, and shared FSR Hoshipa profiles.'
     }
     if ((@($Protocol.cocAssay.diagnostics) -join ',') -ne 'render_scale_stress,cpu_performance' -or
         [int]$Protocol.menuAssay.traceReadLimit -ne 16) {
-        throw 'Protocol revision 1 requires both diagnostics and the exact DLSS trace read bound.'
+        throw 'Protocol revision 2 requires both diagnostics and the exact DLSS trace read bound.'
     }
     foreach ($matrixName in @('nvidiaMatrix', 'amdMatrix')) {
         $matrix = @($Protocol.menuAssay.$matrixName)
@@ -148,7 +151,7 @@ function Assert-CSXProtocol {
     $actualNvidia = @($Protocol.menuAssay.nvidiaMatrix | ForEach-Object { "$($_.method)|$([int]$_.qualityModeValue)" })
     $actualAmd = @($Protocol.menuAssay.amdMatrix | ForEach-Object { "$($_.method)|$([int]$_.qualityModeValue)" })
     if (($actualNvidia -join ',') -ne ($canonicalNvidia -join ',') -or ($actualAmd -join ',') -ne ($canonicalAmd -join ',')) {
-        throw 'Protocol revision 1 requires the exact canonical NVIDIA and AMD menu orders.'
+        throw 'Protocol revision 2 requires the exact canonical NVIDIA and AMD menu orders.'
     }
     $nvidiaMethods = @($Protocol.menuAssay.nvidiaMatrix.method | Sort-Object -Unique)
     if ('dlss' -notin $nvidiaMethods -or 'fsr' -notin $nvidiaMethods) { throw 'NVIDIA matrix must exercise DLSS and FSR.' }
@@ -179,9 +182,9 @@ function Assert-CSXProtocol {
     $allocated = [int]$Protocol.timeBudget.cocAssayMs + [int]$Protocol.timeBudget.menuAssayMs +
         [int]$Protocol.timeBudget.visualAssayMs + 2 * [int]$Protocol.timeBudget.recoveryMs
     if ($allocated -gt [int]$Protocol.timeBudget.orchestrationMs) { throw 'Assay allocations exceed the orchestration cap.' }
-    $canonicalRevisionOneSha256 = 'ab103791639ef80776272ac73cacc2cb85e98adddaa63fa47d1a6154bcca121d'
-    if ((Get-CSXObjectSha256 -Value $Protocol) -ne $canonicalRevisionOneSha256) {
-        throw 'The revision-1 protocol definition changed; publish a new protocol revision instead.'
+    $canonicalRevisionTwoSha256 = 'f8e89ae9e0009ed1ae6f4b69c6ab384c15719300a74bdb5007d7bb3a46456ed4'
+    if ((Get-CSXObjectSha256 -Value $Protocol) -ne $canonicalRevisionTwoSha256) {
+        throw 'The revision-2 protocol definition changed; publish a new protocol revision instead.'
     }
 }
 
@@ -352,11 +355,16 @@ function New-CSXCocScenario {
         $steps.Add([ordered]@{
             tool = 'communityshaders.renderscale'
             label = "coc-$($ordinal.ToString('D2'))-begin"
-            args = [ordered]@{ action = 'qualification_begin'; transitionId = $transitionId; expectedBuildId = $ExpectedBuildId }
+            args = [ordered]@{ action = 'qualification_begin'; transitionId = $transitionId; ownerId = $RunId; expectedBuildId = $ExpectedBuildId }
+        })
+        $steps.Add([ordered]@{
+            tool = 'communityshaders.renderscale'
+            label = "coc-$($ordinal.ToString('D2'))-dispatch"
+            args = [ordered]@{ action = 'qualification_dispatch'; transitionId = $transitionId; ownerId = $RunId; expectedBuildId = $ExpectedBuildId }
         })
         $steps.Add([ordered]@{
             tool = 'console'
-            label = "coc-$($ordinal.ToString('D2'))-dispatch"
+            label = "coc-$($ordinal.ToString('D2'))-command"
             args = [ordered]@{ action = 'exec'; command = "coc $cell"; capture = $false }
         })
         $steps.Add([ordered]@{
@@ -369,6 +377,7 @@ function New-CSXCocScenario {
                 expectedCellEditorId = $cell
                 target = $profile
                 foveation = $foveation
+                ownerId = $RunId
                 expectedBuildId = $ExpectedBuildId
             }
         })
@@ -414,13 +423,17 @@ function New-CSXMenuScenario {
         $transitionId = [uint64](100 + $ordinal)
         $steps.Add([ordered]@{
             tool = 'communityshaders.renderscale'; label = "$prefix-begin"
-            args = [ordered]@{ action = 'qualification_begin'; transitionId = $transitionId; expectedBuildId = $ExpectedBuildId }
+            args = [ordered]@{ action = 'qualification_begin'; transitionId = $transitionId; ownerId = $RunId; expectedBuildId = $ExpectedBuildId }
         })
         $apply = [ordered]@{
             action = 'apply'; method = [string]$entry.method; enabled = [bool]$entry.renderScaleMode
             qualityMode = [int]$entry.qualityModeValue; expectedBuildId = $ExpectedBuildId
         }
         if ($isDLSS) { $apply['dlssPreset'] = 1 }
+        $steps.Add([ordered]@{
+            tool = 'communityshaders.renderscale'; label = "$prefix-dispatch"
+            args = [ordered]@{ action = 'qualification_dispatch'; transitionId = $transitionId; ownerId = $RunId; expectedBuildId = $ExpectedBuildId }
+        })
         $steps.Add([ordered]@{ tool = 'communityshaders.renderscale'; label = "$prefix-apply"; args = $apply })
         $target = Add-CSXExactRuntimeToProfile -Profile $entry -FsrRuntime $FsrRuntime
         $steps.Add([ordered]@{
@@ -429,7 +442,7 @@ function New-CSXMenuScenario {
                 action = 'qualification_wait'; transitionId = $transitionId
                 timeoutMs = [int]$Protocol.timeBudget.menuTransitionMs
                 expectedCellEditorId = $ExpectedCellEditorId; target = $target
-                foveation = $foveation; expectedBuildId = $ExpectedBuildId
+                foveation = $foveation; ownerId = $RunId; expectedBuildId = $ExpectedBuildId
             }
         })
         if ($isDLSS) {

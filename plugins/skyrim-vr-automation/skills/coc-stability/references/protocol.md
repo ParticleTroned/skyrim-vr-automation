@@ -22,9 +22,10 @@ For each measured transition:
 
 1. Preserve the source scene and take the dispatch timestamp on the DevBench
    server clock.
-2. Submit the exact `coc <target>` command and one bounded server-side
-   stability waiter. The waiter continuously observes live state without
-   returning each intermediate snapshot to the client.
+2. Mark the dispatch QPC/frame with the caller-owned qualification transition,
+   then immediately submit the exact `coc <target>` command and one bounded
+   server-side stability waiter. The waiter continuously observes live state
+   without returning each intermediate snapshot to the client.
 3. Require `playerLoaded` and the exact destination cell before testing CSX
    stability. This prevents the source world's still-loaded state from passing
    before the queued COC executes.
@@ -117,7 +118,7 @@ contaminate a transition-throughput measurement.
 For each transition report:
 
 - target and ordinal;
-- dispatch-to-first-stable elapsed milliseconds using server timestamps;
+- dispatch-to-first-stable elapsed milliseconds using the server QPC mark;
 - dispatch and stable frames;
 - profile signature, method, render-scale state, and stereo-evidence class;
 - relatch/recovery, stretch, fallback, fidelity, and lifecycle deltas.

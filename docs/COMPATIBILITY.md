@@ -15,9 +15,10 @@ loopback interface. The runtime metadata path must be supplied explicitly or by
 `profiler-control` uses that same runtime contract to collect and compare the
 resolved CSX GPU/CPU timer block. Its totals are not whole-frame GPU time.
 
-`coc-stability` requires the server-side render-scale qualification begin and
-wait actions. It stops when the exact waiter contract is unavailable instead
-of substituting loading-menu checks, client polling, or fixed delays.
+`coc-stability` requires the server-side render-scale qualification begin,
+dispatch-mark, and wait actions. It stops when the exact waiter contract is
+unavailable instead of substituting loading-menu checks, client polling, or
+fixed delays.
 
 `render-scale-qualification` requires exact CSX runtime/build binding, verifies
 any supplied artifact binding, and depends on the server-side render-scale
