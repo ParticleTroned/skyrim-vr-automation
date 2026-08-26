@@ -9,7 +9,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Add the bounded `csx-render-scale-pr-v1` qualification runner, frozen
   protocol, offline visual-review finalizer, and deterministic evidence for
   render-scale pull requests, including the complete DLSS trace lifecycle
-  introduced by `b46edeaed14c41ad41225641c3a4943f1db25db6`.
+  introduced by `b46edeaed14c41ad41225641c3a4943f1db25db6`. The runner binds
+  the live D3D adapter, never replays uncertain mutating calls, distinguishes
+  local, PR, and infrastructure verdicts, and requires an explicit baseline
+  Build ID for PR comparisons.
 - Add exact-identity AMD64 live-thread context capture with bit-preserving
   pointer/register conversions validated under Windows PowerShell and
   PowerShell 7.

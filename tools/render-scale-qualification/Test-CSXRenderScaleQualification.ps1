@@ -24,6 +24,21 @@ try {
     $reorderRejected = $false
     try { Assert-CSXProtocol -Protocol $reorderedProtocol } catch { $reorderRejected = $true }
     Assert-Test $reorderRejected 'A reordered canonical menu matrix was accepted.'
+    foreach ($mutation in @('cell', 'foveation', 'visual', 'gate')) {
+        $changedProtocol = ($protocol | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100)
+        switch ($mutation) {
+            cell { $changedProtocol.fixture.interiorCellEditorId = 'WhiterunBanneredMare' }
+            foveation { $changedProtocol.fixture.foveation.peripheryTAAOuterScale = 0.6 }
+            visual { $changedProtocol.visualAssay.source.fallback = 'game_mirror' }
+            gate { $changedProtocol.thresholds.maximumPresentationStretchEpisodeFrames = 3 }
+        }
+        $mutationRejected = $false
+        try { Assert-CSXProtocol -Protocol $changedProtocol } catch { $mutationRejected = $true }
+        Assert-Test $mutationRejected "A revision-1 $mutation mutation was accepted."
+    }
+    $moduleSource = Get-Content -LiteralPath $module -Raw
+    $toolCallBody = [regex]::Match($moduleSource, '(?s)function Invoke-CSXMcpTool.*?(?=function Get-CSXRemainingMilliseconds)').Value
+    Assert-Test ($toolCallBody -match 'Invoke-WebRequest' -and $toolCallBody -notmatch 'Invoke-CSXRetriedWebRequest') 'Mutating MCP tools/call can still be replayed.'
 
     $cocNvidia = New-CSXCocScenario -Protocol $protocol -GpuVendor NVIDIA -FsrRuntime fsr4 -ExpectedBuildId ('a' * 64) -RunId test
     Assert-Test (@($cocNvidia.steps).Count -eq 60) 'COC scenario is not exactly begin/coc/wait x20.'
@@ -60,17 +75,17 @@ try {
     Assert-Test ($wilson.lower -eq 0 -and $wilson.upper -gt 0.16 -and $wilson.upper -lt 0.17) 'Wilson 95% interval is incorrect.'
 
     $traceSummary = [pscustomobject]@{
-        active = $false; sessionID = 7; totalRecords = 4; overwrittenRecords = 1; droppedRecords = 0
+        active = $false; sessionID = 7; capacity = 256; retainedRecords = 3; totalRecords = 4; overwrittenRecords = 1; droppedRecords = 0
         setConstantsCalls = 2; evaluateCalls = 2; duplicatedConstantsFailures = 0; evaluateFailures = 0
         lastDuplicatedConstantsFailureFound = $false; lastEvaluateFailureFound = $false
     }
     $traceStartSummary = [pscustomobject]@{
-        active = $true; sessionID = 7; totalRecords = 0; overwrittenRecords = 0; droppedRecords = 0
+        active = $true; sessionID = 7; capacity = 256; retainedRecords = 0; totalRecords = 0; overwrittenRecords = 0; droppedRecords = 0
         setConstantsCalls = 0; evaluateCalls = 0; duplicatedConstantsFailures = 0; evaluateFailures = 0
         lastDuplicatedConstantsFailureFound = $false; lastEvaluateFailureFound = $false
     }
     $traceResetSummary = [pscustomobject]@{
-        active = $false; sessionID = 6; totalRecords = 0; overwrittenRecords = 0; droppedRecords = 0
+        active = $false; sessionID = 6; capacity = 256; retainedRecords = 0; totalRecords = 0; overwrittenRecords = 0; droppedRecords = 0
         setConstantsCalls = 0; evaluateCalls = 0; duplicatedConstantsFailures = 0; evaluateFailures = 0
         lastDuplicatedConstantsFailureFound = $false; lastEvaluateFailureFound = $false
     }
@@ -91,8 +106,8 @@ try {
     $leftConstants = [pscustomobject]@{ sequence = 1; timestampQPC = 10; stage = 'set_constants'; resultCode = 0; threadID = 1; compositorCycle = 20; signature = $leftSignature }
     $rightConstants = [pscustomobject]@{ sequence = 3; timestampQPC = 11; stage = 'set_constants'; resultCode = 0; threadID = 1; compositorCycle = 20; signature = $rightSignature }
     $traceRecords = @(
-        [pscustomobject]@{ current = $leftConstants; previousConstantsFound = $false },
         [pscustomobject]@{ current = [pscustomobject]@{ sequence = 2; timestampQPC = 11; stage = 'evaluate'; resultCode = 0; threadID = 1; compositorCycle = 20; signature = $leftSignature }; previousConstantsFound = $true; previousConstants = $leftConstants },
+        [pscustomobject]@{ current = $rightConstants; previousConstantsFound = $false },
         [pscustomobject]@{ current = [pscustomobject]@{ sequence = 4; timestampQPC = 12; stage = 'evaluate'; resultCode = 0; threadID = 1; compositorCycle = 20; signature = $rightSignature }; previousConstantsFound = $true; previousConstants = $rightConstants }
     )
     $traceWaitResults = @(foreach ($ordinal in 1..25) {
@@ -107,13 +122,19 @@ try {
         [pscustomobject]@{ label = 'menu-01-dlss_trace_start'; result = [pscustomobject]@{ action = 'dlss_trace_start'; capture = $traceStartSummary } },
         [pscustomobject]@{ label = 'menu-01-dlss_trace_stop'; result = [pscustomobject]@{ action = 'dlss_trace_stop'; capture = $traceSummary } },
         [pscustomobject]@{ label = 'menu-01-dlss_trace_read'; result = [pscustomobject]@{ action = 'dlss_trace_read'; capture = [pscustomobject]@{
-            summary = $traceSummary; afterSequence = 0; limit = 16; records = $traceRecords
+            summary = $traceSummary; afterSequence = 0; limit = 16; availableFromSequence = 2; requestedSequenceOverwritten = $true
+            latestSequence = 4; lastReturnedSequence = 4; moreAvailable = $false; records = $traceRecords
         } } }
     ) }
     $traceCheck = Test-CSXDLSSScenarioEvidence -ScenarioResult $traceScenario -GpuVendor NVIDIA
     Assert-Test ($traceCheck.ok -and $traceCheck.warnings.Count -eq 1) 'Ring overwrite was not classified as partial raw detail only.'
     $traceSummary.droppedRecords = 1
     Assert-Test (-not (Test-CSXDLSSScenarioEvidence -ScenarioResult $traceScenario -GpuVendor NVIDIA).ok) 'Dropped DLSS records did not fail the trace gate.'
+    $traceSummary.droppedRecords = 0
+    $truncatedTrace = $traceScenario | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    $truncatedRead = @($truncatedTrace.results | Where-Object label -eq 'menu-01-dlss_trace_read')[0]
+    $truncatedRead.result.capture.records = @($truncatedRead.result.capture.records | Select-Object -First 2)
+    Assert-Test (-not (Test-CSXDLSSScenarioEvidence -ScenarioResult $truncatedTrace -GpuVendor NVIDIA).ok) 'A truncated DLSS read page passed retained-record completeness.'
 
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
     $fixtureManifestPath = Join-Path $fixture 'fixture.json'
@@ -122,11 +143,31 @@ try {
         save = [pscustomobject]@{ id = 'save'; sha256 = ('1' * 64) }
         camera = [pscustomobject]@{ id = 'camera'; configurationSha256 = ('2' * 64) }
         vrFpsStabilizer = [pscustomobject]@{ version = '1.0'; configurationSha256 = ('3' * 64) }
-        gpu = [pscustomobject]@{ vendor = 'NVIDIA'; deviceId = 'device'; driverVersion = 'driver' }
+        gpu = [pscustomobject]@{ vendor = 'NVIDIA'; deviceId = '0x2684'; driverVersion = '32.0.15.9000' }
         hmd = [pscustomobject]@{ model = 'hmd'; runtime = 'SteamVR'; runtimeVersion = 'runtime'; refreshHz = 90 }
+        attestation = [pscustomobject]@{ operatorId = 'offline-test'; recordedUtc = '2026-08-26T12:00:00Z'; operatorAttestedFields = @('save', 'camera', 'vrFpsStabilizer', 'hmd') }
     }) | Out-Null
     $fixtureRecord = Get-CSXFixtureManifest -Path $fixtureManifestPath -GpuVendor NVIDIA
     Assert-Test ($fixtureRecord.sha256 -match '^[a-f0-9]{64}$') 'Fixture manifest was not hash-bound.'
+    $liveGpu = Get-CSXLiveGpuFixtureEvidence -Adapter ([pscustomobject]@{
+        available = $true; driverVersionAvailable = $true; vendorId = 0x10DE; deviceId = 0x2684
+        driverVersion = '32.0.15.9000'; description = 'NVIDIA test adapter'; luidHigh = 1; luidLow = 2
+    }) -Manifest $fixtureRecord.manifest -GpuVendor NVIDIA
+    Assert-Test ($liveGpu.verified -and $liveGpu.deviceId -eq '0x2684') 'Live GPU identity was not bound to the fixture.'
+    $wrongGpuRejected = $false
+    try {
+        Get-CSXLiveGpuFixtureEvidence -Adapter ([pscustomobject]@{
+            available = $true; driverVersionAvailable = $true; vendorId = 0x1002; deviceId = 0x2684; driverVersion = '32.0.15.9000'
+        }) -Manifest $fixtureRecord.manifest -GpuVendor NVIDIA | Out-Null
+    } catch { $wrongGpuRejected = $true }
+    Assert-Test $wrongGpuRejected 'A live adapter from the wrong vendor was accepted.'
+    $wrongDriverRejected = $false
+    try {
+        Get-CSXLiveGpuFixtureEvidence -Adapter ([pscustomobject]@{
+            available = $true; driverVersionAvailable = $true; vendorId = 0x10DE; deviceId = 0x2684; driverVersion = '32.0.15.9999'
+        }) -Manifest $fixtureRecord.manifest -GpuVendor NVIDIA | Out-Null
+    } catch { $wrongDriverRejected = $true }
+    Assert-Test $wrongDriverRejected 'A mismatched live driver version was accepted.'
     $fixtureMismatchRejected = $false
     try { Get-CSXFixtureManifest -Path $fixtureManifestPath -GpuVendor AMD | Out-Null } catch { $fixtureMismatchRejected = $true }
     Assert-Test $fixtureMismatchRejected 'Fixture GPU mismatch was accepted.'
@@ -159,6 +200,7 @@ try {
     $baselineIndexHash = Get-CSXFileSha256 $baselineIndexPath
     $baselineRunPath = Write-CSXJsonFile -Path (Join-Path $baselineRoot 'run.json') -Value ([pscustomobject]@{
         schema = 'csx-render-scale-pr-v1'; status = 'PASS'; runId = 'baseline'
+        runtime = [pscustomobject]@{ buildId = ('f' * 64) }
         assays = [pscustomobject]@{ visual = [pscustomobject]@{ indexPath = 'visual-index.json'; indexSha256 = $baselineIndexHash } }
     })
     $baselineRunHash = Get-CSXFileSha256 $baselineRunPath
@@ -192,6 +234,31 @@ try {
     Write-CSXJsonFile -Path (Join-Path $candidateRoot 'visual-review.json') -Value $review | Out-Null
     $final = Update-CSXQualificationReport -EvidenceDirectory $candidateRoot
     Assert-Test ($final.report.status -eq 'PASS') "Offline review finalization did not produce PASS: $($final.report.errors -join ' | ')"
+    $localRoot = Join-Path $fixture 'local'
+    New-Item -ItemType Directory -Path (Join-Path $localRoot 'visual') -Force | Out-Null
+    foreach ($sample in $candidateSamples) {
+        foreach ($artifact in $sample.artifacts) {
+            Copy-Item -LiteralPath (Join-Path $candidateRoot $artifact.path) -Destination (Join-Path $localRoot $artifact.path)
+        }
+    }
+    Write-CSXJsonFile -Path (Join-Path $localRoot 'visual-index.json') -Value $candidateIndex | Out-Null
+    $localRaw = $raw | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    $localRaw.schema = 'csx-render-scale-local-v1-raw'; $localRaw.prMode = $false; $localRaw.baseline = $null
+    $localRaw.automatedGates | Add-Member -NotePropertyName infrastructureErrors -NotePropertyValue @() -Force
+    Write-CSXJsonFile -Path (Join-Path $localRoot 'run.raw.json') -Value $localRaw | Out-Null
+    $localReview = New-CSXVisualReviewTemplate -EvidenceDirectory $localRoot -RunRaw $localRaw -VisualIndex $candidateIndex
+    $localReview.reviewer.id = 'offline-test'; $localReview.reviewer.kind = 'human'; $localReview.reviewedUtc = [DateTime]::UtcNow.ToString('o'); $localReview.overallVerdict = 'pass'
+    foreach ($sample in $localReview.samples) {
+        foreach ($name in @('sharpness', 'blur', 'shimmer', 'stereoAlignment', 'equalEyeScale', 'geometryCorrespondence', 'renderScaleLatch')) { $sample.verdicts.$name = 'pass' }
+    }
+    Write-CSXJsonFile -Path (Join-Path $localRoot 'visual-review.json') -Value $localReview | Out-Null
+    $localFinal = Update-CSXQualificationReport -EvidenceDirectory $localRoot
+    Assert-Test ($localFinal.report.status -eq 'LOCAL_PASS' -and $localFinal.report.schema -eq 'csx-render-scale-local-v1' -and
+        [IO.Path]::GetFileName($localFinal.summaryPath) -eq 'qualification-summary.md') 'Standalone evidence could be confused with a passing PR qualification.'
+    $localRaw.automatedGates.infrastructureErrors = @('synthetic transport failure')
+    Write-CSXJsonFile -Path (Join-Path $localRoot 'run.raw.json') -Value $localRaw | Out-Null
+    $infrastructureFinal = Update-CSXQualificationReport -EvidenceDirectory $localRoot
+    Assert-Test ($infrastructureFinal.report.status -eq 'INFRASTRUCTURE_ERROR') 'Infrastructure failure was not classified separately.'
     [IO.File]::AppendAllText((Join-Path $candidateRoot $candidateSamples[0].artifacts[0].path), 'tamper')
     Assert-Test (-not (Test-CSXVisualReview -EvidenceDirectory $candidateRoot -RunRaw $raw -VisualIndex $candidateIndex -Review $review -BaselineVisualIndex $baselineIndex).ok) 'Tampered candidate image did not invalidate the review.'
 

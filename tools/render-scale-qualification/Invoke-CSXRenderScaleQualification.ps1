@@ -10,6 +10,7 @@ param(
     [Parameter(ParameterSetName = 'Run')][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedArtifactSha256,
     [Parameter(ParameterSetName = 'Run')][switch]$PrMode,
     [Parameter(ParameterSetName = 'Run')][string]$BaselinePath,
+    [Parameter(ParameterSetName = 'Run')][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedBaselineBuildId,
     [Parameter(Mandatory, ParameterSetName = 'Finalize')][switch]$FinalizeReview,
     [string]$ProtocolPath = (Join-Path $PSScriptRoot 'protocol.v1.json'),
     [switch]$NoExit,
@@ -194,6 +195,16 @@ function Invoke-EmergencyCleanup {
     param([Collections.Generic.List[string]]$Warnings)
     try {
         $cleanupConnection = New-CSXMcpConnection -Runtime $script:runtime -ClientName 'CSXRenderScaleQualificationCleanup'
+        if ($script:visualStartMayBeOwned -and -not $script:activeVisualRequestId) {
+            $uncertainScreenshot = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
+                contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-uncertain-screenshot-status"; action = 'status'
+            }) -TimeoutSeconds 5 -AllowSemanticFailure
+            $uncertainRequestId = [string](Get-CSXPathValue $uncertainScreenshot 'result.dispatcher.activeAcquisitionRequestId')
+            if ($uncertainRequestId -match '\S') { $script:activeVisualRequestId = $uncertainRequestId }
+            elseif ([int](Get-CSXPathValue $uncertainScreenshot 'result.dispatcher.activeSequences' 0) -ne 0) {
+                throw 'An uncertain screenshot start left active work without a cancellable request ID.'
+            }
+        }
         if ($script:activeVisualRequestId) {
             Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
                 contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-cancel"
@@ -250,13 +261,14 @@ function Invoke-EmergencyCleanup {
             ($script:traceMayBeOwned -and ([bool](Get-CSXPathValue $postTrace 'capture.active' $true) -or [bool](Get-CSXPathValue $traceRead 'capture.summary.active' $true))) -or
             ($script:ownsStressCapture -and [bool](Get-CSXPathValue $postRender 'status.session.active' $true)) -or
             ($script:ownsCpuCapture -and [bool](Get-CSXPathValue $postRender 'status.cpuPerformance.active' $true)) -or
-            ($script:activeVisualRequestId -and ([int](Get-CSXPathValue $postScreenshot 'result.dispatcher.activeSequences' 1) -ne 0 -or
-                [string](Get-CSXPathValue $postScreenshot 'result.dispatcher.activeAcquisitionRequestId') -eq [string]$script:activeVisualRequestId))) {
+            ($script:visualStartMayBeOwned -and ([int](Get-CSXPathValue $postScreenshot 'result.dispatcher.activeSequences' 1) -ne 0 -or
+                [string](Get-CSXPathValue $postScreenshot 'result.dispatcher.activeAcquisitionRequestId') -match '\S'))) {
             throw 'Emergency cleanup postconditions were not idle.'
         }
         $script:ownsStressCapture = $false
         $script:ownsCpuCapture = $false
         $script:traceMayBeOwned = $false
+        $script:visualStartMayBeOwned = $false
         $script:ownedTransitionIds.Clear()
         Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'cleanup\postconditions.json') -Value ([pscustomobject][ordered]@{
             qualification = $postQualification; trace = $postTrace; traceRead = $traceRead; renderScale = $postRender; screenshot = $postScreenshot
@@ -268,7 +280,7 @@ function Invoke-EmergencyCleanup {
 
 function Test-RunnerOwnsRuntimeState {
     return $script:ownsStressCapture -or $script:ownsCpuCapture -or $script:traceMayBeOwned -or
-        $null -ne $script:activeVisualRequestId -or $script:ownedTransitionIds.Count -gt 0
+        $script:visualStartMayBeOwned -or $null -ne $script:activeVisualRequestId -or $script:ownedTransitionIds.Count -gt 0
 }
 
 function Get-StretchSummary($StressStop) {
@@ -360,7 +372,7 @@ function Get-StressTransitionEvidence($StressStop, $Scenario, $WaitRecords, $Mat
     return $evidence
 }
 
-function Get-DiagnosticFailureCount($WaitRecords) {
+function Get-DiagnosticFailureLowerBound($WaitRecords) {
     $total = 0L
     foreach ($record in $WaitRecords) {
         $delta = Get-CSXPropertyValue $record.diagnostics 'delta' $record.diagnostics
@@ -373,6 +385,13 @@ function Get-DiagnosticFailureCount($WaitRecords) {
         if ($counts.Count -gt 0) { $total += [long](($counts | Measure-Object -Maximum).Maximum) }
     }
     return $total
+}
+
+function Get-RenderScaleFailureEventCount($WaitRecords) {
+    return [long](($WaitRecords | ForEach-Object {
+        $delta = Get-CSXPropertyValue $_.diagnostics 'delta' $_.diagnostics
+        [long](Get-CSXPathValue $delta 'stress.failureEvents' 0)
+    } | Measure-Object -Sum).Sum)
 }
 
 function Get-DiagnosticFailureBreakdown($WaitRecords) {
@@ -393,7 +412,7 @@ function Get-DiagnosticFailureBreakdown($WaitRecords) {
 
 function Get-FailedTransitionCount($WaitRecords, [int]$ExpectedCount) {
     $observedFailures = @($WaitRecords | Where-Object {
-        -not [bool]$_.satisfied -or $null -eq $_.elapsedMs -or (Get-DiagnosticFailureCount @($_)) -gt 0
+        -not [bool]$_.satisfied -or $null -eq $_.elapsedMs -or (Get-DiagnosticFailureLowerBound @($_)) -gt 0
     }).Count
     return $observedFailures + [Math]::Max(0, $ExpectedCount - @($WaitRecords).Count)
 }
@@ -467,6 +486,7 @@ function Assert-RecoveryScenario($Scenario, [string]$Label, [string]$FsrRuntime,
     $cell = Get-SceneCellEditorId $scene
     if (-not [string]::Equals($cell, [string]$script:protocol.fixture.startCellEditorId, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label recovery observed wrong cell '$cell'." }
     $bindingIdentity = Assert-AuthoritativeRuntimeBinding -BindingIdentity $script:bindingIdentity -Health $health
+    $gpuIdentity = Get-CSXLiveGpuFixtureEvidence -Adapter (Get-CSXPathValue $render 'status.adapter') -Manifest $script:fixtureManifest -GpuVendor $script:gpuVendor
     if ([bool](Get-CSXPathValue $qualification 'qualification.active' $true)) { throw "$Label recovery found a qualification owner." }
     if ([bool](Get-CSXPathValue $trace 'capture.active' $true)) { throw "$Label recovery found an active DLSS trace." }
     if ([bool](Get-CSXPathValue $render 'status.session.active' $false) -or [bool](Get-CSXPathValue $render 'status.cpuPerformance.active' $false)) { throw "$Label recovery found an active diagnostic session." }
@@ -514,7 +534,7 @@ function Assert-RecoveryScenario($Scenario, [string]$Label, [string]$FsrRuntime,
         [int](Get-CSXPathValue $screenshot 'result.worker.outstandingArtifacts' 1) -ne 0) { throw "$Label recovery found screenshot work still active." }
     Assert-FoveationSettings $settings
     [void](Assert-ExteriorSnapshot -SnapshotResult $upscaling -ExpectedFsrRuntime $FsrRuntime)
-    return [pscustomobject][ordered]@{ wait = $wait; scene = $scene; health = $health; bindingIdentity = $bindingIdentity; qualification = $qualification; trace = $trace; renderScale = $render; upscaling = $upscaling; settings = $settings; screenshot = $screenshot }
+    return [pscustomobject][ordered]@{ wait = $wait; scene = $scene; health = $health; bindingIdentity = $bindingIdentity; gpuIdentity = $gpuIdentity; qualification = $qualification; trace = $trace; renderScale = $render; upscaling = $upscaling; settings = $settings; screenshot = $screenshot }
 }
 
 function Wait-VisualSequence($StartResponse, [int]$Replicate) {
@@ -535,6 +555,7 @@ function Wait-VisualSequence($StartResponse, [int]$Replicate) {
         Start-Sleep -Milliseconds ([Math]::Min([int]$script:protocol.timeBudget.screenshotPollMs, $remaining))
     } while ($true)
     $script:activeVisualRequestId = $null
+    $script:visualStartMayBeOwned = $false
     if ($state -ne 'completed') { throw "Visual replicate $Replicate ended in '$state', not completed." }
     $effective = Get-CSXPathValue $receipt 'result.effective'
     if ([int](Get-CSXPropertyValue $effective 'frameCount' 0) -ne 16 -or
@@ -689,13 +710,19 @@ function Get-VisualFixtureObservation([string]$Label, [string]$FsrRuntime) {
     return [pscustomobject][ordered]@{ label = $Label; request = $scenarioRequest; result = $scenario; evidence = $evidence }
 }
 
-function Resolve-BaselineRun([string]$Path) {
+function Resolve-BaselineRun([string]$Path, [string]$ExpectedBuildId, [string]$CandidateBuildId) {
     if ([string]::IsNullOrWhiteSpace($Path)) { throw 'PR mode requires -BaselinePath.' }
+    if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) { throw 'PR mode requires -ExpectedBaselineBuildId.' }
     $resolved = [IO.Path]::GetFullPath($Path)
     if (Test-Path -LiteralPath $resolved -PathType Container) { $resolved = Join-Path $resolved 'run.json' }
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "Baseline run does not exist: $resolved" }
     $run = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json -Depth 100
     if ([string]$run.schema -ne 'csx-render-scale-pr-v1' -or [string]$run.status -ne 'PASS') { throw 'PR baseline must be a passing csx-render-scale-pr-v1 run.' }
+    $actualBuildId = ([string](Get-CSXPathValue $run 'runtime.buildId')).ToLowerInvariant()
+    if ($actualBuildId -notmatch '^[a-f0-9]{64}$' -or $actualBuildId -ne $ExpectedBuildId.ToLowerInvariant()) {
+        throw 'PR baseline Build ID does not match -ExpectedBaselineBuildId.'
+    }
+    if ($actualBuildId -eq $CandidateBuildId.ToLowerInvariant()) { throw 'Candidate and baseline Build IDs must differ.' }
     $root = Split-Path -Parent $resolved
     $indexRelative = [string](Get-CSXPathValue $run 'assays.visual.indexPath')
     if ([string]::IsNullOrWhiteSpace($indexRelative)) { throw 'Baseline run omits its relative visual index path.' }
@@ -797,11 +824,11 @@ function Get-MenuStrata($Rows) {
 if ($FinalizeReview) {
     try {
         $updated = Update-CSXQualificationReport -EvidenceDirectory $EvidenceDirectory
-        $result = [pscustomobject][ordered]@{ ok = $updated.report.status -eq 'PASS'; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; errors = @($updated.report.errors) }
+        $result = [pscustomobject][ordered]@{ ok = $updated.report.status -in @('PASS', 'LOCAL_PASS'); status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; errors = @($updated.report.errors) }
     }
-    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'FAIL'; runPath = $null; summaryPath = $null; errors = @($_.Exception.Message) } }
+    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; errors = @($_.Exception.Message) } }
     $result | ConvertTo-Json -Depth 80 -Compress:$Compact
-    if (-not $NoExit) { if ($result.status -eq 'PASS') { exit 0 } elseif ($result.status -eq 'REVIEW_PENDING') { exit 3 } else { exit 2 } }
+    if (-not $NoExit) { if ($result.status -in @('PASS', 'LOCAL_PASS')) { exit 0 } elseif ($result.status -eq 'REVIEW_PENDING') { exit 3 } elseif ($result.status -eq 'INFRASTRUCTURE_ERROR') { exit 4 } else { exit 2 } }
     return
 }
 
@@ -815,6 +842,7 @@ $script:gpuVendor = $GpuVendor
 $script:evidenceRoot = [IO.Path]::GetFullPath($EvidenceDirectory)
 $warnings = [Collections.Generic.List[string]]::new()
 $failures = [Collections.Generic.List[string]]::new()
+$infrastructureFailures = [Collections.Generic.List[string]]::new()
 $assays = [ordered]@{ coc = $null; menu = $null; visual = $null }
 $recoveries = [ordered]@{
     one = [pscustomobject][ordered]@{ state = 'not-run'; requestedDurationMs = 30000; wallClockMs = $null; evidence = 'recovery-1.json' }
@@ -824,22 +852,29 @@ $fixture = $null
 $fixtureManifestRecord = $null
 $runtimeEvidence = $null
 $baselineEvidence = $null
+$liveGpuEvidence = $null
 $timeEvidence = [ordered]@{ deadlineStartsAfterRuntimeBinding = $true; orchestrationElapsedMs = $null; performanceElapsedMs = $null; within600Seconds = $false }
 $performanceWatch = [Diagnostics.Stopwatch]::new()
 $script:visualWatch = [Diagnostics.Stopwatch]::new()
 $script:activeVisualRequestId = $null
+$script:visualStartMayBeOwned = $false
 $script:boundHealth = $null
 $script:bindingIdentity = $null
+$script:fixtureManifest = $null
 $script:ownsStressCapture = $false
 $script:ownsCpuCapture = $false
 $script:traceMayBeOwned = $false
 $script:ownedTransitionIds = [Collections.Generic.HashSet[uint64]]::new()
+$script:phase = 'preflight'
 $protocolRecord = $null
 
 try {
     $protocolRecord = Get-CSXQualificationProtocol -Path $ProtocolPath
     $script:protocol = $protocolRecord.protocol
-    if ($PrMode -and [bool]$script:protocol.thresholds.prBaselineRequired -and [string]::IsNullOrWhiteSpace($BaselinePath)) { throw 'PR mode requires a matching baseline artifact.' }
+    if ($PrMode -and [bool]$script:protocol.thresholds.prBaselineRequired -and
+        ([string]::IsNullOrWhiteSpace($BaselinePath) -or [string]::IsNullOrWhiteSpace($ExpectedBaselineBuildId))) {
+        throw 'PR mode requires a matching baseline artifact and explicit baseline Build ID.'
+    }
     if (Test-Path -LiteralPath $script:evidenceRoot) {
         if (@(Get-ChildItem -LiteralPath $script:evidenceRoot -Force).Count -ne 0) { throw 'EvidenceDirectory must be new or empty; existing evidence is never overwritten.' }
     }
@@ -868,6 +903,7 @@ try {
     # The hard wall-clock deadline starts only after exact runtime/tool binding.
     $script:orchestrationWatch = [Diagnostics.Stopwatch]::StartNew()
     $fixtureManifestRecord = Get-CSXFixtureManifest -Path $FixtureManifestPath -GpuVendor $GpuVendor
+    $script:fixtureManifest = $fixtureManifestRecord.manifest
     Copy-Item -LiteralPath $fixtureManifestRecord.path -Destination (Join-Path $script:evidenceRoot 'fixture-manifest.json')
     if ((Get-CSXFileSha256 (Join-Path $script:evidenceRoot 'fixture-manifest.json')) -ne $fixtureManifestRecord.sha256) { throw 'Copied fixture manifest SHA-256 changed.' }
     $script:connection = New-CSXMcpConnection -Runtime $script:runtime
@@ -880,6 +916,7 @@ try {
     if (-not [string]::Equals($cell, [string]$script:protocol.fixture.startCellEditorId, [StringComparison]::OrdinalIgnoreCase)) { throw "Start fixture must already be $($script:protocol.fixture.startCellEditorId); actual cell is '$cell'." }
     $renderStatus = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'status'; expectedBuildId = $script:expectedBuildId })
     Assert-CSXProducer $renderStatus 'render-scale status'
+    $liveGpuEvidence = Get-CSXLiveGpuFixtureEvidence -Adapter (Get-CSXPathValue $renderStatus 'status.adapter') -Manifest $fixtureManifestRecord.manifest -GpuVendor $GpuVendor
     Assert-RenderScaleInactiveCaptures $renderStatus
     $traceStatus = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId })
     Assert-CSXProducer $traceStatus 'DLSS trace preflight'
@@ -908,6 +945,14 @@ try {
         upscalingCapabilities = Get-CSXPropertyValue $capabilities 'capabilities'
         screenshotContract = Get-CSXPropertyValue $screenshotCapabilities 'contract'
         runtime = [ordered]@{ vr = Get-CSXPropertyValue $health 'vr'; exe = Get-CSXPropertyValue $health 'exe'; hmd = Get-CSXPathValue $screenshotCapabilities 'server.runtime.hmd' }
+        verification = [ordered]@{
+            liveGpu = $liveGpuEvidence
+            operatorAttestation = [ordered]@{
+                operatorId = [string]$fixtureManifestRecord.manifest.attestation.operatorId
+                recordedUtc = [string]$fixtureManifestRecord.manifest.attestation.recordedUtc
+                fields = @($fixtureManifestRecord.manifest.attestation.operatorAttestedFields)
+            }
+        }
     }
     $fixtureJson = $fixtureObject | ConvertTo-Json -Depth 80 -Compress
     $fixtureHashBytes = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($fixtureJson))
@@ -915,13 +960,14 @@ try {
     $fixture = [pscustomobject][ordered]@{ gpuVendor = $GpuVendor; fsrRuntime = $fsrRuntime; matrixName = $fixtureObject.matrixName; fingerprint = $fixtureHash; manifest = $fixtureObject.fixtureManifest; inputs = $fixtureObject }
     $runtimeEvidence = [pscustomobject][ordered]@{ buildId = $script:expectedBuildId; artifactSha256 = $ExpectedArtifactSha256; binding = $binding.runtimeIdentity; health = $health }
 
-    $baseline = if ($PrMode) { Resolve-BaselineRun $BaselinePath } else { $null }
+    $baseline = if ($PrMode) { Resolve-BaselineRun -Path $BaselinePath -ExpectedBuildId $ExpectedBaselineBuildId -CandidateBuildId $script:expectedBuildId } else { $null }
     if ($PrMode) {
         if ([string]$baseline.run.fixture.fingerprint -ne $fixtureHash) { throw 'PR baseline fixture fingerprint does not match the candidate.' }
         if ([string]$baseline.run.protocol.sha256 -ne $protocolRecord.sha256) { throw 'PR baseline protocol hash does not match the candidate.' }
     }
 
     # Assay 1: one server-side scenario, no client polling between COCs.
+    $script:phase = 'qualification'
     Invoke-DiagnosticStart 'COC'
     $cocScenarioRequest = New-CSXCocScenario -Protocol $script:protocol -GpuVendor $GpuVendor -FsrRuntime $fsrRuntime -ExpectedBuildId $script:expectedBuildId -RunId $script:runId
     foreach ($transitionId in 1..20) { [void]$script:ownedTransitionIds.Add([uint64]$transitionId) }
@@ -939,7 +985,8 @@ try {
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\stress-record.json') -Value $cocDiagnostics.stress.record | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\cpu-record.json') -Value $cocDiagnostics.cpu.cpuPerformance | Out-Null
     $cocRecords = @(Get-CSXQualificationWaitRecords -ScenarioResult $cocScenario -LabelPrefix 'coc')
-    $cocFailureCount = Get-DiagnosticFailureCount $cocRecords
+    $cocFailureCount = Get-RenderScaleFailureEventCount $cocRecords
+    $cocDiagnosticFailureLowerBound = Get-DiagnosticFailureLowerBound $cocRecords
     $cocFailureBreakdown = Get-DiagnosticFailureBreakdown $cocRecords
     $cocFailedTransitions = Get-FailedTransitionCount $cocRecords 20
     $cocTimes = [double[]]@($cocRecords | Where-Object { $null -ne $_.elapsedMs } | ForEach-Object elapsedMs)
@@ -959,7 +1006,7 @@ try {
             interior = Get-CSXMetricSummary -Values ([double[]]@($cocRecords | Where-Object { $_.ordinal % 2 -eq 1 } | ForEach-Object elapsedMs)) -IncludeRate
             exterior = Get-CSXMetricSummary -Values ([double[]]@($cocRecords | Where-Object { $_.ordinal % 2 -eq 0 } | ForEach-Object elapsedMs)) -IncludeRate
         }
-        failureCount = $cocFailureCount; failureBreakdown = $cocFailureBreakdown; failedTransitions = $cocFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $cocFailedTransitions -Trials 20
+        failureCount = $cocFailureCount; diagnosticFailureLowerBound = $cocDiagnosticFailureLowerBound; failureBreakdown = $cocFailureBreakdown; failedTransitions = $cocFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $cocFailedTransitions -Trials 20
         stretch = $stretch; stressTransitions = $cocStressTransitions
         validation = [pscustomobject][ordered]@{ scenarioOk = [bool]$cocScenario.ok -and -not [bool]$cocScenario.aborted; stretchError = $stretchError; stressRecordError = $cocStressError }
         evidence = [pscustomobject][ordered]@{ scenarioRequest = 'coc/scenario.request.json'; scenarioResult = 'coc/scenario.result.json'; stressRecord = 'coc/stress-record.json'; cpuRecord = 'coc/cpu-record.json' }
@@ -970,7 +1017,7 @@ try {
     if ($stretchError) { throw $stretchError }
     if ($cocStressError) { throw $cocStressError }
     if (-not $stretch.recordAccepted) { throw 'COC schema-v13 stress record verdict failed.' }
-    if ($cocFailureCount -ne 0 -or $cocFailedTransitions -ne 0) { throw "COC assay recorded $cocFailureCount render-scale failures in $cocFailedTransitions transitions." }
+    if ($cocDiagnosticFailureLowerBound -ne 0 -or $cocFailedTransitions -ne 0) { throw "COC assay recorded $cocFailureCount render-scale failure events and diagnostic failures in $cocFailedTransitions transitions." }
     if ([double]$stretch.maxFrames -gt [double]$script:protocol.thresholds.maximumPresentationStretchEpisodeFrames -or [double]$stretch.meanFrames -gt [double]$script:protocol.thresholds.maximumMeanPresentationStretchEpisodeFrames) { throw 'COC presentation stretch exceeded the versioned threshold.' }
 
     $recoveryOneRequest = New-CSXRecoveryScenario -Protocol $script:protocol -ExpectedBuildId $script:expectedBuildId -RunId $script:runId -FsrRuntime $fsrRuntime -RecoveryLabel one
@@ -1003,7 +1050,8 @@ try {
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\stress-record.json') -Value $menuDiagnostics.stress.record | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\cpu-record.json') -Value $menuDiagnostics.cpu.cpuPerformance | Out-Null
     $menuRecords = @(Get-CSXQualificationWaitRecords -ScenarioResult $menuScenario -LabelPrefix 'menu')
-    $menuFailureCount = Get-DiagnosticFailureCount $menuRecords
+    $menuFailureCount = Get-RenderScaleFailureEventCount $menuRecords
+    $menuDiagnosticFailureLowerBound = Get-DiagnosticFailureLowerBound $menuRecords
     $menuFailureBreakdown = Get-DiagnosticFailureBreakdown $menuRecords
     $menuFailedTransitions = Get-FailedTransitionCount $menuRecords 25
     $traceEvidence = Test-CSXDLSSScenarioEvidence -ScenarioResult $menuScenario -GpuVendor $GpuVendor
@@ -1022,7 +1070,7 @@ try {
     $assays.menu = [pscustomobject][ordered]@{
         matrixName = $menuBuild.matrixName; completed = $menuRecords.Count; wallClockMs = [Math]::Round($menuWallWatch.Elapsed.TotalMilliseconds, 3); records = $menuRows
         statistics = Get-CSXMetricSummary -Values $menuTimes -IncludeRate; strata = Get-MenuStrata $menuRows
-        failureCount = $menuFailureCount; failureBreakdown = $menuFailureBreakdown; failedTransitions = $menuFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $menuFailedTransitions -Trials 25
+        failureCount = $menuFailureCount; diagnosticFailureLowerBound = $menuDiagnosticFailureLowerBound; failureBreakdown = $menuFailureBreakdown; failedTransitions = $menuFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $menuFailedTransitions -Trials 25
         stretch = $menuStretch; stressTransitions = $menuStressTransitions
         dlssTrace = [pscustomobject][ordered]@{
             outcome = $(if (-not $traceEvidence.ok) { 'failed' } elseif ($GpuVendor -eq 'NVIDIA') { 'dispatch_validated' } else { 'capability_lifecycle_only_zero_dispatch' })
@@ -1039,7 +1087,7 @@ try {
     if ($menuStretchError) { throw $menuStretchError }
     if ($menuStressError) { throw $menuStressError }
     if (-not $menuStretch.recordAccepted) { throw 'CS-menu schema-v13 stress record verdict failed.' }
-    if ($menuFailureCount -ne 0 -or $menuFailedTransitions -ne 0) { throw 'CS-menu assay recorded a render-scale failure.' }
+    if ($menuDiagnosticFailureLowerBound -ne 0 -or $menuFailedTransitions -ne 0) { throw 'CS-menu assay recorded a render-scale or diagnostic failure.' }
     if (-not $traceEvidence.ok) { throw "DLSS trace validation failed: $($traceEvidence.errors -join ' ')" }
     $script:traceMayBeOwned = $false
 
@@ -1058,18 +1106,33 @@ try {
     # Assay 3: three sequential one-minute asynchronous HMD sequences.
     $visualRuns = [Collections.Generic.List[object]]::new()
     $visualObservations = [Collections.Generic.List[object]]::new()
+    $assays.visual = [pscustomobject][ordered]@{
+        state = 'in_progress'; completedReplicates = 0; wallClockMs = 0.0
+        requestedFrames = 48; validatedChildReceipts = 0; reviewOrdinals = @(1, 8, 16)
+        indexPath = $null; indexSha256 = $null; fixtureObservations = @(); runs = @()
+    }
     $script:visualWatch.Start()
     $visualObservations.Add((Get-VisualFixtureObservation -Label 'visual-before-1' -FsrRuntime $fsrRuntime))
+    $assays.visual.fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
     for ($replicate = 1; $replicate -le 3; $replicate++) {
         $destination = Join-Path $script:evidenceRoot "visual\rep-$($replicate.ToString('D2'))"
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
         $request = New-CSXVisualSequenceRequest -Protocol $script:protocol -RunId $script:runId -Replicate $replicate -DestinationDirectory $destination
         Write-CSXJsonFile -Path (Join-Path $destination 'sequence.request.json') -Value $request | Out-Null
+        $script:visualStartMayBeOwned = $true
         $start = Invoke-BoundTool -Tool 'communityshaders.screenshot' -Arguments $request
         $run = Wait-VisualSequence -StartResponse $start -Replicate $replicate
         Write-CSXJsonFile -Path (Join-Path $destination 'sequence.terminal.json') -Value $run.receipt | Out-Null
         $visualRuns.Add($run)
         $visualObservations.Add((Get-VisualFixtureObservation -Label "visual-after-$replicate" -FsrRuntime $fsrRuntime))
+        $assays.visual.completedReplicates = $visualRuns.Count
+        $assays.visual.wallClockMs = [Math]::Round($script:visualWatch.Elapsed.TotalMilliseconds, 3)
+        $assays.visual.fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
+        $assays.visual.runs = @($visualRuns | ForEach-Object { [pscustomobject][ordered]@{
+            replicate = $_.replicate; requestId = $_.requestId
+            manifestPath = [IO.Path]::GetRelativePath($script:evidenceRoot, $_.manifestPath); manifestSha256 = $_.manifestSha256
+            terminalReceiptPath = "visual/rep-$($_.replicate.ToString('D2'))/sequence.terminal.json"
+        } })
     }
     $visualIntegrity = Get-VisualIndexSamples @($visualRuns)
     foreach ($replicate in 1..3) {
@@ -1085,7 +1148,7 @@ try {
         throw 'The visual assay, including all 48 child-receipt integrity checks, exceeded its 195 second allocation.'
     }
     $assays.visual = [pscustomobject][ordered]@{
-        completedReplicates = $visualRuns.Count; wallClockMs = [Math]::Round($script:visualWatch.Elapsed.TotalMilliseconds, 3)
+        state = 'complete'; completedReplicates = $visualRuns.Count; wallClockMs = [Math]::Round($script:visualWatch.Elapsed.TotalMilliseconds, 3)
         requestedFrames = 48; validatedChildReceipts = @($visualIntegrity.children).Count; reviewOrdinals = @(1, 8, 16)
         indexPath = 'visual-index.json'; indexSha256 = $visualIndexSha256
         fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
@@ -1108,7 +1171,7 @@ try {
         $baselineEvidence = [pscustomobject][ordered]@{
             path = $bundle.path; runSha256 = $bundle.runSha256; visualIndexPath = $bundle.visualIndexPath; visualIndexSha256 = $bundle.visualIndexSha256
             candidateRunId = $script:runId; baselineRunId = [string]$baseline.run.runId
-            baselineBuildId = [string]$baseline.run.runtime.buildId
+            baselineBuildId = [string]$baseline.run.runtime.buildId; expectedBaselineBuildId = $ExpectedBaselineBuildId.ToLowerInvariant()
             cocPaired = $cocComparison; menuPaired = $menuComparison
             gates = [pscustomobject][ordered]@{ cocAggregateMedianP95 = $cocSpeedGate; menuAggregateMedianP95 = $menuSpeedGate }
         }
@@ -1121,11 +1184,12 @@ try {
     $timeEvidence.performanceElapsedMs = [Math]::Round($performanceWatch.Elapsed.TotalMilliseconds, 3)
     $timeEvidence.within600Seconds = $timeEvidence.orchestrationElapsedMs -le [int]$script:protocol.timeBudget.orchestrationMs
     if (-not $timeEvidence.within600Seconds) { throw 'The run exceeded the 600 second orchestration deadline.' }
+    $script:phase = 'evidence_finalization'
     $raw = [pscustomobject][ordered]@{
-        schema = 'csx-render-scale-pr-v1-raw'; runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
+        schema = $(if ($PrMode) { 'csx-render-scale-pr-v1-raw' } else { 'csx-render-scale-local-v1-raw' }); runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
         protocol = [pscustomobject][ordered]@{ schema = $script:protocol.schema; revision = $script:protocol.protocolRevision; sha256 = $protocolRecord.sha256; requiredMethodsCommit = $script:protocol.requiredMethodsCommit }
         fixture = $fixture; runtime = $runtimeEvidence; time = $timeEvidence; assays = [pscustomobject]$assays; recoveries = [pscustomobject]$recoveries; baseline = $baselineEvidence
-        automatedGates = [pscustomobject][ordered]@{ passed = $true; failures = @() }
+        automatedGates = [pscustomobject][ordered]@{ passed = $true; failures = @(); infrastructureErrors = @() }
         warnings = @($warnings | Select-Object -Unique)
     }
     $rawPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'run.raw.json') -Value $raw
@@ -1141,7 +1205,9 @@ try {
     $result = [pscustomobject][ordered]@{ ok = $false; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewTemplatePath = (Join-Path $script:evidenceRoot 'visual-review.template.json'); errors = @($updated.report.errors) }
 }
 catch {
-    $failures.Add($_.Exception.Message)
+    $failureClass = [string]$_.Exception.Data['CSXFailureClass']
+    $isInfrastructureFailure = $failureClass -eq 'infrastructure' -or $script:phase -in @('preflight', 'evidence_finalization')
+    if ($isInfrastructureFailure) { $infrastructureFailures.Add($_.Exception.Message) } else { $failures.Add($_.Exception.Message) }
     if ($script:connection -and $script:runtime -and (Test-RunnerOwnsRuntimeState)) { Invoke-EmergencyCleanup $warnings }
     if ($script:orchestrationWatch -and $script:orchestrationWatch.IsRunning) { $script:orchestrationWatch.Stop() }
     if ($performanceWatch.IsRunning) { $performanceWatch.Stop() }
@@ -1158,20 +1224,21 @@ catch {
         }
         $protocolSummary = if ($script:protocol) { [pscustomobject][ordered]@{ schema = $script:protocol.schema; revision = $script:protocol.protocolRevision; sha256 = $(if ($protocolRecord) { $protocolRecord.sha256 } else { $null }); requiredMethodsCommit = $script:protocol.requiredMethodsCommit } } else { $null }
         $raw = [pscustomobject][ordered]@{
-            schema = 'csx-render-scale-pr-v1-raw'; runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
+            schema = $(if ($PrMode) { 'csx-render-scale-pr-v1-raw' } else { 'csx-render-scale-local-v1-raw' }); runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
             protocol = $protocolSummary; fixture = $fixture; runtime = $runtimeEvidence; time = $timeEvidence; assays = [pscustomobject]$assays; recoveries = [pscustomobject]$recoveries; baseline = $baselineEvidence
-            automatedGates = [pscustomobject][ordered]@{ passed = $false; failures = @($failures) }; warnings = @($warnings | Select-Object -Unique)
+            automatedGates = [pscustomobject][ordered]@{ passed = $false; failures = @($failures); infrastructureErrors = @($infrastructureFailures) }; warnings = @($warnings | Select-Object -Unique)
         }
         Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'run.raw.json') -Value $raw | Out-Null
         $updated = Update-CSXQualificationReport -EvidenceDirectory $script:evidenceRoot
-        $result = [pscustomobject][ordered]@{ ok = $false; status = 'FAIL'; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewTemplatePath = $null; errors = @($updated.report.errors) }
+        $result = [pscustomobject][ordered]@{ ok = $false; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewTemplatePath = $null; errors = @($updated.report.errors) }
     }
-    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'FAIL'; runPath = $null; summaryPath = $null; reviewTemplatePath = $null; errors = @($failures) + @("Evidence finalization failed: $($_.Exception.Message)") } }
+    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; reviewTemplatePath = $null; errors = @($failures) + @($infrastructureFailures) + @("Evidence finalization failed: $($_.Exception.Message)") } }
 }
 
 $result | ConvertTo-Json -Depth 100 -Compress:$Compact
 if (-not $NoExit) {
-    if ($result.status -eq 'PASS') { exit 0 }
+    if ($result.status -in @('PASS', 'LOCAL_PASS')) { exit 0 }
     elseif ($result.status -eq 'REVIEW_PENDING') { exit 3 }
+    elseif ($result.status -eq 'INFRASTRUCTURE_ERROR') { exit 4 }
     else { exit 2 }
 }

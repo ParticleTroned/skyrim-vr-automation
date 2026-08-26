@@ -23,5 +23,10 @@
     "runtime": "SteamVR",
     "runtimeVersion": "replace-with-runtime-version",
     "refreshHz": 90
+  },
+  "attestation": {
+    "operatorId": "replace-with-operator-identity",
+    "recordedUtc": "replace-with-iso-8601-time",
+    "operatorAttestedFields": ["save", "camera", "vrFpsStabilizer", "hmd"]
   }
 }

@@ -26,6 +26,10 @@ screenshot sequences. Its frozen protocol includes all five DLSS trace actions
 introduced by
 `b46edeaed14c41ad41225641c3a4943f1db25db6`: status, reset, start, stop, and
 read. A server that does not advertise the full contract fails preflight.
+The render-scale status must also expose the live D3D adapter vendor, device,
+and driver identity. The runner binds those values to the selected vendor
+matrix and fixture manifest, and it never retries an uncertain mutating MCP
+call.
 
 ## MO2
 

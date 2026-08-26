@@ -108,22 +108,34 @@ $env:CSX_DEVBENCH_RUNTIME_PATH = 'C:\Path\To\overwrite\SKSE\Plugins\devbench\run
 Run the render-scale qualification against an exact running build and preserve
 its evidence outside the repository. Copy `fixture.example.json`, replace every
 placeholder with the controlled save/camera/stabilizer/GPU/HMD identity, and
-record the real SHA-256 values. PR mode also requires a matching baseline:
+record the real SHA-256 values. The runner verifies GPU vendor, device ID, and
+driver against the live D3D adapter; the save, camera, stabilizer, and HMD
+manifest fields are operator-attested and are labeled that way in evidence.
+Copy `status.adapter.deviceId` and `status.adapter.driverVersion` exactly into
+the GPU block, then record the operator and UTC time in the attestation block.
+
+A local qualification omits `-PrMode`. After visual finalization its verdict is
+`LOCAL_PASS` and its summary is `qualification-summary.md`, so it cannot be
+mistaken for PR evidence. PR mode additionally requires the intended baseline
+Build ID:
 
 ```powershell
 $buildId = '<64-character CSX build ID>'
+$baselineBuildId = '<64-character baseline CSX build ID>'
 .\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
     -EvidenceDirectory C:\Evidence\render-scale-candidate `
     -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
     -ExpectedBuildId $buildId -GpuVendor NVIDIA `
     -FixtureManifestPath C:\Evidence\render-scale-fixture.json `
-    -PrMode -BaselinePath C:\Evidence\render-scale-baseline
+    -PrMode -BaselinePath C:\Evidence\render-scale-baseline `
+    -ExpectedBaselineBuildId $baselineBuildId
 ```
 
 The automated phase is capped at ten minutes after exact runtime binding and
 includes two 30-second recovery barriers. Complete the offline visual review
 and regenerate the final PR summary with `-FinalizeReview` before claiming a
-pass.
+pass. `INFRASTRUCTURE_ERROR` identifies transport, runtime-binding, or evidence
+finalization failures separately from a qualification `FAIL`.
 
 For SteamVR, pass nonstandard paths with `-SettingsPath` and `-SteamVRRoot`.
 The bundled null-HMD profile is resolved relative to the controller script.

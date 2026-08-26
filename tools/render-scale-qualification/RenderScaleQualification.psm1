@@ -212,7 +212,8 @@ function Get-CSXFixtureManifest {
         'fixtureId', 'save.id', 'save.sha256', 'camera.id', 'camera.configurationSha256',
         'vrFpsStabilizer.version', 'vrFpsStabilizer.configurationSha256',
         'gpu.vendor', 'gpu.deviceId', 'gpu.driverVersion',
-        'hmd.model', 'hmd.runtime', 'hmd.runtimeVersion'
+        'hmd.model', 'hmd.runtime', 'hmd.runtimeVersion',
+        'attestation.operatorId', 'attestation.recordedUtc'
     )) {
         $value = [string](Get-CSXPathValue $manifest $pathName)
         if ($value -notmatch '\S') { throw "Fixture manifest requires '$pathName'." }
@@ -227,10 +228,70 @@ function Get-CSXFixtureManifest {
     }
     $refreshHz = [double](Get-CSXPathValue $manifest 'hmd.refreshHz' 0)
     if (-not [double]::IsFinite($refreshHz) -or $refreshHz -le 0) { throw "Fixture manifest requires a positive finite 'hmd.refreshHz'." }
+    $expectedAttestedFields = @('save', 'camera', 'vrFpsStabilizer', 'hmd')
+    if ((@($manifest.attestation.operatorAttestedFields) -join ',') -ne ($expectedAttestedFields -join ',')) {
+        throw 'Fixture manifest must explicitly attest save, camera, vrFpsStabilizer, and hmd in that order.'
+    }
+    $attestedUtc = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$manifest.attestation.recordedUtc, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind, [ref]$attestedUtc)) {
+        throw 'Fixture manifest attestation.recordedUtc must be an ISO-8601 timestamp.'
+    }
     return [pscustomobject][ordered]@{
         path = $fullPath
         sha256 = Get-CSXFileSha256 $fullPath
         manifest = $manifest
+    }
+}
+
+function Convert-CSXAdapterId {
+    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Label)
+    if ($Value -is [byte] -or $Value -is [uint16] -or $Value -is [uint32] -or $Value -is [uint64] -or
+        $Value -is [sbyte] -or $Value -is [int16] -or $Value -is [int32] -or $Value -is [int64]) {
+        $number = [uint64]$Value
+        if ($number -gt [uint32]::MaxValue) { throw "$Label exceeds a 32-bit adapter identifier." }
+        return [uint32]$number
+    }
+    $text = ([string]$Value).Trim()
+    if ($text -match '^0[xX]([0-9A-Fa-f]{1,8})$') { return [Convert]::ToUInt32($Matches[1], 16) }
+    $parsed = [uint32]0
+    if ([uint32]::TryParse($text, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { return $parsed }
+    throw "$Label must be a decimal or 0x-prefixed 32-bit adapter identifier."
+}
+
+function Get-CSXLiveGpuFixtureEvidence {
+    param(
+        [Parameter(Mandatory)]$Adapter,
+        [Parameter(Mandatory)]$Manifest,
+        [Parameter(Mandatory)][ValidateSet('NVIDIA', 'AMD')][string]$GpuVendor
+    )
+    if (-not [bool](Get-CSXPropertyValue $Adapter 'available' $false) -or
+        -not [bool](Get-CSXPropertyValue $Adapter 'driverVersionAvailable' $false)) {
+        throw 'Live D3D adapter or driver identity is unavailable.'
+    }
+    $expectedVendorId = if ($GpuVendor -eq 'NVIDIA') { [uint32]0x10DE } else { [uint32]0x1002 }
+    $liveVendorId = Convert-CSXAdapterId -Value (Get-CSXPropertyValue $Adapter 'vendorId') -Label 'Live vendor ID'
+    $liveDeviceId = Convert-CSXAdapterId -Value (Get-CSXPropertyValue $Adapter 'deviceId') -Label 'Live device ID'
+    $manifestDeviceId = Convert-CSXAdapterId -Value (Get-CSXPathValue $Manifest 'gpu.deviceId') -Label 'Manifest GPU device ID'
+    $liveDriver = ([string](Get-CSXPropertyValue $Adapter 'driverVersion')).Trim()
+    $manifestDriver = ([string](Get-CSXPathValue $Manifest 'gpu.driverVersion')).Trim()
+    if ($liveVendorId -ne $expectedVendorId) {
+        throw "The live D3D adapter vendor does not match the selected $GpuVendor matrix."
+    }
+    if ($liveDeviceId -ne $manifestDeviceId) { throw 'The live D3D adapter device ID differs from the fixture manifest.' }
+    if ([string]::IsNullOrWhiteSpace($liveDriver) -or
+        -not [string]::Equals($liveDriver, $manifestDriver, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The live D3D driver version differs from the fixture manifest.'
+    }
+    return [pscustomobject][ordered]@{
+        verified = $true
+        matrixVendor = $GpuVendor
+        vendorId = ('0x{0:X4}' -f $liveVendorId)
+        deviceId = ('0x{0:X4}' -f $liveDeviceId)
+        driverVersion = $liveDriver
+        description = [string](Get-CSXPropertyValue $Adapter 'description')
+        luidHigh = Get-CSXPropertyValue $Adapter 'luidHigh'
+        luidLow = Get-CSXPropertyValue $Adapter 'luidLow'
     }
 }
 
@@ -737,9 +798,30 @@ function Test-CSXDLSSRetainedRecords {
     param([Parameter(Mandatory)]$Capture, [Parameter(Mandatory)]$Summary, [Parameter(Mandatory)][int]$ExpectedQualityMode)
     $errors = [Collections.Generic.List[string]]::new()
     $records = @($Capture.records)
-    if ($records.Count -eq 0 -or $records.Count -gt 16) { $errors.Add('bounded read did not retain between one and 16 records') }
+    $retained = [uint64](Get-CSXPropertyValue $Summary 'retainedRecords' ([uint64]::MaxValue))
+    $total = [uint64](Get-CSXPropertyValue $Summary 'totalRecords' 0)
+    $overwritten = [uint64](Get-CSXPropertyValue $Summary 'overwrittenRecords' ([uint64]::MaxValue))
+    $capacity = [uint64](Get-CSXPropertyValue $Summary 'capacity' 0)
+    $expectedCount = [int][Math]::Min(16u, $retained)
+    if ($retained -eq [uint64]::MaxValue -or $overwritten -eq [uint64]::MaxValue -or
+        $overwritten -gt $total -or $retained -ne $total - $overwritten -or
+        $capacity -lt $retained -or $records.Count -ne $expectedCount -or $expectedCount -eq 0) {
+        $errors.Add('bounded read cardinality does not match the complete retained-record summary')
+    }
     if ([uint64](Get-CSXPropertyValue $Capture 'afterSequence' ([uint64]::MaxValue)) -ne 0 -or
         [int](Get-CSXPropertyValue $Capture 'limit' 0) -ne 16) { $errors.Add('bounded read paging contract changed') }
+    $availableFrom = [uint64](Get-CSXPropertyValue $Capture 'availableFromSequence' ([uint64]::MaxValue))
+    $latest = [uint64](Get-CSXPropertyValue $Capture 'latestSequence' ([uint64]::MaxValue))
+    $lastReturned = [uint64](Get-CSXPropertyValue $Capture 'lastReturnedSequence' ([uint64]::MaxValue))
+    $expectedAvailableFrom = if ($retained -gt 0 -and $retained -le $total) { $total - $retained + 1u } else { 0u }
+    $expectedLastReturned = if ($expectedCount -gt 0) { $expectedAvailableFrom + [uint64]$expectedCount - 1u } else { 0u }
+    $expectedMore = $retained -gt [uint64]$expectedCount
+    $expectedOverwrittenRequest = $expectedAvailableFrom -gt 1u
+    if ($availableFrom -ne $expectedAvailableFrom -or $latest -ne $total -or $lastReturned -ne $expectedLastReturned -or
+        [bool](Get-CSXPropertyValue $Capture 'moreAvailable' (-not $expectedMore)) -ne $expectedMore -or
+        [bool](Get-CSXPropertyValue $Capture 'requestedSequenceOverwritten' (-not $expectedOverwrittenRequest)) -ne $expectedOverwrittenRequest) {
+        $errors.Add('bounded read paging metadata is incomplete or inconsistent')
+    }
     $sequences = [Collections.Generic.List[uint64]]::new()
     $evaluations = [Collections.Generic.List[object]]::new()
     foreach ($record in $records) {
@@ -805,7 +887,10 @@ function Test-CSXDLSSRetainedRecords {
         if ($stage -eq 'evaluate') { $evaluations.Add($current) }
     }
     if (@($sequences | Sort-Object -Unique).Count -ne $records.Count -or
-        (@($sequences) -join ',') -ne (@($sequences | Sort-Object) -join ',')) { $errors.Add('retained record sequences are duplicate or unordered') }
+        (@($sequences) -join ',') -ne (@($sequences | Sort-Object) -join ',') -or
+        (@($sequences) -join ',') -ne (@(for ($sequence = $expectedAvailableFrom; $sequence -le $expectedLastReturned; $sequence++) { $sequence }) -join ',')) {
+        $errors.Add('retained record sequences are duplicate, unordered, or incomplete')
+    }
     $stereoPairFound = $false
     foreach ($group in @($evaluations | Group-Object { "$(Get-CSXPropertyValue $_ 'compositorCycle')|$(Get-CSXPathValue $_ 'signature.frameToken')|$(Get-CSXPathValue $_ 'signature.frame')" })) {
         $eyes = @($group.Group | ForEach-Object { [int](Get-CSXPathValue $_ 'signature.eye' -1) } | Sort-Object -Unique)
@@ -861,7 +946,12 @@ function Test-CSXDLSSScenarioEvidence {
                 $zero = Test-CSXDLSSCaptureSummary -Summary $summary -RequireZeroDispatch
                 foreach ($error in $zero.errors) { $errors.Add("AMD trace: $error") }
             }
-            if (@($readCapture.records).Count -ne 0 -or [uint64](Get-CSXPropertyValue $readCapture 'afterSequence' ([uint64]::MaxValue)) -ne 0 -or [int](Get-CSXPropertyValue $readCapture 'limit' 0) -ne 16) {
+            if (@($readCapture.records).Count -ne 0 -or [uint64](Get-CSXPropertyValue $readCapture 'afterSequence' ([uint64]::MaxValue)) -ne 0 -or [int](Get-CSXPropertyValue $readCapture 'limit' 0) -ne 16 -or
+                [uint64](Get-CSXPropertyValue $readCapture 'availableFromSequence' ([uint64]::MaxValue)) -ne 0 -or
+                [uint64](Get-CSXPropertyValue $readCapture 'latestSequence' ([uint64]::MaxValue)) -ne 0 -or
+                [uint64](Get-CSXPropertyValue $readCapture 'lastReturnedSequence' ([uint64]::MaxValue)) -ne 0 -or
+                [bool](Get-CSXPropertyValue $readCapture 'moreAvailable' $true) -or
+                [bool](Get-CSXPropertyValue $readCapture 'requestedSequenceOverwritten' $true)) {
                 $errors.Add('AMD capability-only trace read was not the exact empty bounded page.')
             }
             $groups.Add([pscustomobject][ordered]@{ kind = 'capability_only'; ordinal = $null; summary = $readSummary; validation = [pscustomobject]@{ ok = $errors.Count -eq 0 } })
@@ -1135,12 +1225,14 @@ function Update-CSXQualificationReport {
     $raw = Get-Content -LiteralPath $rawPath -Raw | ConvertFrom-Json -Depth 100
     $index = Get-Content -LiteralPath $indexPath -Raw | ConvertFrom-Json -Depth 100
     $errors = [Collections.Generic.List[string]]::new()
+    $infrastructureErrors = [Collections.Generic.List[string]]::new()
     try {
         Assert-CSXVisualIndexSet -VisualIndex $index -Label 'Candidate' -ExpectedRunId ([string]$raw.runId)
         if ((Get-CSXFileSha256 $indexPath) -ne [string](Get-CSXPathValue $raw 'assays.visual.indexSha256')) { $errors.Add('Candidate visual-index SHA-256 binding does not match.') }
     }
     catch { $errors.Add($_.Exception.Message) }
     foreach ($failure in @($raw.automatedGates.failures)) { $errors.Add([string]$failure) }
+    foreach ($failure in @(Get-CSXPathValue $raw 'automatedGates.infrastructureErrors' @())) { $infrastructureErrors.Add([string]$failure) }
     $reviewState = 'REVIEW_PENDING'
     $reviewResult = $null
     $reviewPath = Join-Path $root 'visual-review.json'
@@ -1160,15 +1252,20 @@ function Update-CSXQualificationReport {
         }
         catch { $errors.Add("Visual review validation failed: $($_.Exception.Message)"); $reviewState = 'FAIL' }
     }
-    $status = if ($errors.Count -gt 0) { 'FAIL' } elseif ($reviewState -eq 'PASS') { 'PASS' } else { 'REVIEW_PENDING' }
+    $status = if ($infrastructureErrors.Count -gt 0) {
+        'INFRASTRUCTURE_ERROR'
+    }
+    elseif ($errors.Count -gt 0) { 'FAIL' }
+    elseif ($reviewState -eq 'PASS') { $(if ([bool]$raw.prMode) { 'PASS' } else { 'LOCAL_PASS' }) }
+    else { 'REVIEW_PENDING' }
     $report = [pscustomobject][ordered]@{
-        schema = 'csx-render-scale-pr-v1'; status = $status; runId = $raw.runId
+        schema = $(if ([bool]$raw.prMode) { 'csx-render-scale-pr-v1' } else { 'csx-render-scale-local-v1' }); status = $status; runId = $raw.runId
         generatedUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$raw.prMode
         protocol = $raw.protocol; fixture = $raw.fixture; runtime = $raw.runtime
         time = $raw.time; assays = $raw.assays; recoveries = Get-CSXPropertyValue $raw 'recoveries'; baseline = $raw.baseline
         automatedGates = $raw.automatedGates
         visualReview = [pscustomobject][ordered]@{ state = $reviewState; result = $reviewResult; path = $(if (Test-Path -LiteralPath $reviewPath) { $reviewPath } else { $null }) }
-        warnings = @($raw.warnings); errors = @($errors | Select-Object -Unique)
+        warnings = @($raw.warnings); errors = @(@($errors) + @($infrastructureErrors) | Select-Object -Unique); infrastructureErrors = @($infrastructureErrors | Select-Object -Unique)
         evidenceDirectory = $root
     }
     $runPath = Write-CSXJsonFile -Path (Join-Path $root 'run.json') -Value $report
@@ -1177,6 +1274,7 @@ function Update-CSXQualificationReport {
         runId = $raw.runId
         status = $status
         errors = @($errors | Select-Object -Unique)
+        infrastructureErrors = @($infrastructureErrors | Select-Object -Unique)
         warnings = @($raw.warnings)
     }) | Out-Null
     $cocCompleted = Get-CSXPathValue $raw 'assays.coc.completed' 0
@@ -1202,6 +1300,10 @@ function Update-CSXQualificationReport {
     $baselineRun = Get-CSXPathValue $raw 'baseline.baselineRunId' 'not applicable'
     $fixtureId = Get-CSXPathValue $raw 'fixture.manifest.fixtureId' 'unknown'
     $fixtureFingerprint = Get-CSXPathValue $raw 'fixture.fingerprint' 'unknown'
+    $liveGpuDevice = Get-CSXPathValue $raw 'fixture.inputs.verification.liveGpu.deviceId' 'unknown'
+    $liveGpuDriver = Get-CSXPathValue $raw 'fixture.inputs.verification.liveGpu.driverVersion' 'unknown'
+    $fixtureOperator = Get-CSXPathValue $raw 'fixture.inputs.verification.operatorAttestation.operatorId' 'unknown'
+    $fixtureAttestedUtc = Get-CSXPathValue $raw 'fixture.inputs.verification.operatorAttestation.recordedUtc' 'unknown'
     $recoveryOne = Get-CSXPathValue $raw 'recoveries.one.state' 'not-run'
     $recoveryTwo = Get-CSXPathValue $raw 'recoveries.two.state' 'not-run'
     $recoveryOneWall = Get-CSXPathValue $raw 'recoveries.one.wallClockMs' 'not-run'
@@ -1227,6 +1329,7 @@ function Update-CSXQualificationReport {
         "- Result: **$status**; GPU matrix: $(Get-CSXPathValue $raw 'fixture.gpuVendor' 'unknown') / $menuName.",
         "- Candidate build: $($raw.runtime.buildId); baseline build/run: $baselineBuild / $baselineRun.",
         "- Fixture: $fixtureId; fingerprint $fixtureFingerprint.",
+        "- Live GPU: $liveGpuDevice; driver $liveGpuDriver. Operator-attested fixture: $fixtureOperator at $fixtureAttestedUtc.",
         "- Time: $($raw.time.orchestrationElapsedMs) ms automated (limit 600000 ms); $($raw.time.performanceElapsedMs) ms performance interval.",
         "- Recovery barriers: first $recoveryOne / $recoveryOneWall ms; second $recoveryTwo / $recoveryTwoWall ms (30,000 ms requested each).",
         "- COC: $cocCompleted/20 stable; wall $((Get-CSXPathValue $raw 'assays.coc.wallClockMs')) ms; total $((Get-CSXPropertyValue $cocStats 'total')) ms; min $((Get-CSXPropertyValue $cocStats 'min')) ms; median $cocMedian ms; mean $((Get-CSXPropertyValue $cocStats 'mean')) ms; SD $((Get-CSXPropertyValue $cocStats 'sampleStandardDeviation')) ms; CV $((Get-CSXPropertyValue $cocStats 'coefficientOfVariation')); p95 $cocP95 ms; max $cocMax ms; rate $((Get-CSXPropertyValue $cocStats 'transitionsPerMinute'))/min.",
@@ -1238,15 +1341,19 @@ function Update-CSXQualificationReport {
         $speedLine,
         "- Evidence: $root", ''
     ) -join [Environment]::NewLine
-    if ($status -ne 'PASS') {
+    if ($status -eq 'LOCAL_PASS') {
+        $markdown += "`nThis is a passing local qualification, not a PR qualification. PR use requires -PrMode and an explicitly identified baseline build.`n"
+    }
+    elseif ($status -ne 'PASS') {
         $markdown += "`nThis is not a passing PR qualification. " + $(if ($status -eq 'REVIEW_PENDING') { 'Complete visual-review.json and rerun -FinalizeReview.' } else { 'See run.json errors.' }) + "`n"
     }
-    $summaryPath = Write-CSXTextFile -Path (Join-Path $root 'pr-summary.md') -Value $markdown
+    $summaryName = if ([bool]$raw.prMode) { 'pr-summary.md' } else { 'qualification-summary.md' }
+    $summaryPath = Write-CSXTextFile -Path (Join-Path $root $summaryName) -Value $markdown
     return [pscustomobject][ordered]@{ report = $report; runPath = $runPath; summaryPath = $summaryPath }
 }
 
 Export-ModuleMember -Function Assert-CSXProtocol, Get-CSXQualificationProtocol, Get-CSXFixtureManifest, Write-CSXJsonFile, Write-CSXTextFile, Get-CSXFileSha256,
-    Get-CSXPropertyValue, Get-CSXPathValue, ConvertTo-CSXHashtable, Add-CSXExactRuntimeToProfile, Get-CSXFoveationTarget,
+    Get-CSXPropertyValue, Get-CSXPathValue, Get-CSXLiveGpuFixtureEvidence, ConvertTo-CSXHashtable, Add-CSXExactRuntimeToProfile, Get-CSXFoveationTarget,
     New-CSXCocScenario, New-CSXMenuScenario, New-CSXRecoveryScenario, New-CSXVisualSequenceRequest,
     New-CSXMcpConnection, Invoke-CSXMcpTool, Get-CSXRemainingMilliseconds, Get-CSXBoundedTimeoutSeconds,
     Get-CSXNearestRankPercentile, Get-CSXMedian, Get-CSXMetricSummary, Get-CSXWilsonInterval, Get-CSXQualificationWaitRecords,
