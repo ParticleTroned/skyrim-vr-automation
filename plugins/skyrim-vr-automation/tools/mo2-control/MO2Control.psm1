@@ -124,6 +124,17 @@ function Find-MO2IniValue {
     return $null
 }
 
+function Get-MO2ExecutableCapabilities {
+    param([AllowNull()][string]$Binary)
+
+    if ([string]::IsNullOrWhiteSpace($Binary)) { return @() }
+    $leaf = [IO.Path]::GetFileName($Binary)
+    $capabilities = [Collections.Generic.List[string]]::new()
+    if ($leaf -match '(?i)^skse(?:vr)?_loader\.exe$') { $capabilities.Add('skse-loader') }
+    if ($leaf -ieq 'SkyrimVR.exe') { $capabilities.Add('plain-game') }
+    return @($capabilities)
+}
+
 function Get-MO2RegisteredExecutables {
     param([Parameter(Mandatory)]$Ini)
 
@@ -150,12 +161,14 @@ function Get-MO2RegisteredExecutables {
     $records = @()
     foreach ($index in ($groups.Keys | Sort-Object)) {
         $entry = $groups[$index]
+        $binary = if ($entry.Contains('binary')) { ConvertTo-MO2WindowsPath (ConvertFrom-MO2ByteArrayValue $entry['binary']) } else { $null }
         $records += [pscustomobject][ordered]@{
             index = [int]$index
             title = if ($entry.Contains('title')) { ConvertFrom-MO2ByteArrayValue $entry['title'] } else { $null }
-            binary = if ($entry.Contains('binary')) { ConvertTo-MO2WindowsPath (ConvertFrom-MO2ByteArrayValue $entry['binary']) } else { $null }
+            binary = $binary
             arguments = if ($entry.Contains('arguments')) { ConvertFrom-MO2ByteArrayValue $entry['arguments'] } else { $null }
             workingDirectory = if ($entry.Contains('workingDirectory')) { ConvertTo-MO2WindowsPath (ConvertFrom-MO2ByteArrayValue $entry['workingDirectory']) } else { $null }
+            capabilities = @(Get-MO2ExecutableCapabilities -Binary $binary)
         }
     }
 
@@ -629,6 +642,7 @@ function Invoke-MO2Validate {
         [Parameter(Mandatory)]$Config,
         [string]$Profile,
         [string]$Executable,
+        [switch]$RequireSKSE,
         [switch]$RequireClosed,
         [string]$OwnedSessionId,
         [string]$OwnedAccessId
@@ -663,6 +677,13 @@ function Invoke-MO2Validate {
         $binaryExists = -not [string]::IsNullOrWhiteSpace($registered[0].binary) -and (Test-Path -LiteralPath $registered[0].binary -PathType Leaf)
         $checks += New-MO2Check -Name 'registered-binary' -Status $(if ($binaryExists) { 'pass' } else { 'fail' }) -Message $(if ($binaryExists) { "Registered binary exists: $($registered[0].binary)" } else { "Registered binary is missing: $($registered[0].binary)" })
         if ($binaryExists) {
+            if ($RequireSKSE) {
+                $hasSKSE = @($registered[0].capabilities) -contains 'skse-loader'
+                $checks += New-MO2Check -Name 'required-skse-loader' -Status $(if ($hasSKSE) { 'pass' } else { 'fail' }) -Message $(
+                    if ($hasSKSE) { "Registered executable is an SKSE loader: $($registered[0].binary)" }
+                    else { "DevBench/SKSE-required workflow refused non-SKSE executable: $($registered[0].binary)" }
+                ) -Details @{ requiredCapability = 'skse-loader'; observedCapabilities = @($registered[0].capabilities) }
+            }
             $owner = Get-MO2ExecutableModOwner -Config $Config -Profile $data.requested.profile -Binary $registered[0].binary
             if ($owner.managedByMod) {
                 $ownerEnabled = $owner.state -eq 'enabled'
@@ -1866,12 +1887,13 @@ function Invoke-MO2Prepare {
         [Parameter(Mandatory)]$Config,
         [string]$Profile,
         [string]$Executable,
+        [switch]$RequireSKSE,
         [string]$Label = 'automation',
         [string]$AccessId,
         [switch]$WhatIf
     )
 
-    $validation = Invoke-MO2Validate -Config $Config -Profile $Profile -Executable $Executable -RequireClosed -OwnedAccessId $AccessId
+    $validation = Invoke-MO2Validate -Config $Config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -RequireClosed -OwnedAccessId $AccessId
     if (-not $validation.ok) {
         return New-MO2ActionResult -Config $Config -Command 'prepare' -Ok $false -State 'blocked' -Data @{ validation = $validation } -Warnings $validation.warnings -Errors $validation.errors
     }
@@ -1909,6 +1931,7 @@ function Invoke-MO2Prepare {
         profileDirectory = $profileDirectory
         modListPath = (Join-Path $profileDirectory 'modlist.txt')
         executable = $executableName
+        requirements = [pscustomobject][ordered]@{ skseLoader = [bool]$RequireSKSE }
         mo2Path = [string]$validation.data.config.mo2Executable
         arguments = $arguments
         selectedProfileBefore = [string]$validation.data.selectedProfile
@@ -1940,6 +1963,7 @@ function Invoke-MO2Prepare {
         profileDirectory = $profileDirectory
         modListPath = (Join-Path $profileDirectory 'modlist.txt')
         executable = $executableName
+        requirements = [pscustomobject][ordered]@{ skseLoader = [bool]$RequireSKSE }
         controllerPath = [string]$controller.controllerPath
         ownerPid = $PID
     }
@@ -2115,7 +2139,8 @@ function Invoke-MO2Launch {
     }
 
     $resumeExistingMO2 = [string]$lockData.status -in @('game-stopped', 'stop-incomplete', 'mo2-open')
-    $validation = Invoke-MO2Validate -Config $Config -Profile ([string]$lockData.profile) -Executable ([string]$lockData.executable) -RequireClosed:(-not $resumeExistingMO2) -OwnedSessionId $SessionId
+    $requireSKSE = $lockData.PSObject.Properties['requirements'] -and $lockData.requirements.PSObject.Properties['skseLoader'] -and [bool]$lockData.requirements.skseLoader
+    $validation = Invoke-MO2Validate -Config $Config -Profile ([string]$lockData.profile) -Executable ([string]$lockData.executable) -RequireSKSE:$requireSKSE -RequireClosed:(-not $resumeExistingMO2) -OwnedSessionId $SessionId
     if (-not $validation.ok) {
         return New-MO2ActionResult -Config $Config -Command 'launch' -Ok $false -State 'blocked' -Data @{ validation = $validation; lock = $owned } -Warnings $validation.warnings -Errors $validation.errors
     }

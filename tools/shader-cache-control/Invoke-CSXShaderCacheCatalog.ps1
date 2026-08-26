@@ -18,6 +18,7 @@ param(
     [string]$ShaderSourceSha256,
     [string]$BuildId,
     [string]$PresetSha256,
+    [string]$FeatureSetSha256,
     [string]$GameRuntime = 'SkyrimVR-1.4.15',
     [string]$RenderPath = 'vr',
     [string[]]$Tags = @(),
@@ -226,6 +227,9 @@ function Get-CatalogRecords($Layout) {
             if ((Test-Property $manifest.compatibility 'presetSha256') -and -not [string]::IsNullOrWhiteSpace([string]$manifest.compatibility.presetSha256)) {
                 [void](Assert-Hash ([string]$manifest.compatibility.presetSha256) 'manifest presetSha256')
             }
+            if ((Test-Property $manifest.compatibility 'featureSetSha256') -and -not [string]::IsNullOrWhiteSpace([string]$manifest.compatibility.featureSetSha256)) {
+                [void](Assert-Hash ([string]$manifest.compatibility.featureSetSha256) 'manifest featureSetSha256')
+            }
             $expectedObject = 'objects\' + $treeHash + '\ShaderCache'
             if ([string]$manifest.cacheObject -cne $expectedObject) { throw 'cache object does not match the manifest tree identity' }
             $cache = [IO.Path]::GetFullPath((Join-Path $Layout.root ([string]$manifest.cacheObject)))
@@ -273,6 +277,7 @@ function Assert-CompatibilityInput {
     if ([string]::IsNullOrWhiteSpace($RenderPath)) { throw '-RenderPath is required.' }
     $script:ShaderSourceSha256 = Assert-Hash $ShaderSourceSha256 'ShaderSourceSha256'
     if (-not [string]::IsNullOrWhiteSpace($PresetSha256)) { $script:PresetSha256 = Assert-Hash $PresetSha256 'PresetSha256' }
+    if (-not [string]::IsNullOrWhiteSpace($FeatureSetSha256)) { $script:FeatureSetSha256 = Assert-Hash $FeatureSetSha256 'FeatureSetSha256' }
     if ($AllowSourceMismatch -and [string]::IsNullOrWhiteSpace($CompatibilityReason)) {
         throw '-CompatibilityReason is required when -AllowSourceMismatch is used.'
     }
@@ -282,14 +287,22 @@ function Get-NormalizedStrings([string[]]$Values) {
     return @($Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Sort-Object -Unique)
 }
 
+function Get-RenderFamily([string]$Value) {
+    $normalized = $Value.Trim().ToLowerInvariant()
+    if ($normalized -in @('vr-steamvr-physical', 'vr-steamvr-null')) { return 'vr-steamvr' }
+    return $normalized
+}
+
 function New-CompatibilityRecord {
     return [pscustomobject][ordered]@{
         shaderCacheAbi = $ShaderCacheAbi
         gameRuntime = $GameRuntime
         renderPath = $RenderPath
+        renderFamily = Get-RenderFamily $RenderPath
         shaderSourceSha256 = $ShaderSourceSha256
         buildId = $(if ([string]::IsNullOrWhiteSpace($BuildId)) { $null } else { $BuildId })
         presetSha256 = $(if ([string]::IsNullOrWhiteSpace($PresetSha256)) { $null } else { $PresetSha256 })
+        featureSetSha256 = $(if ([string]::IsNullOrWhiteSpace($FeatureSetSha256)) { $null } else { $FeatureSetSha256 })
         tags = @(Get-NormalizedStrings $Tags)
     }
 }
@@ -341,10 +354,11 @@ function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [
             if ([string]$m.inventory.treeSha256 -ieq $expected -and [string]$m.status -ceq $Status -and
                 [string]$m.compatibility.shaderCacheAbi -ceq $ShaderCacheAbi -and
                 [string]$m.compatibility.gameRuntime -ceq $GameRuntime -and
-                [string]$m.compatibility.renderPath -ceq $RenderPath -and
+                (Get-RenderFamily ([string]$m.compatibility.renderPath)) -ceq (Get-RenderFamily $RenderPath) -and
                 [string]$m.compatibility.shaderSourceSha256 -ieq $ShaderSourceSha256 -and
                 [string](Get-PropertyValue $m.compatibility 'buildId' '') -ceq [string](Get-PropertyValue $compatibility 'buildId' '') -and
                 [string](Get-PropertyValue $m.compatibility 'presetSha256' '') -ieq [string](Get-PropertyValue $compatibility 'presetSha256' '') -and
+                [string](Get-PropertyValue $m.compatibility 'featureSetSha256' '') -ieq [string](Get-PropertyValue $compatibility 'featureSetSha256' '') -and
                 ($manifestTags -join "`n") -ceq (@($compatibility.tags) -join "`n")) {
                 return [pscustomobject][ordered]@{ state = 'already-present'; record = $record }
             }
@@ -405,7 +419,14 @@ function Select-CatalogSnapshot($Storage) {
         if ([string]$m.status -cne 'known-working') { $reasons += 'not-known-working' }
         if ([string]$m.compatibility.shaderCacheAbi -cne $ShaderCacheAbi) { $reasons += 'shader-cache-abi-mismatch' }
         if ([string]$m.compatibility.gameRuntime -cne $GameRuntime) { $reasons += 'game-runtime-mismatch' }
-        if ([string]$m.compatibility.renderPath -cne $RenderPath) { $reasons += 'render-path-mismatch' }
+        $candidateRenderFamily = Get-RenderFamily ([string]$m.compatibility.renderPath)
+        $requestedRenderFamily = Get-RenderFamily $RenderPath
+        if ($candidateRenderFamily -cne $requestedRenderFamily) { $reasons += 'render-family-mismatch' }
+        $candidateFeatureSet = [string](Get-PropertyValue $m.compatibility 'featureSetSha256' '')
+        if (-not [string]::IsNullOrWhiteSpace($FeatureSetSha256)) {
+            if ([string]::IsNullOrWhiteSpace($candidateFeatureSet)) { $reasons += 'feature-set-unknown' }
+            elseif ($candidateFeatureSet -ine $FeatureSetSha256) { $reasons += 'feature-set-mismatch' }
+        }
         $sourceExact = [string]$m.compatibility.shaderSourceSha256 -ieq $ShaderSourceSha256
         if (-not $sourceExact -and -not $AllowSourceMismatch) { $reasons += 'shader-source-mismatch' }
         $candidateTags = @(Get-NormalizedStrings @($m.compatibility.tags))
@@ -416,13 +437,18 @@ function Select-CatalogSnapshot($Storage) {
         }
         $buildExact = -not [string]::IsNullOrWhiteSpace($BuildId) -and [string](Get-PropertyValue $m.compatibility 'buildId' '') -ceq $BuildId
         $presetExact = -not [string]::IsNullOrWhiteSpace($PresetSha256) -and [string](Get-PropertyValue $m.compatibility 'presetSha256' '') -ieq $PresetSha256
-        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + ($required.Count * 10)
+        $featureSetExact = -not [string]::IsNullOrWhiteSpace($FeatureSetSha256) -and $candidateFeatureSet -ieq $FeatureSetSha256
+        $renderPathExact = [string]$m.compatibility.renderPath -ceq $RenderPath
+        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($featureSetExact) { 100000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + $(if ($renderPathExact) { 100 } else { 0 }) + ($required.Count * 10)
         $eligible += [pscustomobject][ordered]@{
             snapshotId = [string]$m.snapshotId
             score = $score
             exactShaderSource = $sourceExact
             exactBuild = $buildExact
             exactPreset = $presetExact
+            exactFeatureSet = $featureSetExact
+            exactRenderPath = $renderPathExact
+            renderFamily = $candidateRenderFamily
             files = [int]$m.inventory.files
             bytes = [long]$m.inventory.bytes
             createdUtc = [string]$m.createdUtc
@@ -540,6 +566,7 @@ function Complete-TaskCache($Storage) {
         $script:ShaderSourceSha256 = [string]$request.shaderSourceSha256
         $script:BuildId = [string](Get-PropertyValue $request 'buildId' '')
         $script:PresetSha256 = [string](Get-PropertyValue $request 'presetSha256' '')
+        $script:FeatureSetSha256 = [string](Get-PropertyValue $request 'featureSetSha256' '')
         $script:Tags = @($request.tags)
         $script:Label = if ([string]::IsNullOrWhiteSpace($Label)) { 'task-complete-' + [IO.Path]::GetFileName($evidence) } else { $Label }
         $restoreReceipt = Join-Path $evidence 'shader-cache-restore.receipt.json'

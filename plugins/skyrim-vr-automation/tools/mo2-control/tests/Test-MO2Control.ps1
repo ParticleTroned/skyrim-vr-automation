@@ -49,8 +49,10 @@ try {
 
     $mo2Exe = Join-Path $mo2Root 'ModOrganizer.exe'
     $loader = Join-Path $loaderMod 'sksevr_loader.exe'
+    $plainGame = Join-Path $gameRoot 'SkyrimVR.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null
     New-Item -ItemType File -Path $loader -Force | Out-Null
+    New-Item -ItemType File -Path $plainGame -Force | Out-Null
     '+Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
 
     $definition = Join-Path $rootBuilderDefinitions 'rootbuilder_defaults.json'
@@ -67,6 +69,10 @@ selected_profile=@ByteArray(Codex)
 1\binary=@ByteArray($loader)
 1\arguments=@ByteArray()
 1\workingDirectory=@ByteArray($gameRoot)
+2\title=@ByteArray(Skyrim VR)
+2\binary=@ByteArray($plainGame)
+2\arguments=@ByteArray()
+2\workingDirectory=@ByteArray($gameRoot)
 "@ | Set-Content -LiteralPath $ini -Encoding utf8
 
     $configPath = Join-Path $fixture 'config.json'
@@ -116,6 +122,11 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($validation.state -eq 'ready') 'clean fixture is ready'
     Assert-MO2Test ($validation.data.selectedProfile -eq 'Codex') 'ByteArray profile is decoded'
     Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').Count -eq 1) 'registered executable is parsed exactly once'
+    Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').capabilities -contains 'skse-loader') 'registered SKSE executable advertises its inferred capability'
+    $skseRequired = Invoke-MO2Validate -Config $config -Executable 'Launch MGO - Do Not Unlock' -RequireSKSE
+    Assert-MO2Test ($skseRequired.ok -and @($skseRequired.checks | Where-Object { $_.name -eq 'required-skse-loader' -and $_.status -eq 'pass' }).Count -eq 1) 'SKSE-required validation accepts the exact SKSE loader'
+    $plainRejected = Invoke-MO2Validate -Config $config -Executable 'Skyrim VR' -RequireSKSE
+    Assert-MO2Test (-not $plainRejected.ok -and @($plainRejected.checks | Where-Object { $_.name -eq 'required-skse-loader' -and $_.status -eq 'fail' }).Count -eq 1) 'SKSE-required validation rejects the plain game executable'
     Assert-MO2Test (@($validation.checks | Where-Object { $_.name -eq 'registered-binary-owner-mod' -and $_.status -eq 'pass' }).Count -eq 1) 'enabled executable owner mod passes validation'
     $legacySwap = Join-Path $overwrite 'ShaderCache.Swap'
     New-Item -ItemType Directory -Path $legacySwap -Force | Out-Null
@@ -193,15 +204,16 @@ selected_profile=@ByteArray(Codex)
     $recoveredAccess = Invoke-MO2RecoverAccess -Config $config -AccessId $abandonedAccessId -ConfirmAbandoned -Label 'fixture confirmed abandoned'
     Assert-MO2Test ($recoveredAccess.ok -and $recoveredAccess.state -eq 'access-recovered') 'confirmed abandoned access can be recovered in proven closed state'
 
-    $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -WhatIf
+    $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE -WhatIf
     Assert-MO2Test ($prepareDryRun.ok -and $prepareDryRun.state -eq 'dry-run') 'prepare dry-run succeeds'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'prepare dry-run creates no lock'
     Assert-MO2Test (-not (Test-Path -LiteralPath $prepareDryRun.data.sessionPath -PathType Container)) 'prepare dry-run creates no evidence directory'
 
-    $prepared = Invoke-MO2Prepare -Config $config -Label 'fixture test'
+    $prepared = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE
     Assert-MO2Test ($prepared.ok -and $prepared.state -eq 'prepared') 'prepare creates an owned session'
     Assert-MO2Test (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf) 'prepare creates the single-owner lock'
     Assert-MO2Test (Test-Path -LiteralPath (Join-Path $prepared.data.sessionPath 'session.json') -PathType Leaf) 'prepare creates a durable session manifest'
+    Assert-MO2Test ([bool]$prepared.data.session.requirements.skseLoader) 'prepare persists the SKSE requirement for launch revalidation'
     Assert-MO2Test (Test-Path -LiteralPath $prepared.data.controllerPath -PathType Leaf) 'prepare snapshots a durable session controller outside the plugin cache'
     $durableStatus = & $prepared.data.controllerPath status -SessionId ([string]$prepared.data.session.sessionId) -Compact -NoExit | ConvertFrom-Json
     Assert-MO2Test ($durableStatus.ok -and $durableStatus.state -eq 'prepared') 'durable session controller can resume the owned lifecycle independently'

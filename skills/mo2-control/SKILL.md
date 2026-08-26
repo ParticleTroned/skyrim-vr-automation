@@ -56,6 +56,10 @@ are:
    variable may retain data for local reasoning, but an approval request must
    contain the literal path and subcommand reported by the tool. Parse the JSON result; do not infer
    success from process appearance alone.
+   For DevBench, SKSE plugins, or any extension-dependent test, pass
+   `-RequireSKSE` to both validation and preparation. Do not accept direct
+   `SkyrimVR.exe` launch as equivalent; the requirement is retained and
+   revalidated for subsequent launches in the same session.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.
    When the test requires a deterministic new-game baseline, create the

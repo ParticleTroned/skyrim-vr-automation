@@ -43,7 +43,9 @@ install and overwrite are not long-term diagnostic stores.
 ## Non-negotiable rules
 
 1. Address MO2 by exact profile and exact registered executable name. Never
-   treat MO2's fallback profile as success.
+   treat MO2's fallback profile as success. For DevBench or any SKSE-dependent
+   run, use `-RequireSKSE` during validation and preparation; a plain
+   `SkyrimVR.exe` entry is not an equivalent launcher.
 2. Before editing MO2 state, require MO2 and the game to be closed. VR runtime
    processes may remain live unless the operation specifically requires them
    closed.
@@ -137,8 +139,8 @@ or delete a pre-existing shared mod.
 Preview first, then bind a session to the owned access lease:
 
 ```text
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -WhatIf -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -RequireSKSE -WhatIf -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -RequireSKSE -Compact
 ```
 
 `prepare` requires closed state, validates the exact profile/executable pair,
@@ -149,6 +151,8 @@ session; it remains valid if a plugin update replaces the versioned cache from
 which `prepare` was called. `prepare` does not change MO2's selected profile or
 mod list. Legacy callers may omit AccessId;
 that creates an implicit one-session lease which `release` removes.
+When `-RequireSKSE` is supplied, that requirement is durable session state and
+`launch` revalidates it before starting MO2.
 
 ## Manual preparation for unimplemented mutations
 

@@ -61,7 +61,7 @@ function Invoke-McpRequest {
             if ($Command -eq 'wait' -and $statusCode -eq 404 -and $Headers.ContainsKey('Mcp-Session-Id') -and $attempt -le $MaxTransientRetries) {
                 try {
                     $resetHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
-                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.2' } } } | ConvertTo-Json -Depth 10 -Compress
+                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.3' } } } | ConvertTo-Json -Depth 10 -Compress
                     $resetResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $resetHeaders -Body $resetBody -TimeoutSec 15
                     $resetSessionHeader = $resetResponse.Headers['Mcp-Session-Id']
                     $resetSessionId = if ($resetSessionHeader -is [array]) { [string]$resetSessionHeader[0] } else { [string]$resetSessionHeader }
@@ -509,7 +509,11 @@ try {
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }
 
-    $semanticFailure = $semantic.known -and -not $semantic.ok -and ($RequireSuccess -or $Command -eq 'wait')
+    if ($RequireSuccess -and -not $semantic.known) {
+        $semantic.outcome = 'unverified'
+        $semantic.reasons = @($semantic.reasons) + 'RequireSuccess was requested, but the response did not provide a verified semantic outcome.'
+    }
+    $semanticFailure = if ($RequireSuccess) { -not $semantic.known -or -not $semantic.ok } else { $semantic.known -and -not $semantic.ok -and $Command -eq 'wait' }
     $result = [pscustomobject][ordered]@{
         ok = -not $semanticFailure
         transportOk = $true

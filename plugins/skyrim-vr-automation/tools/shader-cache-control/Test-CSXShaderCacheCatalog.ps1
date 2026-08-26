@@ -30,6 +30,7 @@ $blockers = @('fixture-process-that-does-not-exist')
 $shaderSource = 'A' * 64
 $differentShaderSource = 'B' * 64
 $preset = 'C' * 64
+$featureSet = 'D' * 64
 
 try {
     $catalogRoot = Join-Path $resolvedTestRoot 'catalog'
@@ -52,6 +53,7 @@ try {
         RenderPath = 'vr'
         BuildId = 'build-fixture'
         PresetSha256 = $preset
+        FeatureSetSha256 = $featureSet
         Tags = @('Quality', 'Full-Render')
         Compact = $true
         NoExit = $true
@@ -88,6 +90,22 @@ try {
     $select = Invoke-Catalog $selectArgs
     Assert-Test ($select.ok -and $select.state -eq 'snapshot-selected') 'selection finds an exact source, build, preset, runtime, render-path, ABI, and tag match'
     Assert-Test ($select.data.selection.selected.exactShaderSource -and $select.data.selection.selected.exactBuild -and $select.data.selection.selected.exactPreset) 'selection reports why the preferred snapshot won'
+    Assert-Test ($select.data.selection.selected.exactFeatureSet -and $select.data.selection.selected.renderFamily -eq 'vr') 'selection reports the exact feature set and canonical render family'
+
+    $physicalRouteCapture = @{} + $captureArgs
+    $physicalRouteCapture.RenderPath = 'vr-steamvr-physical'
+    $physicalRouteCapture.Label = 'physical SteamVR fixture'
+    $physicalCapture = Invoke-Catalog $physicalRouteCapture
+    Assert-Test ($physicalCapture.ok -and $physicalCapture.data.snapshot.manifest.compatibility.renderFamily -eq 'vr-steamvr') 'capture records the canonical SteamVR render family while retaining the physical route'
+    $nullRouteArgs = @{} + $selectArgs
+    $nullRouteArgs.RenderPath = 'vr-steamvr-null'
+    $nullRouteSelect = Invoke-Catalog $nullRouteArgs
+    Assert-Test ($nullRouteSelect.ok -and $nullRouteSelect.state -eq 'snapshot-selected' -and $nullRouteSelect.data.selection.selected.renderFamily -eq 'vr-steamvr') 'null HMD selects a compatible physical SteamVR cache'
+
+    $unknownFeatureArgs = @{} + $nullRouteArgs
+    $unknownFeatureArgs.FeatureSetSha256 = 'E' * 64
+    $unknownFeature = Invoke-Catalog $unknownFeatureArgs
+    Assert-Test ($unknownFeature.ok -and $unknownFeature.state -eq 'no-compatible-snapshot' -and @($unknownFeature.data.selection.excluded | Where-Object { $_.reasons -contains 'feature-set-mismatch' }).Count -gt 0) 'feature-set fingerprint mismatch blocks cache reuse'
 
     $mismatchArgs = @{} + $selectArgs
     $mismatchArgs.ShaderSourceSha256 = $differentShaderSource
@@ -149,7 +167,7 @@ try {
     Assert-Test ($complete.data.task.promoted.state -eq 'captured') 'known-working task output receives a distinct immutable snapshot manifest'
 
     $finalList = Invoke-Catalog @{ Command = 'list'; CatalogRoot = $catalogRoot; Compact = $true; NoExit = $true }
-    Assert-Test (@($finalList.data.snapshots).Count -eq 2 -and @($finalList.data.issues).Count -eq 0) 'catalog retains both known-working trees and validates all manifests'
+    Assert-Test (@($finalList.data.snapshots).Count -eq 3 -and @($finalList.data.issues).Count -eq 0) 'catalog retains all known-working compatibility records and validates every manifest'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

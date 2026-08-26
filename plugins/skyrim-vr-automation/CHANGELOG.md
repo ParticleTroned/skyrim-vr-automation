@@ -4,6 +4,14 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Treat physical-headset and Valve null-HMD SteamVR shader caches as one
+  render-compatible family while optionally hard-gating reuse on an exact
+  effective feature-set fingerprint.
+- Add a durable `-RequireSKSE` MO2 session precondition so DevBench workflows
+  reject direct `SkyrimVR.exe` entries and revalidate the loader before every
+  launch.
+- Classify replay scheduler receipts without postconditions as unverified, and
+  make `-RequireSuccess` reject them instead of reporting interaction success.
 - Require task profiles to clone the configured primary/stable profile only
   after recursively evacuating every legacy `ShaderCache*` directory from MO2
   overwrite into a newly enabled, receipt-backed VFS mod.

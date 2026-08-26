@@ -30,6 +30,8 @@ param(
 
     [switch]$RequireClosed,
 
+    [switch]$RequireSKSE,
+
     [switch]$StartOnly,
 
     [switch]$NoExit,
@@ -128,7 +130,7 @@ try {
             Invoke-MO2Inspect -Config $config -Profile $Profile -Executable $Executable
         }
         'validate' {
-            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
+            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
         }
         'request-access' {
             Invoke-MO2RequestAccess -Config $config -Label $Label -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
@@ -146,7 +148,7 @@ try {
             Invoke-MO2RecoverAccess -Config $config -AccessId $AccessId -Label $Label -ConfirmAbandoned:$ConfirmAbandoned -WhatIf:$WhatIf
         }
         'prepare' {
-            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
+            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
         }
         'open' {
             Invoke-MO2Open -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -StartOnly:$StartOnly -WhatIf:$WhatIf

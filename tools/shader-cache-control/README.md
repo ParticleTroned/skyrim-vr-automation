@@ -13,7 +13,8 @@ seed, and restore refuse to run while MO2, Skyrim, or the SKSE loader is active.
 `Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
 cache management. It stores immutable, content-addressed cache objects and
 separate snapshot manifests carrying the cache ABI, game runtime, render path,
-shader-source hash, optional build and preset hashes, normalized tags, status,
+shader-source hash, optional build, preset, and effective feature-set hashes,
+normalized tags, status,
 and receipt provenance. There is no mutable index to repair: `list` validates
 the manifests and derives the catalog view from disk.
 
@@ -66,9 +67,14 @@ Configure a permanent catalog outside MO2 and the checkout:
 `CSX_SHADER_CACHE_CATALOG_ROOT`, the configured path, `CODEX_HOME`, and the
 user-local application-data fallback. A catalog candidate is never accepted
 from its label alone. The hard compatibility gates are known-working status,
-exact shader-cache ABI, game runtime, render path, required tags, and—by
-default—exact shader-source SHA-256. Among compatible candidates, exact source,
-build, and preset matches rank first, followed by broader verified coverage and
+exact shader-cache ABI, game runtime, render family, required tags, and—by
+default—exact shader-source SHA-256. `vr-steamvr-physical` and
+`vr-steamvr-null` share the `vr-steamvr` render family because the display
+driver does not alter CSX shader bytecode. Other render paths remain distinct.
+Supply `-FeatureSetSha256` whenever an effective feature-set fingerprint is
+available; then an absent or different fingerprint is a hard exclusion. Among
+compatible candidates, exact source, feature-set, build, preset, and observed
+render-path matches rank first, followed by broader verified coverage and
 recency. `select` returns both the ranking and explicit exclusion reasons.
 
 First admit a receipt-proven snapshot:
@@ -80,6 +86,7 @@ First admit a receipt-proven snapshot:
   -SourceReceiptPath 'D:\Evidence\known-good\shader-cache-transaction.receipt.json' `
   -ShaderCacheAbi '<exact ABI>' `
   -ShaderSourceSha256 '<exact source-tree SHA-256>' `
+  -FeatureSetSha256 '<exact effective feature-set SHA-256>' `
   -BuildId '<build identity>' `
   -PresetSha256 '<preset SHA-256>' `
   -Tags quality,full-render `
@@ -96,6 +103,7 @@ Prepare a closed task cache immediately before launching MO2:
   -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
   -ShaderCacheAbi '<exact ABI>' `
   -ShaderSourceSha256 '<exact source-tree SHA-256>' `
+  -FeatureSetSha256 '<exact effective feature-set SHA-256>' `
   -BuildId '<build identity>' `
   -PresetSha256 '<preset SHA-256>' `
   -RequiredTags quality,full-render `
@@ -124,7 +132,8 @@ caller explicitly classifies the task result as `known-working`. An unverified
 or failed task result is still preserved as evidence but is not added to the
 catalog. A shader-source mismatch remains excluded unless
 `-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
-this exception does not bypass ABI, runtime, render-path, status, or tag gates.
+this exception does not bypass ABI, runtime, render-family, feature-set, status,
+or tag gates.
 
 `seed` requires the existing snapshot receipt for the same live cache and
 evidence directory, verifies the exact source tree, stages it, swaps it into

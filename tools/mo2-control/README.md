@@ -41,6 +41,13 @@ Validation also resolves a registered executable stored under MO2's `mods`
 directory back to its owning mod. Launch is blocked when that exact mod is
 disabled, missing, or ambiguous in the requested profile.
 
+DevBench, SKSE-plugin, and other extension-dependent sessions must pass
+`-RequireSKSE` to both `validate` and `prepare`. The controller identifies
+`skse_loader.exe`/`sksevr_loader.exe` as SKSE-capable and rejects a registered
+entry that directly launches `SkyrimVR.exe`. `prepare` persists this requirement
+in the session manifest and lock, and every later `launch` revalidates it so a
+session cannot silently fall back to the plain game executable.
+
 Overwrite is scanned recursively for `ShaderCache` and `ShaderCache.*`
 directories. Inspection classifies active, rollback (`.Previous`), temporary
 swap (`.Swap`), and other legacy trees and marks swap state older than one hour
@@ -62,8 +69,8 @@ literal paths before execution):
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> help -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> inspect -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label upscaling-api-tests -EstimatedMinutes 20 -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label upscaling-api-run -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -RequireSKSE -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label upscaling-api-run -RequireSKSE -Compact
 ```
 
 Use `-Compact` for one-line JSON. Override the configured defaults only with an

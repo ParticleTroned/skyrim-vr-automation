@@ -35,6 +35,12 @@ one evidence record.
 `ok` reflects transport success unless `-RequireSuccess` is supplied. Every
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
+Replay completion receipts containing only scheduler facts such as `done`,
+`runId`, and `stepsRun` are classified as
+`scheduler-complete-unverified`, not semantic success. A replay response must
+include explicit `semantic`, `postconditions`, `outcomeChecks`, or `assertions`
+evidence before `-RequireSuccess` will accept it. This proves that the requested
+interaction outcome occurred instead of merely proving that the scheduler ran.
 Nested `error.code`, `status`, and `result.state` values are classified. Use
 `-ExpectedErrorCode producer_mismatch` when a guarded rejection is the intended
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
