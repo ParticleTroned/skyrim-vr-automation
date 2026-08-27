@@ -78,6 +78,30 @@ function Get-ProfileSnapshot([string]$Path) {
     return [pscustomobject][ordered]@{ files = @($records); sha256 = [Convert]::ToHexString($hashBytes) }
 }
 
+function Get-SaveTreeSnapshot([string]$ProfilePath) {
+    $savesPath = [IO.Path]::GetFullPath((Join-Path $ProfilePath 'saves'))
+    $records = @()
+    if (Test-Path -LiteralPath $savesPath -PathType Container) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $savesPath -File -Recurse -Force | Sort-Object FullName)) {
+            $records += [pscustomobject][ordered]@{
+                path = [IO.Path]::GetRelativePath($savesPath, $file.FullName)
+                bytes = [long]$file.Length
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            }
+        }
+    }
+    $canonical = ConvertTo-Json -InputObject @($records) -Compress -Depth 4
+    $hashBytes = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical))
+    return [pscustomobject][ordered]@{
+        path = $savesPath
+        exists = Test-Path -LiteralPath $savesPath -PathType Container
+        fileCount = @($records).Count
+        bytes = [long](($records | Measure-Object -Property bytes -Sum).Sum)
+        sha256 = [Convert]::ToHexString($hashBytes)
+        files = @($records)
+    }
+}
+
 function Write-WorkspaceBytesAtomic([string]$Path, [byte[]]$Bytes) {
     $parent = Split-Path -Parent $Path
     $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($Path) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
@@ -481,42 +505,46 @@ try {
         if (Test-Path -LiteralPath $profilePath) { throw "Generated profile already exists: $profilePath" }
         if (Test-Path -LiteralPath $manifestPath) { throw "Generated workspace already exists: $manifestPath" }
         $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
+        $sourceSaveSnapshot = Get-SaveTreeSnapshot -ProfilePath $sourcePath
         $initialMods = @(Get-ChildItem -LiteralPath $modsRoot -Directory -Force | Select-Object -ExpandProperty Name | Sort-Object)
         $fixture = $null
         if ($SavePolicy -eq 'VerifiedFixture') {
             $fixture = Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '1.2.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
+            contractVersion = '1.3.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
             sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
             profile = $profileName; profilePath = $profilePath; profileName = $profileName; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             savePolicy = $SavePolicy; fixtureManifestPath = if ($fixture) { [string]$fixture.manifestPath } else { $null }
-            saveFixture = $fixture; initialModNames = $initialMods; registeredMods = @(); inheritedSaves = $false
+            saveFixture = $fixture; sourceSaveSnapshot = $sourceSaveSnapshot; initialModNames = $initialMods; registeredMods = @(); inheritedSaves = $true
+            saveGuidance = 'Every source-profile save is copied. MainMenuOnly and FreshGame still describe test authorization; use VerifiedFixture for an exact declared load target. See docs/BREEZEHOME-SAVE.md.'
             ownershipRule = 'The workspace may mutate only its cloned profile and mod directories absent from initialModNames and registered by this workspace.'
         }
-        if ($PSCmdlet.ShouldProcess($profilePath, "clone stable MO2 profile '$sourceName' without saves")) {
+        if ($PSCmdlet.ShouldProcess($profilePath, "clone stable MO2 profile '$sourceName' including its complete saves tree")) {
             New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
             foreach ($directory in @(Get-ChildItem -LiteralPath $sourcePath -Directory -Recurse -Force)) {
                 $relative = [IO.Path]::GetRelativePath($sourcePath, $directory.FullName)
-                if ($relative -match '^(?i:saves)([\\/]|$)') { continue }
                 New-Item -ItemType Directory -Path (Join-Path $profilePath $relative) -Force | Out-Null
             }
             foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Recurse -Force)) {
                 $relative = [IO.Path]::GetRelativePath($sourcePath, $file.FullName)
-                if ($relative -match '^(?i:saves)[\\/]') { continue }
                 $target = Join-Path $profilePath $relative
                 New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
                 Copy-Item -LiteralPath $file.FullName -Destination $target
             }
             New-Item -ItemType Directory -Path (Join-Path $profilePath 'saves') -Force | Out-Null
+            $profileSaveSnapshot = Get-SaveTreeSnapshot -ProfilePath $profilePath
+            if ([string]$profileSaveSnapshot.sha256 -cne [string]$sourceSaveSnapshot.sha256 -or [int]$profileSaveSnapshot.fileCount -ne [int]$sourceSaveSnapshot.fileCount) {
+                throw 'Complete source save-tree copy verification failed.'
+            }
+            $manifest | Add-Member -NotePropertyName profileSaveSnapshot -NotePropertyValue $profileSaveSnapshot
             if ($fixture) {
                 $targetSaves = [IO.Path]::GetFullPath((Join-Path $profilePath 'saves'))
                 foreach ($file in @($fixture.files)) {
                     $target = [IO.Path]::GetFullPath((Join-Path $targetSaves ([string]$file.relativePath)))
                     if (-not $target.StartsWith($targetSaves + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Fixture target escapes the task saves directory: $($file.relativePath)" }
-                    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-                    Copy-Item -LiteralPath ([string]$file.sourcePath) -Destination $target
+                    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Verified fixture was not present in the complete copied save tree: $target" }
                     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -cne [string]$file.sha256) { throw "Copied fixture verification failed: $target" }
                 }
                 $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true

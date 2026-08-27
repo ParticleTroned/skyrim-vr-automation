@@ -4,7 +4,7 @@
    `toolset.manifest.json`; finalize the matching changelog entry.
 2. Run `scripts/Build-CodexMarketplacePlugin.ps1` and review the generated
    `plugins/skyrim-vr-automation` tree. It must contain no `*.local.json`,
-   sessions, evidence, or machine-specific paths.
+   sessions, fixture-refresh evidence, or machine-specific paths.
 3. Run `tests/Test-Toolset.ps1` and the official plugin and skill validators.
 4. Test the marketplace from a clean checkout. Run the doctor before any live
    MO2 or SteamVR operation.

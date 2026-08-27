@@ -2,8 +2,9 @@
 
 This tool gives each automation task a unique MO2 profile cloned from an
 explicitly configured, known-good `defaults.testProfileSource`. It never uses
-the ordinary session default as an implicit template and never copies unknown
-or unlisted saves.
+the ordinary session default as an implicit template. The complete `saves`
+tree from that maintained source profile is copied and verified into every new
+task profile so ordinary access requests remain usable.
 
 Before `create`, run `prepare-source` under the same MO2 access lease. It scans
 overwrite recursively for every directory named `ShaderCache` or beginning
@@ -33,16 +34,20 @@ recursively remove exact owned paths.
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
-`MainMenuOnly` never authorizes loading a save. `FreshGame` records that a
-genuine New Game action is required; this release does not synthesize that
-action, and `coc APStartCell` is explicitly not equivalent.
+`SavePolicy` describes what the test is authorized or expected to do; it no
+longer controls which source saves are copied. `MainMenuOnly` never authorizes
+loading a save. `FreshGame` records that a genuine New Game action is required;
+this release does not synthesize that action, and `coc APStartCell` is
+explicitly not equivalent. See `../../docs/BREEZEHOME-SAVE.md` for the current
+maintained fallback starting point.
 
 `VerifiedFixture` is the deterministic automation form of “new game”. It uses
 `-FixtureManifestPath`, or `defaults.newGameFixtureManifest`, and selects
 `-FixtureId` or the manifest's `defaultFixtureId`. The manifest fingerprint must
 match the exact stable source profile. Every listed save/co-save is verified by
-path, size, and SHA-256 before and after copying; no other save is copied. The
-result reports the fixture ID, location, and `loadName` for a later game-load
+path, size, and SHA-256 before and after the complete save-tree copy. Other
+source saves remain available, but the result reports the selected fixture ID,
+location, and `loadName` as the deterministic target for a later game-load
 adapter. See `save-fixtures.example.json` for the portable schema.
 
 Use `fixture-status` to compare the manifest's expected stable-profile
