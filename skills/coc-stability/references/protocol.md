@@ -170,6 +170,13 @@ VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Never call
 preset, render scale, or dynamic policy through a menu or console command. The
 protocol observes the profile selected by Stabilizer.
 
+This boundary also forbids deriving or validating Stabilizer policy from the
+machine or filesystem. Do not enumerate graphics adapters, choose an
+AMD/NVIDIA-specific target, inspect or compare Stabilizer INIs, resolve an MO2
+winning file, or invoke `mo2-control` for an upscaling decision. Multiple
+adapters or configuration files require no resolution by this protocol; the
+running public CSX profile is the sole observation source.
+
 This fixture receipt is the only hard pre-measurement gate. If the action is
 missing, Stabilizer was not startup-active, or the runtime fixture cannot be
 corrected, preserve the receipt and stop because the controlled fixture was
@@ -196,6 +203,10 @@ selection for `WindhelmExterior01` and `WhiterunDragonsreach`. Record the exact
 cell, lifecycle, coherent observed requested/effective/stable profiles,
 render/display dimensions, and two-eye presentation/fidelity without changing
 CSX upscaling state.
+
+Do not precede that observation with hardware inventory, Stabilizer INI
+inspection, or MO2 file resolution. Those checks neither establish fidelity nor
+authorize a target and must not delay the watchdog or measured scenario.
 
 Before launching baseline calls, the controller creates the complete measured
 scenario and starts an independent monotonic watchdog job. The watchdog and an

@@ -7,6 +7,8 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Keep VR FPS Stabilizer as the sole profile owner by omitting static profile
   targets from every measured COC waiter and recording the coherent
   post-dispatch profile selected externally.
+- Treat Stabilizer ownership as a discovery boundary: never select profiles
+  from GPU inventory, INI precedence, or MO2 winning-file resolution.
 - Require COC readiness to prove PyGhidra execution and the exact active
   artifact path/hash, so an MCP listener attached to an older RC program cannot
   be accepted for another build.

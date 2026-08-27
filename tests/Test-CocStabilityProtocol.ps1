@@ -71,6 +71,9 @@ foreach ($requiredSkillText in @(
     'coc-stability-control run',
     'capture-hang',
     'VR FPS Stabilizer exclusively owns',
+    'Do not inspect graphics adapters',
+    'resolve a winning MO2 file',
+    'Multiple adapters or Stabilizer INIs are irrelevant',
     'startPerformanceTelemetry: true',
     'continueOnError: false',
     'actual failed tool step',
@@ -128,7 +131,11 @@ foreach ($requiredProtocolText in @(
     'gpu_performance_stop',
     'Call it exactly once',
     'Never call',
-    'communityshaders.renderscale'
+    'communityshaders.renderscale',
+    'Do not enumerate graphics adapters',
+    'inspect or compare Stabilizer INIs',
+    'running public CSX profile is the sole observation source',
+    'must not delay the watchdog or measured scenario'
 )) {
     Assert-Protocol $protocol.Contains(
         $requiredProtocolText,

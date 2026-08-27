@@ -62,6 +62,12 @@ scale, or dynamic policy through CSX. Every measured `qualification_wait`
 omits `target`; it requires a post-dispatch profile change and returns the
 coherent observed profile as evidence.
 
+That ownership includes profile discovery and policy selection. Do not inspect
+graphics adapters, infer a target from AMD/NVIDIA hardware, read or compare
+Stabilizer INIs, resolve a winning MO2 file, or invoke `mo2-control` for an
+upscaling decision. Multiple adapters or Stabilizer INIs are irrelevant to the
+assay; record only the coherent profile exposed by the running CSX APIs.
+
 The controller starts one monotonic 10-second watchdog immediately after the
 fixture receipt and collects exact-cell, profile, lifecycle, stereo,
 diagnostic-status, and already-available image evidence in one parallel bundle.
