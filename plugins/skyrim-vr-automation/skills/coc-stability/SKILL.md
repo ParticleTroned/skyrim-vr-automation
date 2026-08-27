@@ -20,9 +20,11 @@ When Skyrim reaches its main menu/load window, and before loading into the test
 world, establish the analysis environment. In parallel, use Community Shaders'
 `tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server and
 run `coc-evidence-control inspect` plus `arm` against the exact Skyrim PID.
-Require CDB/WinDbg, ProcDump, dump storage, and an owned collector. Confirm the
-current Codex window exposes both DevBench and Ghidra MCP tools and make one
-harmless call through each. An enabled UI toggle is not proof. If either tool
+Require CDB/WinDbg, ProcDump, dump storage, and an owned collector. Require the
+trusted project `.codex/config.toml` to declare the exact DevBench and Ghidra
+loopback endpoints; do not rely on volatile global registration state. Confirm
+the current Codex window exposes both MCP tool families and make one harmless
+call through each. An enabled UI toggle is not proof. If either tool
 family is absent, leave Skyrim at the main menu, keep the external servers and
 collector running, restart Codex, and repeat only the tool-call checks. Retain
 the Ghidra and ProcDump receipts. Report readiness only after every required

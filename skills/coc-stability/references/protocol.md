@@ -24,10 +24,12 @@ after both MCP tool calls pass. Never treat that first command as the second
 Complete this phase when Skyrim reaches its main menu/load window and before a
 save or test world is loaded. Do not defer it into the in-game start window.
 
-1. Resolve the one live `SkyrimVR.exe` PID. Register missing MCP entries as
-   `devbench_vr` at `http://127.0.0.1:8921/mcp` and `ghidra` at
-   `http://127.0.0.1:8080/mcp`, then verify both exact identities. Do not
-   overwrite an existing entry that points elsewhere. Require the installed
+1. Resolve the one live `SkyrimVR.exe` PID. Require the trusted workspace's
+   project-scoped `.codex/config.toml` to declare `devbench_vr` at
+   `http://127.0.0.1:8921/mcp` and `ghidra` at
+   `http://127.0.0.1:8080/mcp`. Do not treat a volatile global `codex mcp add`
+   result as durable registration. Restart Codex after repairing project
+   configuration, then verify both exact live identities. Require the installed
    `devbench-control` entrypoint.
 2. In one parallel local setup group:
    - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status`;
@@ -38,8 +40,11 @@ save or test world is loaded. Do not defer it into the in-game start window.
      waiting collector has attached to that same PID.
 3. Require the Ghidra receipt to report `ok: true`, `state: ready`,
    `managed: true`, `endpointReady: true`, and
-   `listenerOwnedBySession: true`. Its selected persistent analysis project
-   must match the intended build.
+   `listenerOwnedBySession: true`. Prefer `listenerOwnershipSource` equal to
+   `session-binding`, which verifies the saved listener PID and process start
+   time without privileged process-tree access. A legacy session may use one
+   ancestry-proven check to capture that binding. Its selected persistent
+   analysis project must match the intended build.
 4. Inspect the current Codex tool registry and require both DevBench and Ghidra
    MCP tool families to be attached to this window. An enabled settings toggle
    is not proof.

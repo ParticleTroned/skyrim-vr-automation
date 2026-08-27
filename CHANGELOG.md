@@ -4,6 +4,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Make COC readiness use durable project-scoped DevBench/Ghidra registrations
+  and a saved Ghidra listener PID/start binding that sandboxed status checks can
+  verify without privileged process ancestry.
 - Add a bounded Codex marketplace installer that detects a stale structured
   plugin registration, performs one scoped marketplace refresh, and verifies
   the final version and every installed file hash.
