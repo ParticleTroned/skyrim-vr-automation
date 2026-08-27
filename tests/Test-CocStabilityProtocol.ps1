@@ -124,6 +124,7 @@ foreach ($requiredProtocolText in @(
     'never postpone the scheduled COC',
     '## One-time post-load fixture gate',
     '"action": "prepare_coc"',
+    'raises an `info` or less-verbose CSX log level to `debug`',
     'A returned semantic fixture defect',
     'full error history',
     '## Bounded parallel baseline',

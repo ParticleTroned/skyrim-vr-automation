@@ -62,9 +62,10 @@ Skyrim PID, Build ID, owned collector state, and evidence root. Do not call
 controller calls `communityshaders.menu` exactly once with
 `{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}` and records
 `ready: true`, `persisted: false`, startup-active VR FPS Stabilizer, developer
-mode, and the FOV/TAA 0.3/0.3/0.7 fixture. It may correct only those runtime CSX
-settings and must not save. A returned fixture defect prevents only the
-early-start shortcut; the 10-second watchdog still runs the measured assay.
+mode, and the FOV/TAA 0.3/0.3/0.7 fixture. It raises an `info` or less-verbose
+CSX log level to `debug`, then may correct only the FOV/TAA runtime settings;
+it must not save. A returned fixture defect prevents only the early-start
+shortcut; the 10-second watchdog still runs the measured assay.
 
 VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe its
 per-cell profiles; never apply an upscaling method, quality, preset, render

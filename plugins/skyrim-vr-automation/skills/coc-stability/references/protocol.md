@@ -213,8 +213,9 @@ Record these fixture fields without making a returned mismatch a dispatch gate:
 - periphery TAA is enabled with center area 0.3 and outer scale 0.7;
 - VR FPS Stabilizer was startup-active for this session.
 
-`prepare_coc` may idempotently correct developer mode and the FOV/TAA fixture
-in memory. It must not save settings. Call it exactly once.
+`prepare_coc` first raises an `info` or less-verbose CSX log level to `debug`,
+then may idempotently correct the FOV/TAA fixture in memory. It must not save
+settings. Call it exactly once.
 
 VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Never call
 `communityshaders.renderscale` with `apply`, and never change method, quality,
