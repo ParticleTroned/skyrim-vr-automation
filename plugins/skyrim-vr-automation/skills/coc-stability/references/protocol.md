@@ -1,10 +1,23 @@
-# Load-synchronized COC protocol
+# Deadline-driven COC stability protocol
 
-## One-time pre-assay gate
+## Fast start-cell establishment
 
-Run this gate once while Skyrim VR is in-game, before any COC, including an
-unmeasured COC used to establish the start cell. First identify the exact CSX
-producer Build ID. Then invoke the direct `communityshaders.menu` tool with:
+Confirm that Skyrim VR is in-game, then begin one 10-second settle period. Use
+that same interval to read the exact CSX producer Build ID and runtime identity;
+do not insert a chain of redundant status or menu checks. At the end of the
+settle period issue exactly:
+
+```text
+coc WindhelmExterior01
+```
+
+Wait for the load event and take one exact-cell scene observation. Start-cell
+establishment is not a measured transition and does not yet assert render or
+stereo stability.
+
+## One-time post-load fixture gate
+
+Once Windhelm is loaded, invoke the direct `communityshaders.menu` tool once:
 
 ```json
 {
@@ -13,210 +26,136 @@ producer Build ID. Then invoke the direct `communityshaders.menu` tool with:
 }
 ```
 
-The action is a monitor-first gate. It checks the startup-authoritative state
-displayed by the CSX VR → VR FPS Stabilizer UI before it changes anything.
-Require all of the following from its receipt:
+Require this receipt:
 
-- `ready` is `true`, `promptRequired` is `false`, and `persisted` is `false`;
+- `ready: true`, `promptRequired: false`, and `persisted: false`;
 - `after.vr` and `after.inGame` are `true`;
-- `after.developerMode.active` is `true`;
-- `after.foveation.ready` is `true`, with foveated vendor dispatch enabled,
-  FOV center area `0.3`, periphery TAA enabled, periphery TAA center area
-  `0.3`, and periphery TAA outer scale `0.7`;
-- `after.vrFpsStabilizer.activeForSession` is `true`.
+- developer mode is active;
+- foveated vendor dispatch is enabled;
+- FOV center area is `0.3`;
+- periphery TAA is enabled with center area `0.3` and outer scale `0.7`;
+- VR FPS Stabilizer is startup-active for the session.
 
-When VR FPS Stabilizer is active for the startup session, `prepare_coc`
-idempotently enables developer debug mode when needed and corrects only the
-FOV plus TAA values in memory. It does not call a settings save path. If the
-in-game VR context or startup-active Stabilizer prerequisite is absent, it
-applies no partial mutation and returns `ready: false` with
-`promptRequired: true`.
+`prepare_coc` may idempotently correct developer mode and the FOV/TAA fixture
+in memory. It must not save settings. Call it exactly once; do not repeat it in
+the baseline or measured assay.
 
-Stop before the first COC when the action is missing or does not return the
-required receipt. Prompt the user with the exact `errorCode`; in particular,
-`vr_fps_stabilizer_required` requires an external installation/configuration
-change. Tell the user to activate or configure VR FPS Stabilizer and restart
-Skyrim VR. Do not continue testing in the current process.
+VR FPS Stabilizer exclusively owns all DLSS/upscaling changes. Never call
+`communityshaders.renderscale` with `apply`, and never change method, quality,
+preset, render scale, or dynamic policy through a menu or console command. The
+protocol only observes and validates the profile selected by Stabilizer.
 
-VR FPS Stabilizer is the exclusive owner of upscaling profile changes. The
-gate and assay must never change or apply the upscaling method, quality mode,
-render-scale mode, DLSS profile or preset, or FSR runtime. They may observe
-those values and verify Stabilizer's result, but they must not mutate them.
+If this one-time action is missing, Stabilizer was not startup-active, or the
+runtime fixture cannot be corrected, preserve the receipt and stop before
+measurement because the assay fixture itself was never established.
 
-Preserve this one receipt with the run evidence. Do not call `prepare_coc`
-again during start-cell establishment or any measured transition. Do not query
-the menu, recheck developer mode, recheck FOV/TAA, or recheck Stabilizer during
-the assay, and do not add these preflight facts to the per-transition waiter.
+## Baseline and profile fixture
 
-## Configured comparison fixture
+After the gate, obtain the first coherent Windhelm baseline. Require the exact
+cell, loaded player, stable lifecycle, expected Stabilizer-selected profile,
+correct render/display dimensions, and applicable two-eye presentation and
+fidelity evidence. This is the only pre-assay image-stability gate.
 
-- Use the start cell and exact COC target sequence selected by the user.
-- Run the requested number of measured transitions.
-- Do not use a fixed inter-transition delay.
-- Default transition deadline: 120 seconds.
-- Stability ends at the first coherent state that satisfies the applicable
-  exact-cell, profile, lifecycle, and two-eye presentation contract.
-
-Before dispatch, obtain each destination's expected profile from the approved
-Stabilizer-owned fixture or a previously verified observation of that exact
-Stabilizer configuration. The profile supplied to a waiter is a read-only
-assertion; it does not authorize an upscaling mutation. Never guess a target,
-reuse the source-cell profile as the destination target, or invoke an
-upscaling `apply` action. If an exact destination assertion is unavailable,
-stop before the first COC and ask the user to provide or verify the Stabilizer
-fixture.
-
-Start-cell establishment is not a measured transition. After the one-time
-pre-assay gate, if needed, issue one isolated COC to the configured start cell,
-wait for the same stability barrier, and only then start the diagnostic
-sessions and measured run.
-
-## Non-overlap invariant
-
-Exactly one transition may be unresolved. A console result of `queued: true`
-proves only admission; it does not prove that the load completed.
-
-For each measured transition:
-
-1. Call `qualification_begin` with a unique transition ID and owner ID to
-   preserve the source scene and diagnostic baselines.
-2. Call `qualification_dispatch` with the same ownership pair to mark the
-   server QPC/frame. Require its accepted receipt before submitting the exact
-   `coc <target>` command, then call one bounded `qualification_wait` with that
-   pair and the destination's read-only Stabilizer-owned profile assertion.
-   The waiter continuously observes live state without returning each
-   intermediate snapshot to the client. It validates the profile but does not
-   apply it. The dispatch acknowledgement is part of the measured absolute
-   latency.
-3. Require `playerLoaded` and the exact destination cell before testing CSX
-   stability. This prevents the source world's still-loaded state from passing
-   before the queued COC executes.
-4. Stop the timer at the first coherent stable observation. Return that
-   observation with one final upscaling snapshot and one render-scale health
-   record.
-5. Validate every top-level MCP response. When and only when the waiter reports
-   `satisfied: true` and `outcome: stable`, preserve its evidence and dispatch
-   the next transition. A monolithic scenario whose tool steps ignore semantic
-   JSON failures is not an acceptable substitute.
-
-If the observed destination profile differs from the Stabilizer-owned
-assertion, stop and classify the attempt as a fixture mismatch. Do not call an
-upscaling mutation to make the observed state match the assertion.
-
-Do not wait for loading-menu open/close events, query or manipulate menus, add
-a fixed recovery delay, or transfer repeated full status responses. These are
-not stability requirements and add observer overhead. If no direct MCP waiter
-can evaluate this predicate server-side, stop fail-closed and report the
-missing capability; do not substitute a PowerShell polling loop.
-
-The exact target-cell requirement prevents the source world's cached loaded
-state from satisfying the barrier before the queued `coc` executes.
-
-## CSX stability definition
-
-Shared requirements for every method:
-
-- exact destination cell and loaded player;
-- provider check complete;
-- no active operation, restart requirement, loading transition, method
-  transition, relatch, first-world-frame wait, post-load recovery, provider
-  wait, or resource recovery;
-- requested and effective profiles agree;
-- positive render and display dimensions;
-- no terminal failure, device loss, unresolved physical mutation, vendor work
-  gate, pending memory trim, or resource retirement.
-
-The stability decision uses the first internally coherent observation. The
-diagnostic session remains continuous throughout the run, so historical
-stretch, fallback, fidelity, lifecycle, and recovery counters are retained as
-evidence but do not delay a currently stable frame.
-
-When render-scale is active, additionally require:
-
-- upscaling API flags say render-scale is both latched and active;
-- render-scale mode and controller state are `active`;
-- an authoritative stable physical contract matches the requested and
-  effective method, quality, backend, and dimensions;
-- stereo presentation is `stereo_proven` or `released`;
-- both fidelity eyes are evaluated, valid, frame-coherent, and mismatch-free;
-- both presentation eyes are valid, non-transitional, and use the same
-  `VendorEvaluated` path;
-- at least two consecutive both-eye vendor frames;
-- for DLSS, the DLSS lifecycle is ready with resources and no failures;
-- for FSR, both dispatch eyes and their backend converge, the runtime contract
-  is ready, no runtime fallback is observed, and shader compilation is idle.
-
-For native-resolution DLSS, FSR, TAA/AA, or DLAA, render-scale fidelity is
-intentionally inactive. The render-scale controller may remain `Active` while
-its applied and stable contracts are valid and inactive. Require render-scale
-status to be disabled, latched/active flags to be clear, render and display
-dimensions to match, and both presentation eyes to be valid, frame-coherent,
-non-transitional, and on `NativeOriginal`. Requested, effective, and stable
-native profiles must agree. Record the stereo-evidence class as
-`native_pipeline_frames`; do not claim the stronger render-scale fidelity
-contract.
-
-Do not prescribe the method, quality mode, or render-scale policy. VR FPS
-Stabilizer alone selects the profile at each destination. Validate its
-selection against the read-only fixture assertion and apply the corresponding
-active or native-resolution stability checks. A target passed to
-`qualification_wait` is an assertion only and must never be treated as a
-request to change runtime state.
+Use the approved Stabilizer fixture to define the expected profile for both
+`WindhelmExterior01` and `WhiterunDragonsreach`. Do not derive a new target by
+changing CSX. A later mismatch is recorded against the expected per-cell
+profile and does not end the assay.
 
 ## Diagnostic sessions
 
-Before transition 1:
+Inspect render-scale stress, CPU telemetry, and GPU telemetry once. Do not take
+over an active capture. Preserve retained stopped-session evidence, reset each
+inactive diagnostic, and start all three before transition 1:
 
-1. Verify the exact producer build ID and runtime identity.
-2. Verify the render-scale stress session and CPU telemetry are inactive. Fail
-   instead of taking over an existing capture, and preserve their retained
-   stopped-session records before reset.
-3. Reset and start the render-scale stress session, retaining its returned
-   session identity for guarded stop/cleanup.
-4. Reset and start `cpu_performance_*` telemetry when exposed. Retain its
-   nonzero `cpuPerformance.sessionId`; status and stop must return that same
-   identity, and stop must send it as `expectedSessionId`. A reset clears the
-   inactive retained ID to zero.
+1. render-scale stress `reset` then `start`; retain `sessionId`;
+2. `cpu_performance_reset` then `cpu_performance_start`; retain its `sessionId`;
+3. `gpu_performance_reset` then `gpu_performance_start`; retain its nonnegative
+   `startFrame`.
 
-These sessions measure continuously. Do not restart them between transitions.
-The per-transition waiter observes their live state; it does not initiate a new
-measurement.
+Keep all three sessions continuous across the complete assay. Do not restart
+them between transitions and do not enable the readback probe.
 
-After the final stability barrier, stop CPU telemetry and then stop the
-render-scale stress session. The render-scale stop result contains the final
-iteration record. Do not enable the load-presentation readback probe unless a
-visual/readback experiment explicitly requires it; its extra GPU work would
-contaminate a transition-throughput measurement.
+## Deadline-driven measured assay
 
-## Performance result
+The measured run starts in `WindhelmExterior01`. Run exactly 20 alternating
+transitions: odd ordinals target `WhiterunDragonsreach`; even ordinals target
+`WindhelmExterior01`.
 
-For each transition report:
+Prefer one server-side scenario containing the complete transition sequence so
+client round trips do not create idle gaps. Use `continueOnError: false` for
+actual tool failures. For every ordinal:
 
-- target and ordinal;
-- dispatch-to-first-stable elapsed milliseconds using the server QPC mark;
-- dispatch and stable frames;
-- profile signature, method, render-scale state, and stereo-evidence class;
-- relatch/recovery, stretch, fallback, fidelity, and lifecycle deltas.
+1. call `qualification_begin` with a unique transition ID and one run owner ID;
+2. place `qualification_dispatch` immediately adjacent to the COC step with no
+   intervening action, then dispatch exactly one `coc <target>`;
+3. call `qualification_wait` once with the same ownership pair, exact target
+   cell, expected Stabilizer profile, and `timeoutMs: 10000`.
 
-For the run report count, total time, minimum, median, mean, p95, maximum, and
-transitions per minute. Transition latency is the primary throughput measure.
-CPU telemetry is primary implementation cost evidence; GPU counters are
-secondary context and must come from a separately controlled profiler capture
-when requested.
+The measured transition timer begins at the COC command. It excludes
+`qualification_begin`, diagnostic setup, and all other preparation. The
+adjacent dispatch marker arms the server QPC clock at that command boundary;
+report the measurement as COC-to-first-stable or COC-to-deadline latency.
 
-Compare builds only when fixture, target sequence, transition count, settings,
-method, viewport, stability thresholds, and diagnostics match exactly. Exclude
-any run that times out, overlaps transitions, changes settings, or lacks the
-final stable barrier.
+Advance immediately when the waiter returns a coherent stable state. If it
+reaches the 10-second deadline, preserve the final observation and advance
+immediately after the timed-out waiter releases its ownership. Do not add fixed
+inter-transition waits, menu checks, or client-side polling.
 
-When this protocol feeds revision 4 of the render-scale qualification, require
-the complete `dlss_trace_status`, `dlss_trace_reset`, `dlss_trace_start`,
-`dlss_trace_stop`, and `dlss_trace_read` lifecycle introduced by
-`b46edeaed14c41ad41225641c3a4943f1db25db6`. Publish every immutable producer
-JSON/CSV file, all 144 visual PNGs, and all six blinded image-model batch
-records through the closed, hash-bound `automation-artifacts.json` inventory.
-The same invocation must reopen that set, replay its identities and ordered
-receipt bindings, derive render-scale latch from owner-bound telemetry, and
-reject unlisted or altered artifacts. Baseline publication copies the selected
-closed set and final review while flattening an earlier comparison to one
-generation instead of recursively copying historical baselines.
+A timeout, exact-profile mismatch, lifecycle delay, fidelity fault, or
+presentation fault is a normal anomaly receipt. It affects the final verdict,
+but the remaining transitions still run. This deliberately lets a faulty build
+accumulate a useful error history.
+
+Stop the sequence only for a real control failure: Skyrim VR exits or crashes,
+DevBench becomes unavailable, the producer Build ID changes, another owner
+replaces a diagnostic or qualification session, COC dispatch is rejected, or
+the required server waiter disappears. A normal `qualification_wait` timeout
+is not a scenario tool error and must not trigger `continueOnError`.
+
+## Stability interpretation
+
+Shared stability requirements are exact destination cell and loaded player;
+provider check complete; no active operation, restart requirement, loading or
+method transition, relatch, first-world-frame wait, post-load recovery,
+provider wait, resource recovery, device loss, unresolved physical mutation,
+vendor work gate, pending trim, or resource retirement; agreed requested,
+effective, and stable profiles; and positive render/display dimensions.
+
+When render scale is active, require the owner-bound applied/stable physical
+contract, correct method/quality/backend/dimensions, ready lifecycle, valid
+two-eye fidelity, and at least two completed both-eye vendor presentation
+frames. `ContractPublished` is a transient publication phase; steady-state
+stability is proved by durable owner keys and matching applied/stable contracts,
+not by requiring that transient phase to still be current.
+
+For vendor presentation, use the last completed both-eye compositor frame and
+cycle as the durable coherent pair. A snapshot may legitimately show one
+current eye on the next frame/cycle while the other still represents that last
+completed pair. Do not require the two instantaneous current-eye frame fields
+to be identical. Reject stale completed-pair evidence, invalid paths, epoch or
+generation mismatches, transition flags, and a snapshot where both current
+eyes have moved beyond the recorded completed pair.
+
+For native resolution, require valid frame-coherent `NativeOriginal` eyes,
+inactive render-scale flags, matching render/display dimensions, and agreed
+native profiles.
+
+## Cleanup and final evaluation
+
+After transition 20, always attempt owned cleanup while the control plane is
+available:
+
+1. `gpu_performance_stop` with the captured `expectedStartFrame`;
+2. `cpu_performance_stop` with the captured `expectedSessionId`;
+3. render-scale stress `stop` with the captured `expectedSessionId`.
+
+Preserve all raw transition receipts and diagnostic final records. Report
+requested and dispatched transition counts, stable and anomalous counts, each
+ordinal/target/outcome/deadline/profile/stereo/lifecycle result, and CPU/GPU
+telemetry. Compute latency statistics for stable transitions separately from
+deadline-hit counts.
+
+The verdict is `clean` only if all 20 transitions dispatched and stabilized
+without anomalies. If all 20 dispatched but one or more were imperfect, the
+verdict is `completed_with_anomalies`. Use an interrupted verdict only when a
+real control failure prevented dispatching all requested transitions.

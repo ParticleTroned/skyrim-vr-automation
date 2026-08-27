@@ -28,63 +28,76 @@ $skill = Get-Content -LiteralPath $sourceSkillPath -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocolPath -Raw
 
 foreach ($requiredSkillText in @(
-    'Before any COC',
+    'confirmed in-game',
+    'one 10-second settle period',
+    '`coc WindhelmExterior01`',
     'communityshaders.menu',
     '"action":"prepare_coc"',
     'exactly once',
     'persisted: false',
     'startup-active VR FPS',
-    'monitor-first gate',
-    'exclusive owner of upscaling profile changes',
-    'Never guess it',
-    'upscaling apply action',
-    'Do not invoke `prepare_coc` again',
-    'Do not add its settings to the per-transition waiter predicate'
+    'exclusively owns every DLSS/upscaling change',
+    'one GPU telemetry session',
+    'Start each transition timer at its actual COC command',
+    'absolute 10-second COC-to-result deadline',
+    'completed_with_anomalies'
 )) {
     Assert-Protocol $skill.Contains($requiredSkillText, [StringComparison]::Ordinal) `
         "COC skill is missing: $requiredSkillText"
 }
 
 foreach ($requiredProtocolText in @(
-    '## One-time pre-assay gate',
+    '## Fast start-cell establishment',
+    '## One-time post-load fixture gate',
+    '## Baseline and profile fixture',
+    '## Diagnostic sessions',
+    '## Deadline-driven measured assay',
+    '## Stability interpretation',
+    '## Cleanup and final evaluation',
+    'one 10-second settle period',
+    'coc WindhelmExterior01',
     '"action": "prepare_coc"',
-    'before any COC',
-    '`after.developerMode.active` is `true`',
-    '`after.foveation.ready` is `true`',
-    '`after.vrFpsStabilizer.activeForSession` is `true`',
-    '`vr_fps_stabilizer_required`',
-    'partial mutation',
-    'activate or configure VR FPS Stabilizer and restart',
-    'exclusive owner of upscaling profile changes',
-    'Stabilizer-owned fixture',
-    'Never guess a target',
-    'does not authorize an upscaling mutation',
-    'Do not call `prepare_coc`',
-    'do not add these preflight facts to the per-transition waiter'
+    'VR FPS Stabilizer exclusively owns all DLSS/upscaling changes',
+    '`gpu_performance_reset` then `gpu_performance_start`',
+    '`timeoutMs: 10000`',
+    'The measured transition timer begins at the COC command',
+    '`qualification_begin`, diagnostic setup',
+    '`continueOnError: false`',
+    '`ContractPublished` is a transient publication phase',
+    'Do not require the two instantaneous current-eye frame fields',
+    '`gpu_performance_stop` with the captured `expectedStartFrame`',
+    '`completed_with_anomalies`'
 )) {
     Assert-Protocol $protocol.Contains($requiredProtocolText, [StringComparison]::Ordinal) `
         "COC protocol is missing: $requiredProtocolText"
 }
 
-$preflightPosition = $protocol.IndexOf('## One-time pre-assay gate', [StringComparison]::Ordinal)
-$fixturePosition = $protocol.IndexOf('## Configured comparison fixture', [StringComparison]::Ordinal)
-$assayPosition = $protocol.IndexOf('## Non-overlap invariant', [StringComparison]::Ordinal)
-Assert-Protocol ($preflightPosition -ge 0 -and $preflightPosition -lt $fixturePosition) `
-    'The one-time gate must precede fixture and start-cell handling.'
-Assert-Protocol ($assayPosition -gt $fixturePosition) `
-    'The measured assay section must follow the pre-assay fixture.'
+$startPosition = $protocol.IndexOf('## Fast start-cell establishment', [StringComparison]::Ordinal)
+$fixturePosition = $protocol.IndexOf('## One-time post-load fixture gate', [StringComparison]::Ordinal)
+$baselinePosition = $protocol.IndexOf('## Baseline and profile fixture', [StringComparison]::Ordinal)
+$diagnosticsPosition = $protocol.IndexOf('## Diagnostic sessions', [StringComparison]::Ordinal)
+$assayPosition = $protocol.IndexOf('## Deadline-driven measured assay', [StringComparison]::Ordinal)
+$cleanupPosition = $protocol.IndexOf('## Cleanup and final evaluation', [StringComparison]::Ordinal)
+Assert-Protocol ($startPosition -ge 0 -and $startPosition -lt $fixturePosition) `
+    'The 10-second start-cell establishment must precede the post-load gate.'
+Assert-Protocol ($fixturePosition -lt $baselinePosition -and $baselinePosition -lt $diagnosticsPosition) `
+    'The post-load gate and baseline must precede diagnostic startup.'
+Assert-Protocol ($diagnosticsPosition -lt $assayPosition -and $assayPosition -lt $cleanupPosition) `
+    'Diagnostics, measured assay, and cleanup are out of order.'
 
 $assayText = $protocol.Substring($assayPosition)
 Assert-Protocol (-not $assayText.Contains('prepare_coc', [StringComparison]::Ordinal)) `
     'The measured assay must not invoke or recheck prepare_coc.'
 Assert-Protocol (([regex]::Matches($protocol, '"action": "prepare_coc"')).Count -eq 1) `
     'The protocol must contain exactly one prepare_coc invocation.'
-Assert-Protocol (-not $protocol.Contains('"action": "apply"', [StringComparison]::Ordinal)) `
-    'The COC protocol must not contain an upscaling apply action.'
-Assert-Protocol ($protocol.Contains('It validates the profile but does not', [StringComparison]::Ordinal)) `
-    'The waiter target must be documented as validation, not mutation.'
-Assert-Protocol ([regex]::IsMatch($protocol, 'read-only\s+assertion')) `
-    'The waiter target must be a read-only profile assertion.'
+Assert-Protocol (-not $protocol.Contains(
+        'If the waiter or current transition times out, stop',
+        [StringComparison]::Ordinal)) `
+    'The protocol still contains the obsolete fail-fast timeout rule.'
+Assert-Protocol (-not $protocol.Contains(
+        'Default transition deadline: 120 seconds',
+        [StringComparison]::Ordinal)) `
+    'The protocol still contains the obsolete 120-second transition deadline.'
 
 $sourceSkillHash = (Get-FileHash -LiteralPath $sourceSkillPath -Algorithm SHA256).Hash
 $pluginSkillHash = (Get-FileHash -LiteralPath $pluginSkillPath -Algorithm SHA256).Hash
@@ -98,6 +111,11 @@ Assert-Protocol ($sourceProtocolHash -eq $pluginProtocolHash) `
 [pscustomobject][ordered]@{
     ok = $true
     prepareInvocations = 1
+    startupSettleMs = 10000
+    transitionDeadlineMs = 10000
+    timingOrigin = 'coc_command'
     repeatedDuringAssay = $false
+    continueOnAnomaly = $true
+    gpuTelemetry = $true
     sourceAndPluginMatch = $true
 } | ConvertTo-Json

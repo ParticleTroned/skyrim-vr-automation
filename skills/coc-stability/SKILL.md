@@ -1,59 +1,47 @@
 ---
 name: coc-stability
-description: Run a safe Skyrim VR COC stability and transition-throughput test when asked for a load-synchronized COC stress run or repeated cell-transition protocol.
+description: Run a fast, deadline-driven Skyrim VR COC stability assay that preserves imperfect transitions instead of stopping at the first stability fault.
 ---
 
 # COC stability
 
-Run cell changes one at a time. Never place multiple `coc` commands in one
-fixed-delay scenario.
-
 Read [references/protocol.md](references/protocol.md) before operating the game.
 
-Before any COC, invoke `communityshaders.menu` with
+After Skyrim VR is confirmed in-game, allow one 10-second settle period. Use
+that same window for the build/runtime read, then issue exactly one isolated
+`coc WindhelmExterior01`. Do not serialize redundant preflight checks ahead of
+that first COC.
+
+After Windhelm loads, invoke `communityshaders.menu` with
 `{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}` exactly once.
-This is a monitor-first gate. It must check startup-active VR FPS Stabilizer
-before changing anything. If Stabilizer is not active, refuse the test, apply
-no partial changes, and tell the user to activate or configure it and restart
-Skyrim VR.
+Require `ready: true`, `persisted: false`, startup-active VR FPS Stabilizer,
+developer mode, and the FOV/TAA 0.3/0.3/0.7 fixture. The action may correct
+those runtime-only CSX settings. It must not save settings or change the
+upscaling method, quality, preset, render scale, or dynamic policy.
 
-Only after Stabilizer passes may `prepare_coc` enable developer debug mode and
-correct the runtime-only FOV plus TAA fixture to FOV `0.3`, TAA center `0.3`,
-and TAA outer `0.7`. Preserve the receipt and require `ready: true`,
-`persisted: false`, developer mode active, and the exact fixture. The action
-must not save settings.
+VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe and
+validate its per-cell profiles; never use a CSX apply action to select one.
 
-VR FPS Stabilizer is the exclusive owner of upscaling profile changes. Never
-change or apply the upscaling method, quality mode, render-scale mode, DLSS
-profile or preset, or FSR runtime during preflight, start-cell establishment,
-or the assay.
+Only after the one-time fixture gate, establish an exact Windhelm image,
+stereo, lifecycle, and profile baseline. Then start one continuous render-scale
+stress session, one CPU telemetry session, and one GPU telemetry session.
+Retain their ownership identities.
 
-If `prepare_coc` is unavailable or returns `ready: false`, stop before the
-start-cell COC. When `promptRequired` is true, tell the user the exact
-`errorCode` and prerequisite. VR FPS Stabilizer cannot be installed or made
-startup-active from a live test, so do not attempt another game operation.
+Run all 20 alternating measured transitions, beginning with
+`WhiterunDragonsreach`. Prefer one server-side scenario for the complete
+sequence. Start each transition timer at its actual COC command, excluding
+`qualification_begin` and all setup. Advance immediately on a stable result,
+or advance at the absolute 10-second COC-to-result deadline with the imperfect
+receipt preserved.
 
-Do not invoke `prepare_coc` again during start-cell establishment or the
-measured assay. Do not add its settings to the per-transition waiter predicate.
+A qualification timeout or a profile, fidelity, presentation, or lifecycle
+imperfection is assay evidence, not a reason to stop. Stop only for loss of the
+game/control plane, build-identity change, diagnostic ownership corruption,
+rejected COC dispatch, or loss of the required waiter capability. Never overlap
+two unresolved waiter calls; a timed-out waiter must return its terminal receipt
+before the next transition starts.
 
-Treat a waiter's target profile only as a read-only assertion of the
-destination profile selected by Stabilizer. Source it from the approved
-Stabilizer-owned fixture before dispatch. Never guess it, copy the source-cell
-profile, or call an upscaling apply action. If the destination does not match
-that assertion, stop and report a fixture mismatch; do not force it to match.
-
-Use plugin-provided direct DevBench MCP tools for every live operation. Start
-continuous diagnostics once, then use one server-side stability waiter per
-transition. The waiter must observe the exact destination, CSX profile
-convergence, and the applicable two-eye presentation contract internally and
-return only when the first coherent stable state is observed.
-
-Do not replace the waiter with loading-menu checks, fixed delays, repeated
-full-status responses, menu operations, or a PowerShell polling controller. If
-the direct server does not expose the required waiter, stop and record the
-capability gap instead of running a different protocol.
-
-Dispatch the next transition immediately after the waiter succeeds. If the
-waiter or current transition times out, stop without dispatching another game
-command. Preserve the partial evidence and classify the run as failed
-stability evidence, not completed performance evidence.
+After transition 20, stop GPU telemetry using its guarded start frame, then CPU
+telemetry and render-scale stress using their session IDs. Classify a fully
+stable run as `clean`; classify a complete run containing any imperfect
+transition as `completed_with_anomalies`.
