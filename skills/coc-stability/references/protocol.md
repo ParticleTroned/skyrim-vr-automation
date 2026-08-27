@@ -2,18 +2,23 @@
 
 ## Fast start-cell establishment
 
-Confirm that Skyrim VR is in-game, then begin one 10-second settle period. Use
-that same interval to read the exact CSX producer Build ID and runtime identity;
-do not insert a chain of redundant status or menu checks. At the end of the
-settle period issue exactly:
+At the moment the user confirms Skyrim VR is in-game, immediately queue one
+async server scenario whose only steps are a 10,000 ms wait followed by exactly:
 
 ```text
 coc WindhelmExterior01
 ```
 
-Wait for the load event and take one exact-cell scene observation. Start-cell
-establishment is not a measured transition and does not yet assert render or
-stereo stability.
+Queue that deadline before any identity, status, capability, schema, or capture
+call. While the server owns the 10-second clock, concurrently read the runtime
+identity and exact CSX producer Build ID. Do not await one read before starting
+the other, and do not add work after both finish. These reads may complete
+early or late, but they never postpone the scheduled COC.
+
+If the server does not accept the timed scenario, stop without substituting a
+client sleep. After the COC step returns, wait for the load event and take one
+exact-cell scene observation. Start-cell establishment is not measured and
+does not yet assert render or stereo stability.
 
 ## One-time post-load fixture gate
 
@@ -51,10 +56,17 @@ measurement because the assay fixture itself was never established.
 
 ## Baseline and profile fixture
 
-After the gate, obtain the first coherent Windhelm baseline. Require the exact
-cell, loaded player, stable lifecycle, expected Stabilizer-selected profile,
-correct render/display dimensions, and applicable two-eye presentation and
-fidelity evidence. This is the only pre-assay image-stability gate.
+After the gate, launch one parallel baseline bundle containing the exact scene,
+the public upscaling snapshot, render-scale status, GPU telemetry status, and
+any already-configured CSX image capture. Do not serialize these independent
+reads. Do not probe for, install, or retry an optional capture provider on the
+critical path; a missing provider is recorded while the user's in-headset
+visual check and CSX two-eye fidelity evidence remain authoritative.
+
+Require the exact cell, loaded player, stable lifecycle, expected
+Stabilizer-selected profile, correct render/display dimensions, and applicable
+two-eye presentation and fidelity evidence. Parallelism changes only latency,
+never the fidelity predicate. This is the only pre-assay image-stability gate.
 
 Use the approved Stabilizer fixture to define the expected profile for both
 `WindhelmExterior01` and `WhiterunDragonsreach`. Do not derive a new target by
@@ -63,9 +75,13 @@ profile and does not end the assay.
 
 ## Diagnostic sessions
 
-Inspect render-scale stress, CPU telemetry, and GPU telemetry once. Do not take
-over an active capture. Preserve retained stopped-session evidence, reset each
-inactive diagnostic, and start all three before transition 1:
+Use the status records already returned by the parallel baseline bundle to
+inspect render-scale stress, CPU telemetry, and GPU telemetry once. Do not issue
+a second status chain and do not take over an active capture. Preserve retained
+stopped-session evidence.
+
+Start all diagnostics in one server setup scenario before transition 1. Within
+each diagnostic, preserve reset-before-start ordering:
 
 1. render-scale stress `reset` then `start`; retain `sessionId`;
 2. `cpu_performance_reset` then `cpu_performance_start`; retain its `sessionId`;
@@ -81,9 +97,11 @@ The measured run starts in `WindhelmExterior01`. Run exactly 20 alternating
 transitions: odd ordinals target `WhiterunDragonsreach`; even ordinals target
 `WindhelmExterior01`.
 
-Prefer one server-side scenario containing the complete transition sequence so
-client round trips do not create idle gaps. Use `continueOnError: false` for
-actual tool failures. For every ordinal:
+Use one async server-side scenario containing the complete transition sequence
+so client round trips cannot create idle gaps. Set `continueOnError: true`
+intentionally: every imperfect result or step error is assay evidence, and the
+bounded 20-transition batch must not be rejected as fail-fast. For every
+ordinal:
 
 1. call `qualification_begin` with a unique transition ID and one run owner ID;
 2. place `qualification_dispatch` immediately adjacent to the COC step with no
@@ -106,11 +124,13 @@ presentation fault is a normal anomaly receipt. It affects the final verdict,
 but the remaining transitions still run. This deliberately lets a faulty build
 accumulate a useful error history.
 
-Stop the sequence only for a real control failure: Skyrim VR exits or crashes,
-DevBench becomes unavailable, the producer Build ID changes, another owner
-replaces a diagnostic or qualification session, COC dispatch is rejected, or
-the required server waiter disappears. A normal `qualification_wait` timeout
-is not a scenario tool error and must not trigger `continueOnError`.
+Do not cancel the bounded server batch for a normal anomaly or a tool-step
+error. If Skyrim exits, DevBench disappears, producer or diagnostic ownership
+changes, a COC is rejected, or the waiter disappears, later guarded steps may
+also return errors; preserve every receipt and let the fixed batch terminate.
+A normal `qualification_wait` timeout is a semantic anomaly receipt, not a
+reason to stop or restart the client-side orchestration. The final verdict is
+interrupted when fewer than 20 COCs report `dispatched: true`.
 
 ## Stability interpretation
 

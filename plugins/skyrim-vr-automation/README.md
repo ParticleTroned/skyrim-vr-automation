@@ -54,9 +54,10 @@ new task to the bundled implementations and their operational contracts:
 - `$steamvr-null-hmd` routes backed-up SteamVR null-HMD apply/restore and
   bounded runtime shutdown.
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
-- `$coc-stability` runs load-synchronized COC transitions through the
-  server-side stability waiter, performs its debug/FOV/Stabilizer gate once
-  before any COC, and refuses fixed-delay or in-assay preflight substitutes.
+- `$coc-stability` queues the 10-second Windhelm start first, fills that wait
+  with parallel identity reads, applies its post-load debug/FOV/Stabilizer gate
+  once, and runs all 20 command-timed transitions in one anomaly-accumulating
+  server batch without weakening the exact-cell or two-eye fidelity predicate.
 - `$fidelstab` runs the preserved paced Breezehome fidelity and stability
   protocol.
 - `$render-scale-qualification` attaches to the intended DLL that is already

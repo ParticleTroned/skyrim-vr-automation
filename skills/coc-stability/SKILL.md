@@ -5,43 +5,43 @@ description: Run a fast, deadline-driven Skyrim VR COC stability assay that pres
 
 # COC stability
 
-Read [references/protocol.md](references/protocol.md) before operating the game.
+Use this entrypoint for live operation. Read
+[references/protocol.md](references/protocol.md) only when maintaining or
+diagnosing the protocol; rereading it must never delay the live 10-second
+start.
 
-After Skyrim VR is confirmed in-game, allow one 10-second settle period. Use
-that same window for the build/runtime read, then issue exactly one isolated
-`coc WindhelmExterior01`. Do not serialize redundant preflight checks ahead of
-that first COC.
+When the user confirms Skyrim VR is in-game, make the first operation an async
+server scenario that waits exactly 10 seconds and dispatches one isolated
+`coc WindhelmExterior01`. During that server wait, read runtime identity and
+the exact CSX Build ID concurrently. Do not put capability discovery, schema
+searches, sequential status calls, or capture-provider probing ahead of the
+first COC.
 
-After Windhelm loads, invoke `communityshaders.menu` with
-`{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}` exactly once.
-Require `ready: true`, `persisted: false`, startup-active VR FPS Stabilizer,
-developer mode, and the FOV/TAA 0.3/0.3/0.7 fixture. The action may correct
-those runtime-only CSX settings. It must not save settings or change the
-upscaling method, quality, preset, render scale, or dynamic policy.
+After Windhelm loads, call `communityshaders.menu` once with
+`{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}`. Require
+`ready: true`, `persisted: false`, startup-active VR FPS Stabilizer,
+developer mode, and the FOV/TAA 0.3/0.3/0.7 fixture. It may correct only those
+runtime CSX settings and must not save.
 
-VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe and
-validate its per-cell profiles; never use a CSX apply action to select one.
+VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe its
+per-cell profiles; never apply an upscaling method, quality, preset, render
+scale, or dynamic policy through CSX.
 
-Only after the one-time fixture gate, establish an exact Windhelm image,
-stereo, lifecycle, and profile baseline. Then start one continuous render-scale
-stress session, one CPU telemetry session, and one GPU telemetry session.
-Retain their ownership identities.
+After the gate, collect the exact-cell, profile, lifecycle, stereo, diagnostic,
+and already-available image evidence in one parallel baseline bundle. Do not
+turn optional screenshot-provider discovery into a blocking pre-assay gate.
+Start one continuous render-scale stress session, CPU telemetry session, and
+GPU telemetry session in one setup scenario, retaining their owner identities.
 
-Run all 20 alternating measured transitions, beginning with
-`WhiterunDragonsreach`. Prefer one server-side scenario for the complete
-sequence. Start each transition timer at its actual COC command, excluding
-`qualification_begin` and all setup. Advance immediately on a stable result,
-or advance at the absolute 10-second COC-to-result deadline with the imperfect
-receipt preserved.
+Run all 20 alternating measured transitions in one async server scenario with
+`continueOnError: true`. Each transition is exactly
+`qualification_begin`, adjacent `qualification_dispatch` plus COC, then one
+`qualification_wait` with a 10-second deadline. The command-boundary dispatch
+tick excludes setup and client latency. A stable receipt advances immediately;
+a timeout or other imperfect receipt also advances immediately and remains
+assay evidence. Do not split ordinary transitions into client round trips.
 
-A qualification timeout or a profile, fidelity, presentation, or lifecycle
-imperfection is assay evidence, not a reason to stop. Stop only for loss of the
-game/control plane, build-identity change, diagnostic ownership corruption,
-rejected COC dispatch, or loss of the required waiter capability. Never overlap
-two unresolved waiter calls; a timed-out waiter must return its terminal receipt
-before the next transition starts.
-
-After transition 20, stop GPU telemetry using its guarded start frame, then CPU
-telemetry and render-scale stress using their session IDs. Classify a fully
-stable run as `clean`; classify a complete run containing any imperfect
-transition as `completed_with_anomalies`.
+After transition 20, attempt guarded GPU, CPU, and stress cleanup. Classify a
+fully stable run as `clean`; classify a complete imperfect run as
+`completed_with_anomalies`; use an interrupted verdict only when the server
+cannot dispatch all 20 COCs.
