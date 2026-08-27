@@ -35,6 +35,12 @@ one evidence record.
 `ok` reflects transport success unless `-RequireSuccess` is supplied. Every
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
+Replay completion receipts containing only scheduler facts such as `done`,
+`runId`, and `stepsRun` are classified as
+`scheduler-complete-unverified`, not semantic success. A replay response must
+include explicit `semantic`, `postconditions`, `outcomeChecks`, or `assertions`
+evidence before `-RequireSuccess` will accept it. This proves that the requested
+interaction outcome occurred instead of merely proving that the scheduler ran.
 Nested `error.code`, `status`, and `result.state` values are classified. Use
 `-ExpectedErrorCode producer_mismatch` when a guarded rejection is the intended
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
@@ -59,6 +65,15 @@ main-thread-busy probe failures as unsatisfied observations after the short
 transport retry budget is exhausted. The outer deadline therefore survives a
 normal load or compile transition, while non-transient probe failures still
 terminate immediately and the last transient error remains in the result.
+The initial MCP initialize/initialized/tools-list exchange is part of that same
+outer wait state machine, so a temporarily unavailable listener cannot exhaust
+the short transport budget before the requested timeout begins.
+
+`playerLoaded` is transition-fresh by default: the wait must observe an
+unloaded state before accepting loaded. This prevents the prior world's cached
+`true` from satisfying an asynchronous load. Use `-AcceptAlreadyLoaded` only
+when the caller intentionally wants a current-state check rather than proof of
+a new load transition.
 
 Runtime identity is refreshed after a waited-for service registers. The binding
 reports listener process identity, every available CSX producer registry,

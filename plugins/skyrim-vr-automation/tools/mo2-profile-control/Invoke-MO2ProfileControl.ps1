@@ -7,6 +7,7 @@ param(
     [string]$Command,
 
     [Parameter(Mandatory)]
+    [Alias('ModListPath')]
     [string]$ProfilePath,
 
     [Parameter(Mandatory)]
@@ -35,6 +36,20 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function New-ProfileApprovalMetadata([string]$Subcommand) {
+    $hostExecutable = [string][Environment]::ProcessPath
+    if ([string]::IsNullOrWhiteSpace($hostExecutable)) { $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path }
+    $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
+    return [pscustomobject][ordered]@{
+        hostExecutable = $hostExecutable; entryPoint = $entryPoint; subcommand = $Subcommand
+        reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
+        reusableApprovalEligible = $Subcommand -eq 'inspect'
+        escalationUsuallyRequired = $Subcommand -ne 'inspect'
+        oneShotReason = if ($Subcommand -ne 'inspect') { 'Profile mutations overwrite modlist.txt under an exact backup transaction and must remain one-shot approvals.' } else { $null }
+        invocationRule = 'Use this literal prefix directly. Put the exact profile, mod, and evidence arguments afterward; do not hide the prefix in variables, -Command, pipelines, or a command string.'
+    }
+}
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
@@ -195,10 +210,19 @@ function Test-ProfileShouldProcess($Caller, [string]$Target, [string]$Action) {
     }
 }
 
-$resolvedProfile = [IO.Path]::GetFullPath($ProfilePath)
-if (-not (Test-Path -LiteralPath $resolvedProfile -PathType Leaf)) {
-    throw "Profile modlist does not exist: $resolvedProfile"
+$resolvedInput = [IO.Path]::GetFullPath($ProfilePath)
+if (Test-Path -LiteralPath $resolvedInput -PathType Container) {
+    $profileDirectory = $resolvedInput.TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $resolvedProfile = Join-Path $profileDirectory 'modlist.txt'
 }
+else {
+    $resolvedProfile = $resolvedInput
+    $profileDirectory = Split-Path -Parent $resolvedProfile
+}
+if (-not (Test-Path -LiteralPath $resolvedProfile -PathType Leaf)) {
+    throw "Profile modlist does not exist. Pass either the profile directory or its modlist.txt: $resolvedProfile"
+}
+$profileName = [IO.Path]::GetFileName($profileDirectory)
 
 $beforeBytes = [IO.File]::ReadAllBytes($resolvedProfile)
 $beforeMatches = @(Get-ModLineMatches -Bytes $beforeBytes -Name $ModName)
@@ -208,16 +232,21 @@ $processes = @(Get-LiveProcesses -Names $BlockingProcessNames)
 
 if ($Command -eq 'inspect') {
     if ($beforeMatches.Count -ne 1) { throw "Expected exactly one modlist line for '$ModName'; found $($beforeMatches.Count)." }
-    [pscustomobject][ordered]@{
+    $inspectResult = [pscustomobject][ordered]@{
         ok = $true
         command = $Command
         profilePath = $resolvedProfile
+        profileName = $profileName
+        profileDirectory = $profileDirectory
+        modListPath = $resolvedProfile
         modName = $ModName
         enabled = $beforeLine.enabled
         marker = $beforeLine.marker
         sha256 = $beforeHash
         processes = $processes
-    } | ConvertTo-Json -Depth 5
+        approval = New-ProfileApprovalMetadata -Subcommand $Command
+    }
+    $inspectResult | ConvertTo-Json -Depth 7
     return
 }
 
@@ -261,7 +290,8 @@ if ($Command -in @('register', 'register-winning')) {
         $afterHash = Get-Sha256 $resolvedProfile
         $winnerProof = if ($Command -eq 'register-winning') { Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths } else { $null }
         [pscustomobject][ordered]@{
-            contractVersion = '1.3.0'; operation = $Command; profilePath = $resolvedProfile
+            contractVersion = '1.4.0'; operation = $Command; profilePath = $resolvedProfile
+            profileName = $profileName; profileDirectory = $profileDirectory; modListPath = $resolvedProfile
             modName = $ModName; modDirectory = $resolvedModDirectory; backupPath = $backupPath
             beforeSha256 = $beforeHash; resultSha256 = $afterHash; beforeMarker = $null
             resultMarker = $afterLine.marker; placement = $effectivePlacement; relativeToMod = $effectiveRelative
@@ -287,7 +317,8 @@ elseif ($Command -eq 'ensure-winner') {
         $afterHash = Get-Sha256 $resolvedProfile
         $winnerProof = Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
         [pscustomobject][ordered]@{
-            contractVersion = '1.3.0'; operation = 'ensure-winner'; profilePath = $resolvedProfile
+            contractVersion = '1.4.0'; operation = 'ensure-winner'; profilePath = $resolvedProfile
+            profileName = $profileName; profileDirectory = $profileDirectory; modListPath = $resolvedProfile
             modName = $ModName; modDirectory = $resolvedModDirectory; backupPath = $backupPath
             beforeSha256 = $beforeHash; resultSha256 = $afterHash; beforeMarker = $beforeLine.marker
             resultMarker = '+'; placement = $effectivePlacement; relativeToMod = $effectiveRelative
@@ -327,9 +358,12 @@ elseif ($Command -in @('enable', 'disable')) {
             throw "Postcondition failed: exact mod was not $targetState."
         }
         [pscustomobject][ordered]@{
-            contractVersion = '1.1.0'
+            contractVersion = '1.4.0'
             operation = $Command
             profilePath = $resolvedProfile
+            profileName = $profileName
+            profileDirectory = $profileDirectory
+            modListPath = $resolvedProfile
             modName = $ModName
             backupPath = $backupPath
             beforeSha256 = $beforeHash
@@ -377,15 +411,20 @@ elseif ($Command -eq 'restore') {
 $finalBytes = [IO.File]::ReadAllBytes($resolvedProfile)
 $finalMatches = @(Get-ModLineMatches -Bytes $finalBytes -Name $ModName)
 $finalLine = if ($finalMatches.Count -eq 1) { Get-ModLineRecord -Bytes $finalBytes -Name $ModName } else { $null }
-[pscustomobject][ordered]@{
+$finalResult = [pscustomobject][ordered]@{
     ok = $true
     command = $Command
     whatIf = [bool]$WhatIfPreference
     profilePath = $resolvedProfile
+    profileName = $profileName
+    profileDirectory = $profileDirectory
+    modListPath = $resolvedProfile
     modName = $ModName
     enabled = if ($finalLine) { $finalLine.enabled } else { $null }
     marker = if ($finalLine) { $finalLine.marker } else { $null }
     sha256 = Get-Sha256 $resolvedProfile
     backupPath = $backupPath
     receiptPath = $receiptPath
-} | ConvertTo-Json -Depth 5
+    approval = New-ProfileApprovalMetadata -Subcommand $Command
+}
+$finalResult | ConvertTo-Json -Depth 7

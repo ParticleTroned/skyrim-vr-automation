@@ -3,7 +3,9 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
-Version `0.7.1` retains cooperative access arbitration and adds bounded launch
+Version `0.8.0` retains cooperative access arbitration and adds a durable,
+session-scoped controller bundle, explicit profile identity fields, retained
+failed-to-run dialog cleanup, bounded launch
 pending state, helper-to-runtime PID adoption, structural Unlock handling, and
 exact-session `terminate-game` deadlock recovery. Recovery preserves MO2 and
 requires RootBuilder restoration before success. Test tasks should use
@@ -39,29 +41,43 @@ Validation also resolves a registered executable stored under MO2's `mods`
 directory back to its owning mod. Launch is blocked when that exact mod is
 disabled, missing, or ambiguous in the requested profile.
 
+DevBench, SKSE-plugin, and other extension-dependent sessions must pass
+`-RequireSKSE` to both `validate` and `prepare`. The controller identifies
+`skse_loader.exe`/`sksevr_loader.exe` as SKSE-capable and rejects a registered
+entry that directly launches `SkyrimVR.exe`. `prepare` persists this requirement
+in the session manifest and lock, and every later `launch` revalidates it so a
+session cannot silently fall back to the plain game executable.
+
+Overwrite is scanned recursively for `ShaderCache` and `ShaderCache.*`
+directories. Inspection classifies active, rollback (`.Previous`), temporary
+swap (`.Swap`), and other legacy trees and marks swap state older than one hour
+as stale. Validation blocks launch whenever any such tree remains, regardless
+of ordinary file-count thresholds; use workspace `prepare-source` to move the
+complete trees into an enabled stable-profile mod first.
+
 ## Quick start
 
-From this directory in PowerShell:
+Read `APPROVALS.md` before submitting an elevated command. Controllers report
+their exact direct invocation under `data.approval`; use its literal
+`reusablePrefix` when eligible. Approval requests must not use `$tool`,
+`$controller`, `-Command`, a pipeline, or a constructed command string.
 
-```powershell
-.\Invoke-MO2Control.ps1 help
-.\Invoke-MO2Control.ps1 inspect
-.\Invoke-MO2Control.ps1 request-access -Label "upscaling-api-tests" -EstimatedMinutes 20
-.\Invoke-MO2Control.ps1 validate -AccessId $accessId -RequireClosed
-.\Invoke-MO2Control.ps1 prepare -AccessId $accessId -Label "upscaling-api-run"
-.\Invoke-MO2Control.ps1 prepare -Label "null-hmd-baseline" -WhatIf
-.\Invoke-MO2Control.ps1 recover-close -Label "stranded-mo2" -WhatIf
-.\Invoke-MO2Control.ps1 recover-rootbuilder -SessionId $sessionId -WhatIf
+Using the direct command shape (`<absolute-...>` values must be replaced with
+literal paths before execution):
+
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> help -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> inspect -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label upscaling-api-tests -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -RequireSKSE -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label upscaling-api-run -RequireSKSE -Compact
 ```
 
 Use `-Compact` for one-line JSON. Override the configured defaults only with an
 exact name:
 
-```powershell
-.\Invoke-MO2Control.ps1 validate `
-  -Profile "Codex" `
-  -Executable "Launch MGO - Do Not Unlock" `
-  -RequireClosed
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -Profile <exact-profile-name> -Executable "Launch MGO - Do Not Unlock" -RequireClosed -Compact
 ```
 
 Exit code `0` means the command completed without a failed check. Exit code `2`
@@ -128,23 +144,15 @@ If a task disappears while retaining a lease, `recover-access` requires the
 exact `accessId`, explicit `-ConfirmAbandoned`, and the same closed-state proof.
 An overdue estimate is never sufficient evidence of abandonment.
 
-The normal explicit workflow is:
+The normal explicit flow uses these separate direct calls. Read each JSON
+result, then substitute its literal returned identity into the next command:
 
-```powershell
-$access = .\Invoke-MO2Control.ps1 request-access `
-  -Label "weather-api-tests" -EstimatedMinutes 20 | ConvertFrom-Json
-$accessId = $access.data.access.accessId
-
-$validation = .\Invoke-MO2Control.ps1 validate `
-  -AccessId $accessId -RequireClosed | ConvertFrom-Json
-
-$prepared = .\Invoke-MO2Control.ps1 prepare `
-  -AccessId $accessId -Label "weather-api-run" | ConvertFrom-Json
-$sessionId = $prepared.data.session.sessionId
-
-# open/launch/status/stop work uses the exact SessionId
-.\Invoke-MO2Control.ps1 release -SessionId $sessionId
-.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label weather-api-tests -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label weather-api-run -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> release -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
 For backward compatibility, `prepare` without `-AccessId` still acquires an
@@ -158,7 +166,10 @@ session or call `release-access`.
 `prepare` requires a closed game/MO2 state, validates one exact profile and
 registered executable, and creates a durable evidence manifest on staging
 storage. It either binds the caller's exact access lease or, for legacy callers,
-atomically acquires an implicit lease. `launch` requires the returned session
+atomically acquires an implicit lease. It also copies the exact entry point,
+modules, and resolved configuration into the session evidence directory and
+returns `controllerPath`. Use that path for the rest of the lifecycle so a
+plugin reinstall cannot invalidate an active session. `launch` requires the returned session
 identity and uses MO2's supported command line:
 
 ```text
@@ -173,7 +184,9 @@ readiness, a later `status`, `close`, or `recover-close` still has durable PID,
 path, argument, and timestamp evidence for exact-process adoption.
 `status` is bounded and non-mutating. `stop-game` requests normal closure of the
 owned game/loader while preserving the exact owner MO2 PID, allowing controlled
-relaunches. `close` refuses while a game/loader exists and cooperatively resolves
+relaunches. After the game exits it acknowledges only a structurally classified
+retained `Failed to run` dialog; an unknown modal returns
+`game-stopped-needs-attention` without touching it. `close` refuses while a game/loader exists and cooperatively resolves
 MO2's structured `File` → `Exit` path and visible modal chain, including the VFS
 `Unlock` prompt. `stop` first closes the game and then uses the same MO2
 resolver. `release` ends only the exactly owned session after proving MO2 and
@@ -188,9 +201,9 @@ failed command then returns structured JSON without terminating that host.
 
 The retained cycle is:
 
-```powershell
-.\Invoke-MO2Control.ps1 stop-game -SessionId $sessionId
-.\Invoke-MO2Control.ps1 launch -SessionId $sessionId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> stop-game -SessionId <literal-session-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> launch -SessionId <literal-session-id> -Compact
 ```
 
 Resume is accepted only from a bounded stopped/failure state, with no game

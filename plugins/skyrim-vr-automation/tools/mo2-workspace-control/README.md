@@ -5,34 +5,32 @@ explicitly configured, known-good `defaults.testProfileSource`. It never uses
 the ordinary session default as an implicit template and never copies unknown
 or unlisted saves.
 
+Before `create`, run `prepare-source` under the same MO2 access lease. It scans
+overwrite recursively for every directory named `ShaderCache` or beginning
+`ShaderCache.`, including the legacy `ShaderCache.Previous` and
+`ShaderCache.Swap` trees. If any exist, it moves their complete relative trees
+into one newly named MO2 mod and enables that mod in the stable source profile
+under an exact modlist backup and receipt. `create` refuses to clone while any
+such directory remains in overwrite.
+
 The task must own an MO2 access lease. MO2, Skyrim, loaders, and active
 RootBuilder deployment must be closed before `create`, `register-mod`, or
-`release`. Release any evidence session before mutating the workspace.
+`release`. Release any evidence session before mutating the workspace. All
+commands accept `-Compact` for one-line JSON.
 
-```powershell
-$workspace = .\Invoke-MO2WorkspaceControl.ps1 create `
-  -AccessId $accessId -Label 'weather-api' -SavePolicy MainMenuOnly | ConvertFrom-Json
-$workspaceId = $workspace.data.workspaceId
+For elevated use, follow `../mo2-control/APPROVALS.md`. Every result reports a
+literal command-specific `data.approval.reusablePrefix`. `create`,
+`register-mod`, and `ensure-mod-wins` are eligible for narrow reusable approval;
+`refresh-fixture`, `prepare-source`, and `release` remain one-shot because they
+replace shared metadata, move overwrite trees into a shared stable mod, or
+recursively remove exact owned paths.
 
-.\Invoke-MO2WorkspaceControl.ps1 register-mod `
-  -AccessId $accessId -WorkspaceId $workspaceId `
-  -ModName 'Codex Weather API Test 20260822' `
-  -ModDirectory '<MO2 mods>\Codex Weather API Test 20260822' `
-  -Placement Before -RelativeToMod 'Community Shaders' -Confirm:$false
-
-# Prefer this form for a newly deployed DLL mod. It enables the mod, places it
-# before every enabled loose-file provider of the exact path, and records the
-# provider inventory and verified postcondition.
-.\Invoke-MO2WorkspaceControl.ps1 register-mod `
-  -AccessId $accessId -WorkspaceId $workspaceId `
-  -ModName 'Codex Weather API Test 20260822' `
-  -ModDirectory '<MO2 mods>\Codex Weather API Test 20260822' `
-  -WinningPaths 'SKSE\Plugins\CommunityShaders.dll' -Confirm:$false
-
-.\Invoke-MO2WorkspaceControl.ps1 release `
-  -AccessId $accessId -WorkspaceId $workspaceId `
-  -CleanupOwnedMods -Confirm:$false
-.\Invoke-MO2Control.ps1 release-access -AccessId $accessId
+```text
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label weather-api -SavePolicy MainMenuOnly -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> register-mod -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -ModName "Codex Weather API Test 20260822" -ModDirectory "<exact-mod-directory>" -WinningPaths "SKSE\Plugins\CommunityShaders.dll" -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> release -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -CleanupOwnedMods -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
 `MainMenuOnly` never authorizes loading a save. `FreshGame` records that a
@@ -47,11 +45,27 @@ path, size, and SHA-256 before and after copying; no other save is copied. The
 result reports the fixture ID, location, and `loadName` for a later game-load
 adapter. See `save-fixtures.example.json` for the portable schema.
 
+Use `fixture-status` to compare the manifest's expected stable-profile
+fingerprint and declared save hashes with their current actual values without
+changing anything. When no manifest is configured, or the configured file is
+missing, `fixture-status` returns `fixture-not-configured` or
+`fixture-manifest-missing` with the exact configuration property, portable
+example path, current stable-profile fingerprint, and creation guidance; this
+discovery state is not a tool error. The doctor reports the same configuration
+as an optional warning. `refresh-fixture` is the separately authorized repair path:
+it requires the exact access lease and closed-state proof, preserves the prior
+manifest and a receipt, refreshes only the selected declared fixture, and
+verifies the postcondition. It never invents a replacement save path.
+
 At creation the tool records every existing mod directory. A workspace may
 register only an exact mod directory absent from that snapshot. It refuses to
 claim, replace, or delete a pre-existing shared mod. Cleanup is restricted to
 the exact generated profile and registered task-owned mods; the stable source
-profile must remain byte-identical.
+profile must remain byte-identical. Before deleting a task profile, `release`
+atomically selects and verifies its stable source in `ModOrganizer.ini`, keeps
+the exact prior INI bytes and receipt, and only then removes the task profile.
+Workspace manifests and results expose `profileName`, `profileDirectory`, and
+`modListPath` while retaining the legacy `profile` and `profilePath` fields.
 
 `-WinningPaths` changes `register-mod` into an enabled winning-provider
 transaction. `ensure-mod-wins` can subsequently re-check and reposition only a

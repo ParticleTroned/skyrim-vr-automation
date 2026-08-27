@@ -17,6 +17,8 @@ $requiredFiles = @(
     'TERMS.md',
     '.agents/plugins/marketplace.json',
     '.codex-plugin/plugin.json',
+    'skills/feedback-control/SKILL.md',
+    'skills/feedback-control/agents/openai.yaml',
     'skills/mo2-control/SKILL.md',
     'skills/mo2-control/agents/openai.yaml',
     'skills/steamvr-null-hmd/SKILL.md',
@@ -76,7 +78,7 @@ if ($pluginManifest.license -ne 'GPL-3.0-or-later') {
     $violations.Add([pscustomobject]@{ file = '.codex-plugin/plugin.json'; issue = 'license is not GPL-3.0-or-later' })
 }
 
-foreach ($relativePath in @('skills/mo2-control/SKILL.md', 'skills/steamvr-null-hmd/SKILL.md', 'skills/devbench-control/SKILL.md', 'skills/profiler-control/SKILL.md', 'skills/shader-cache-control/SKILL.md')) {
+foreach ($relativePath in @('skills/feedback-control/SKILL.md', 'skills/mo2-control/SKILL.md', 'skills/steamvr-null-hmd/SKILL.md', 'skills/devbench-control/SKILL.md', 'skills/profiler-control/SKILL.md', 'skills/shader-cache-control/SKILL.md')) {
     $content = Get-Content -LiteralPath (Join-Path $repositoryRoot $relativePath) -Raw
     if ($content -match '\[TODO:') {
         $violations.Add([pscustomobject]@{ file = $relativePath; issue = 'contains an unfinished skill placeholder' })

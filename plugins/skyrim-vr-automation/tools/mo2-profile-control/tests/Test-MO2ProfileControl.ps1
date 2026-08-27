@@ -46,11 +46,16 @@ try {
 
     $inspect = & $script inspect -ProfilePath $profile -ModName 'Exact Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if (-not $inspect.enabled) { throw 'Inspect did not report the enabled marker.' }
+    if (-not $inspect.approval.reusableApprovalEligible -or @($inspect.approval.reusablePrefix).Count -ne 6 -or $inspect.approval.reusablePrefix[4] -ne [IO.Path]::GetFullPath($script) -or $inspect.approval.reusablePrefix[5] -ne 'inspect') { throw 'Inspect did not expose its exact reusable approval prefix.' }
+    $directoryInspect = & $script inspect -ProfilePath $fixture -ModName 'Exact Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    if (-not $directoryInspect.enabled -or $directoryInspect.modListPath -ne $profile) { throw 'Profile directory input did not normalize to its exact modlist.' }
+    if ($directoryInspect.profileDirectory -ne $fixture -or $directoryInspect.profileName -ne [IO.Path]::GetFileName($fixture)) { throw 'Profile identity fields are not explicit and canonical.' }
     $enableInspect = & $script inspect -ProfilePath $profile -ModName 'Enable Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($enableInspect.enabled) { throw 'Inspect did not report the disabled marker.' }
 
     $disabled = & $script disable -ProfilePath $profile -ModName 'Exact Test Mod' -EvidenceDirectory $evidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($disabled.enabled -or $disabled.sha256 -eq $originalHash) { throw 'Disable did not change exactly the marker state.' }
+    if ($disabled.approval.reusableApprovalEligible -or [string]::IsNullOrWhiteSpace([string]$disabled.approval.oneShotReason)) { throw 'Profile mutation was not explicitly classified as a one-shot approval.' }
 
     $restored = & $script restore -ProfilePath $profile -ModName 'Exact Test Mod' -EvidenceDirectory $evidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if (-not $restored.enabled -or $restored.sha256 -ne $originalHash) { throw 'Restore did not reproduce the original hash.' }
@@ -71,7 +76,7 @@ try {
     if ($enableRestored.enabled -or $enableRestored.sha256 -ne $originalHash) { throw 'Enable restore did not reproduce the original marker state.' }
     if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$original, [byte[]][IO.File]::ReadAllBytes($profile))) { throw 'Enable restore was not byte-identical.' }
 
-    [pscustomobject]@{ ok = $true; assertions = 20; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
+    [pscustomobject]@{ ok = $true; assertions = 24; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
 }
 finally {
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }

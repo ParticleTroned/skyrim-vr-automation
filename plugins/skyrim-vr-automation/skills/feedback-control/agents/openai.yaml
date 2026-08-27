@@ -1,0 +1,4 @@
+interface:
+  display_name: "Automation Feedback"
+  short_description: "Record and triage durable local toolkit feedback"
+  default_prompt: "Use $feedback-control to record or inspect Skyrim VR automation feedback."

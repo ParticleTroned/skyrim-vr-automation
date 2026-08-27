@@ -10,6 +10,14 @@ cache path, snapshot and verify an exact tree, seed a verified baseline, or
 restore it while preserving the displaced tree and both inventories. Snapshot,
 seed, and restore refuse to run while MO2, Skyrim, or the SKSE loader is active.
 
+`Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
+cache management. It stores immutable, content-addressed cache objects and
+separate snapshot manifests carrying the cache ABI, game runtime, render path,
+shader-source hash, optional build, preset, and effective feature-set hashes,
+normalized tags, status,
+and receipt provenance. There is no mutable index to repair: `list` validates
+the manifests and derives the catalog view from disk.
+
 ```powershell
 .\Compare-CSXShaderCache.ps1 `
   -ReferencePath '.\enabled\ShaderCache' `
@@ -43,6 +51,90 @@ than evidence copies.
   -EvidenceDirectory 'D:\Evidence\cache-transaction'
 ```
 
+## Reusing known-working caches between tasks
+
+Configure a permanent catalog outside MO2 and the checkout:
+
+```json
+{
+  "storage": {
+    "shaderCacheCatalog": "D:\\SkyrimVRAutomation\\ShaderCacheCatalog"
+  }
+}
+```
+
+`-CatalogRoot` takes precedence, followed by
+`CSX_SHADER_CACHE_CATALOG_ROOT`, the configured path, `CODEX_HOME`, and the
+user-local application-data fallback. A catalog candidate is never accepted
+from its label alone. The hard compatibility gates are known-working status,
+exact shader-cache ABI, game runtime, render family, required tags, and—by
+default—exact shader-source SHA-256. `vr-steamvr-physical` and
+`vr-steamvr-null` share the `vr-steamvr` render family because the display
+driver does not alter CSX shader bytecode. Other render paths remain distinct.
+Supply `-FeatureSetSha256` whenever an effective feature-set fingerprint is
+available; then an absent or different fingerprint is a hard exclusion. Among
+compatible candidates, exact source, feature-set, build, preset, and observed
+render-path matches rank first, followed by broader verified coverage and
+recency. `select` returns both the ranking and explicit exclusion reasons.
+
+First admit a receipt-proven snapshot:
+
+```powershell
+.\Invoke-CSXShaderCacheCatalog.ps1 capture `
+  -SourceCachePath 'D:\Evidence\known-good\cache.before' `
+  -ExpectedSourceTreeSha256 '<exact cache tree hash>' `
+  -SourceReceiptPath 'D:\Evidence\known-good\shader-cache-transaction.receipt.json' `
+  -ShaderCacheAbi '<exact ABI>' `
+  -ShaderSourceSha256 '<exact source-tree SHA-256>' `
+  -FeatureSetSha256 '<exact effective feature-set SHA-256>' `
+  -BuildId '<build identity>' `
+  -PresetSha256 '<preset SHA-256>' `
+  -Tags quality,full-render `
+  -SnapshotStatus known-working `
+  -Label 'quality full-render known good' `
+  -Confirm:$false
+```
+
+Prepare a closed task cache immediately before launching MO2:
+
+```powershell
+.\Invoke-CSXShaderCacheCatalog.ps1 prepare `
+  -CachePath 'D:\MO2\mods\Task Cache\ShaderCache' `
+  -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
+  -ShaderCacheAbi '<exact ABI>' `
+  -ShaderSourceSha256 '<exact source-tree SHA-256>' `
+  -FeatureSetSha256 '<exact effective feature-set SHA-256>' `
+  -BuildId '<build identity>' `
+  -PresetSha256 '<preset SHA-256>' `
+  -RequiredTags quality,full-render `
+  -Confirm:$false
+```
+
+`prepare` always snapshots the caller's exact current cache first. It then
+selects the best compatible known-working snapshot and seeds it only when it is
+different. With no match it safely leaves the current tree in use; add
+`-RequireMatch` when a task must not proceed without a catalog baseline.
+
+After the game and MO2 are closed, complete the cache transaction:
+
+```powershell
+.\Invoke-CSXShaderCacheCatalog.ps1 complete `
+  -CachePath 'D:\MO2\mods\Task Cache\ShaderCache' `
+  -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
+  -WorkingSetStatus known-working `
+  -Promote -Label 'verified task result' `
+  -Confirm:$false
+```
+
+`complete` preserves the task-produced cache, restores the exact pre-task tree,
+and records a completion receipt. Promotion is opt-in and is refused unless the
+caller explicitly classifies the task result as `known-working`. An unverified
+or failed task result is still preserved as evidence but is not added to the
+catalog. A shader-source mismatch remains excluded unless
+`-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
+this exception does not bypass ABI, runtime, render-family, feature-set, status,
+or tag gates.
+
 `seed` requires the existing snapshot receipt for the same live cache and
 evidence directory, verifies the exact source tree, stages it, swaps it into
 place, and preserves the displaced live tree. A deliberately compatible
@@ -66,4 +158,6 @@ Restore never silently discards the current tree: it copies the displaced
 contents into the evidence directory, verifies that copy, and only then removes
 the temporary sibling used for the atomic swap.
 
-Run `Test-CSXShaderCacheControl.ps1` after changing the comparison logic.
+Run `Test-CSXShaderCacheControl.ps1` after changing comparison or transaction
+logic, and `Test-CSXShaderCacheCatalog.ps1` after changing catalog selection or
+task lifecycle logic.

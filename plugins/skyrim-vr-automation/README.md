@@ -2,19 +2,23 @@
 
 This repository provides external PowerShell automation for repeatable Skyrim
 VR development and testing. The controls cover Mod Organizer 2, SteamVR's null
-HMD, profile transactions, and shader-cache comparisons. CSX DevBench is an
+HMD, profile transactions, and reusable compiled shader-cache management. CSX DevBench is an
 optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
 
 - `tools/doctor` — configuration discovery, environment validation, and
   non-overwriting initialization of the stable per-user MO2 config.
+- `tools/feedback-control` — durable local reporter/maintainer feedback with
+  atomic receipts, lifecycle events, deduplication hints, and explicit
+  sanitized export.
 - `tools/mo2-control` — exact-profile MO2 inspection, cooperative cross-task
   access leases, and a bounded single-owner launch lifecycle.
 - `tools/mo2-profile-control` — transactional toggling of an exact MO2
   `modlist.txt` marker and guarded registration of a newly deployed mod.
-- `tools/mo2-workspace-control` — unique task profiles cloned from an explicit
-  stable source, with empty saves and strict ownership of newly created mods.
+- `tools/mo2-workspace-control` — stable-source ShaderCache evacuation plus
+  unique task profiles cloned from that explicit source, with empty saves and
+  strict ownership of newly created mods.
 - `tools/steamvr-null-control` — transactional null-HMD apply/restore and
   bounded SteamVR shutdown.
 - `tools/devbench-control` — a small MCP client for the DevBench endpoint
@@ -23,7 +27,8 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/profiler-control` — repeatable DevBench profiler capture and
   multi-state comparison reports.
 - `tools/shader-cache-control` — provider discovery, physical cache
-  snapshot/restore transactions, and comparison reports.
+  snapshot/restore transactions, compatibility-ranked known-working cache
+  catalogs, task seeding/restoration/promotion, and comparison reports.
 - `tools/process-control` — bounded exact-process execution with classified,
   evidence-backed retries for known transient failures.
 - `tools/build-test-control` — CTest-aware branch testing with a direct-test
@@ -33,16 +38,20 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its five skills connect a
+The repository publishes a Codex marketplace plugin. Its six skills connect a
 new task to the bundled implementations and their operational contracts:
 
+- `$feedback-control` records unexpected automation behaviour and concrete
+  enhancement requests in a durable local queue; it never publishes them.
 - `$mo2-control` routes MO2 inspection, exact-profile lifecycle management,
   and transactional profile edits.
 - `$steamvr-null-hmd` routes backed-up SteamVR null-HMD apply/restore and
   bounded runtime shutdown.
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
 - `$profiler-control` captures bounded GPU/CPU timer evidence and compares runs.
-- `$shader-cache-control` compares preserved compiled-cache trees by SHA-256.
+- `$shader-cache-control` prepares tasks from compatible known-working compiled
+  caches, restores prior state, promotes verified results, and compares trees
+  by SHA-256.
 
 Install from the public Git marketplace:
 
@@ -86,14 +95,21 @@ The toolkit remains independent of any source tree it exercises.
 ## Safety model
 
 Run inspection or a dry run before mutation. MO2 commands require exact access,
-profile, executable, and session ownership. Each test task uses its own cloned
-workspace profile and may remove only mods that its workspace proved were new;
+profile, executable, and session ownership. Each test task first evacuates any
+legacy `ShaderCache*` trees from overwrite into an enabled stable-source mod,
+then uses its own cloned workspace profile and may remove only mods that its
+workspace proved were new;
 tasks release MO2 access whenever
 they can continue without it. Null-HMD apply takes an exact backup and
 restore verifies its receipt; profile edits are exact-marker transactions;
 cache restoration retains the displaced tree and verifies both sides before
 cleanup. Nothing here deletes unclassified MO2 overwrite content or shader
 caches.
+
+Unexpected automation behaviour is submitted through `feedback-control`.
+Tasks receive a durable `AUTO-...` receipt; only the maintainer triages,
+resolves, or deliberately exports a sanitized record. Queue contents stay
+local and are never sent to GitHub automatically.
 
 Run the isolated suite with:
 

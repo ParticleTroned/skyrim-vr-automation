@@ -49,8 +49,10 @@ try {
 
     $mo2Exe = Join-Path $mo2Root 'ModOrganizer.exe'
     $loader = Join-Path $loaderMod 'sksevr_loader.exe'
+    $plainGame = Join-Path $gameRoot 'SkyrimVR.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null
     New-Item -ItemType File -Path $loader -Force | Out-Null
+    New-Item -ItemType File -Path $plainGame -Force | Out-Null
     '+Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
 
     $definition = Join-Path $rootBuilderDefinitions 'rootbuilder_defaults.json'
@@ -67,6 +69,10 @@ selected_profile=@ByteArray(Codex)
 1\binary=@ByteArray($loader)
 1\arguments=@ByteArray()
 1\workingDirectory=@ByteArray($gameRoot)
+2\title=@ByteArray(Skyrim VR)
+2\binary=@ByteArray($plainGame)
+2\arguments=@ByteArray()
+2\workingDirectory=@ByteArray($gameRoot)
 "@ | Set-Content -LiteralPath $ini -Encoding utf8
 
     $configPath = Join-Path $fixture 'config.json'
@@ -116,7 +122,22 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($validation.state -eq 'ready') 'clean fixture is ready'
     Assert-MO2Test ($validation.data.selectedProfile -eq 'Codex') 'ByteArray profile is decoded'
     Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').Count -eq 1) 'registered executable is parsed exactly once'
+    Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').capabilities -contains 'skse-loader') 'registered SKSE executable advertises its inferred capability'
+    $skseRequired = Invoke-MO2Validate -Config $config -Executable 'Launch MGO - Do Not Unlock' -RequireSKSE
+    Assert-MO2Test ($skseRequired.ok -and @($skseRequired.checks | Where-Object { $_.name -eq 'required-skse-loader' -and $_.status -eq 'pass' }).Count -eq 1) 'SKSE-required validation accepts the exact SKSE loader'
+    $plainRejected = Invoke-MO2Validate -Config $config -Executable 'Skyrim VR' -RequireSKSE
+    Assert-MO2Test (-not $plainRejected.ok -and @($plainRejected.checks | Where-Object { $_.name -eq 'required-skse-loader' -and $_.status -eq 'fail' }).Count -eq 1) 'SKSE-required validation rejects the plain game executable'
     Assert-MO2Test (@($validation.checks | Where-Object { $_.name -eq 'registered-binary-owner-mod' -and $_.status -eq 'pass' }).Count -eq 1) 'enabled executable owner mod passes validation'
+    $legacySwap = Join-Path $overwrite 'ShaderCache.Swap'
+    New-Item -ItemType Directory -Path $legacySwap -Force | Out-Null
+    'compiled' | Set-Content -LiteralPath (Join-Path $legacySwap 'fixture.bin') -Encoding utf8
+    (Get-Item -LiteralPath $legacySwap).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-2)
+    $cacheInspection = Invoke-MO2Inspect -Config $config
+    $cacheValidation = Invoke-MO2Validate -Config $config -RequireClosed
+    Assert-MO2Test ($cacheInspection.ok -and @($cacheInspection.data.overwrite.shaderCaches).Count -eq 1) 'inspection inventories forbidden overwrite ShaderCache trees'
+    Assert-MO2Test ($cacheInspection.data.overwrite.shaderCaches[0].role -eq 'temporary-swap' -and $cacheInspection.data.overwrite.shaderCaches[0].stale) 'inspection classifies a persistent ShaderCache.Swap tree as stale temporary state'
+    Assert-MO2Test (-not $cacheValidation.ok -and @($cacheValidation.checks | Where-Object { $_.name -eq 'overwrite' -and $_.status -eq 'fail' }).Count -eq 1) 'validation blocks launch while a ShaderCache tree remains in overwrite'
+    Remove-Item -LiteralPath $legacySwap -Recurse -Force
     '-Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
     $disabledOwner = Invoke-MO2Validate -Config $config -RequireClosed
     Assert-MO2Test (-not $disabledOwner.ok) 'disabled executable owner mod blocks validation'
@@ -126,6 +147,8 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($dialogKind -eq 'failed-to-write-settings') 'known settings-write dialog is classified exactly'
     $unlockDialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'vrserver.exe' -Buttons @([pscustomobject]@{name='Unlock'}) }
     Assert-MO2Test ($unlockDialogKind -eq 'unlock-required') 'Unlock dialog is classified structurally even when titled with a child executable'
+    $failedRunDialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'Mod Organizer' -Texts @('Failed to run SkyrimVR.exe') -Buttons @([pscustomobject]@{name='OK'}) }
+    Assert-MO2Test ($failedRunDialogKind -eq 'failed-to-run') 'retained failed-to-run dialog is classified without matching the main window'
 
     $missingProfile = Invoke-MO2Validate -Config $config -Profile 'Does Not Exist'
     Assert-MO2Test (-not $missingProfile.ok) 'missing exact profile blocks validation'
@@ -140,6 +163,8 @@ selected_profile=@ByteArray(Codex)
     $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15 -WhatIf
     Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory) 'access request dry-run reports an advisory estimate without locking'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'access request dry-run creates no lock'
+    $entryAccessDryRun = & (Join-Path $packageRoot 'Invoke-MO2Control.ps1') request-access -ConfigPath $configPath -Label 'approval fixture' -EstimatedMinutes 5 -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-MO2Test ($entryAccessDryRun.ok -and $entryAccessDryRun.data.configuration.exists -and $entryAccessDryRun.data.approval.reusableApprovalEligible -and $entryAccessDryRun.data.approval.reusablePrefix[5] -eq 'request-access') 'dictionary-backed entry-point results retain configuration and approval metadata'
 
     $access = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15
     $accessId = [string]$access.data.access.accessId
@@ -153,6 +178,9 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test (-not $ownedAccess.data.access.estimateOverdue -and [string]$ownedAccess.data.access.estimatedReleaseUtc -match 'Z$') 'future advisory estimate survives JSON round-trip with UTC identity'
     $ownedValidation = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate -ConfigPath $configPath -AccessId $accessId -RequireClosed -NoExit | ConvertFrom-Json)
     Assert-MO2Test ($ownedValidation.ok -and @($ownedValidation.checks | Where-Object { $_.name -eq 'session-lock' -and $_.status -eq 'pass' }).Count -eq 1) 'validation accepts the exact owned access lease'
+    $validationApproval = $ownedValidation.data.approval
+    Assert-MO2Test ($validationApproval.reusableApprovalEligible -and -not $validationApproval.escalationUsuallyRequired -and @($validationApproval.reusablePrefix).Count -eq 6) 'validation exposes an exact reusable approval prefix'
+    Assert-MO2Test ($validationApproval.reusablePrefix[1] -eq '-NoProfile' -and $validationApproval.reusablePrefix[2] -eq '-NonInteractive' -and $validationApproval.reusablePrefix[3] -eq '-File' -and $validationApproval.reusablePrefix[4] -eq [IO.Path]::GetFullPath((Join-Path $packageRoot 'Invoke-MO2Control.ps1')) -and $validationApproval.reusablePrefix[5] -eq 'validate') 'approval prefix keeps the literal host, entry point, and subcommand visible'
     $renewedAccess = Invoke-MO2RenewAccess -Config $config -AccessId $accessId -EstimatedMinutes 30
     Assert-MO2Test ($renewedAccess.ok -and $renewedAccess.state -eq 'access-renewed' -and $renewedAccess.data.access.estimatedDurationMinutes -eq 30) 'access renewal replaces the advisory estimate'
 
@@ -176,15 +204,20 @@ selected_profile=@ByteArray(Codex)
     $recoveredAccess = Invoke-MO2RecoverAccess -Config $config -AccessId $abandonedAccessId -ConfirmAbandoned -Label 'fixture confirmed abandoned'
     Assert-MO2Test ($recoveredAccess.ok -and $recoveredAccess.state -eq 'access-recovered') 'confirmed abandoned access can be recovered in proven closed state'
 
-    $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -WhatIf
+    $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE -WhatIf
     Assert-MO2Test ($prepareDryRun.ok -and $prepareDryRun.state -eq 'dry-run') 'prepare dry-run succeeds'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'prepare dry-run creates no lock'
     Assert-MO2Test (-not (Test-Path -LiteralPath $prepareDryRun.data.sessionPath -PathType Container)) 'prepare dry-run creates no evidence directory'
 
-    $prepared = Invoke-MO2Prepare -Config $config -Label 'fixture test'
+    $prepared = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE
     Assert-MO2Test ($prepared.ok -and $prepared.state -eq 'prepared') 'prepare creates an owned session'
     Assert-MO2Test (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf) 'prepare creates the single-owner lock'
     Assert-MO2Test (Test-Path -LiteralPath (Join-Path $prepared.data.sessionPath 'session.json') -PathType Leaf) 'prepare creates a durable session manifest'
+    Assert-MO2Test ([bool]$prepared.data.session.requirements.skseLoader) 'prepare persists the SKSE requirement for launch revalidation'
+    Assert-MO2Test (Test-Path -LiteralPath $prepared.data.controllerPath -PathType Leaf) 'prepare snapshots a durable session controller outside the plugin cache'
+    $durableStatus = & $prepared.data.controllerPath status -SessionId ([string]$prepared.data.session.sessionId) -Compact -NoExit | ConvertFrom-Json
+    Assert-MO2Test ($durableStatus.ok -and $durableStatus.state -eq 'prepared') 'durable session controller can resume the owned lifecycle independently'
+    Assert-MO2Test ($durableStatus.data.approval.entryPoint -eq [IO.Path]::GetFullPath([string]$prepared.data.controllerPath) -and $durableStatus.data.approval.reusablePrefix[5] -eq 'status') 'durable controller advertises its own stable literal approval prefix'
 
     $wrongSessionRejected = $false
     try { $null = Invoke-MO2Status -Config $config -SessionId 'wrong-session' } catch { $wrongSessionRejected = $true }
@@ -196,6 +229,8 @@ selected_profile=@ByteArray(Codex)
 
     $missingSession = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') open -ConfigPath $configPath -NoExit | ConvertFrom-Json)
     Assert-MO2Test (-not $missingSession.ok -and $missingSession.state -eq 'missing-session-id' -and $missingSession.data.requiredParameter -eq 'SessionId') 'entry point returns a structured missing-session precondition'
+    $forcedMissingSession = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') terminate -ConfigPath $configPath -NoExit | ConvertFrom-Json)
+    Assert-MO2Test (-not $forcedMissingSession.data.approval.reusableApprovalEligible -and -not [string]::IsNullOrWhiteSpace([string]$forcedMissingSession.data.approval.oneShotReason)) 'forced termination remains explicitly one-shot even on a precondition failure'
     $missingAccess = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') release-access -ConfigPath $configPath -NoExit | ConvertFrom-Json)
     Assert-MO2Test (-not $missingAccess.ok -and $missingAccess.state -eq 'missing-access-id' -and $missingAccess.data.requiredParameter -eq 'AccessId') 'entry point returns a structured missing-access precondition'
 

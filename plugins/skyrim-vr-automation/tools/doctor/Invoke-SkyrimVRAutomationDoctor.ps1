@@ -64,6 +64,21 @@ try {
             $raw = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $mo2Root 'Invoke-MO2Control.ps1') validate -ConfigPath $resolution.path -Compact 2>&1
             try { $mo2Validation = ($raw -join "`n") | ConvertFrom-Json -Depth 30 } catch { $mo2Validation = [pscustomobject]@{ ok = $false; raw = @($raw) } }
             $checks.Add((New-DoctorCheck 'mo2-validation' $(if ($mo2Validation.ok) { 'pass' } else { 'fail' }) $(if ($mo2Validation.ok) { 'MO2 configuration validates.' } else { 'MO2 configuration validation failed.' }) $mo2Validation))
+            try {
+                $machineConfig = Get-Content -LiteralPath $resolution.path -Raw | ConvertFrom-Json
+                $fixtureInput = if ($machineConfig.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$machineConfig.defaults.newGameFixtureManifest } else { '' }
+                $fixturePath = if ([string]::IsNullOrWhiteSpace($fixtureInput)) { $null } else { [IO.Path]::GetFullPath($fixtureInput) }
+                $fixtureExists = -not [string]::IsNullOrWhiteSpace($fixturePath) -and (Test-Path -LiteralPath $fixturePath -PathType Leaf)
+                $fixtureMessage = if ($fixtureExists) { "Verified fixture manifest exists: $fixturePath" } elseif ([string]::IsNullOrWhiteSpace($fixturePath)) { 'Optional verified fixture manifest is not configured. Set defaults.newGameFixtureManifest or pass -FixtureManifestPath.' } else { "Configured verified fixture manifest does not exist: $fixturePath" }
+                $checks.Add((New-DoctorCheck 'verified-fixture-manifest' $(if ($fixtureExists) { 'pass' } else { 'warn' }) $fixtureMessage ([pscustomobject][ordered]@{
+                    configuredPath = $fixturePath; exists = $fixtureExists
+                    configurationProperty = 'defaults.newGameFixtureManifest'
+                    exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
+                })))
+            }
+            catch {
+                $checks.Add((New-DoctorCheck 'verified-fixture-manifest' 'warn' "Could not inspect verified fixture configuration: $($_.Exception.Message)"))
+            }
         }
 
         $nullProfile = Join-Path $repositoryRoot 'profiles\steamvr-null.profile.json'

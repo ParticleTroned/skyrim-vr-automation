@@ -30,6 +30,8 @@ param(
 
     [switch]$RequireClosed,
 
+    [switch]$RequireSKSE,
+
     [switch]$StartOnly,
 
     [switch]$NoExit,
@@ -43,6 +45,50 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $configuration = $null
 
+function New-MO2ApprovalMetadata {
+    param([Parameter(Mandatory)][string]$Subcommand)
+    $hostExecutable = [string][Environment]::ProcessPath
+    if ([string]::IsNullOrWhiteSpace($hostExecutable)) {
+        $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path
+    }
+    $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
+    $oneShotCommands = @('recover-access', 'terminate-game', 'terminate')
+    $readOnlyCommands = @('inspect', 'validate', 'access-status', 'status', 'help')
+    return [pscustomobject][ordered]@{
+        hostExecutable = $hostExecutable
+        entryPoint = $entryPoint
+        subcommand = $Subcommand
+        reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
+        reusableApprovalEligible = $Subcommand -notin $oneShotCommands
+        escalationUsuallyRequired = $Subcommand -notin $readOnlyCommands
+        oneShotReason = if ($Subcommand -in $oneShotCommands) { 'Recovery ownership transfer or forced process termination must remain a one-shot approval.' } else { $null }
+        invocationRule = 'Use the literal host, entry-point, and subcommand shown here. Put changing IDs and paths afterward; do not wrap the call in -Command, variables, pipelines, or a command string.'
+    }
+}
+
+function Set-MO2ResultDataValue {
+    param(
+        [Parameter(Mandatory)]$Result,
+        [Parameter(Mandatory)][string]$Name,
+        $Value
+    )
+    if ($null -eq $Result.data) {
+        $Result.data = [ordered]@{}
+    }
+    if ($Result.data -is [Collections.IDictionary]) {
+        $Result.data[$Name] = $Value
+        return
+    }
+    $Result.data | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
+$sessionLocalConfig = Join-Path $PSScriptRoot 'config\machine.local.json'
+if ([string]::IsNullOrWhiteSpace($ConfigPath) -and (Test-Path -LiteralPath $sessionLocalConfig -PathType Leaf)) {
+    # A prepare/recover-created controller bundle is self-contained. Prefer its
+    # exact captured configuration over any newer per-user/plugin installation.
+    $ConfigPath = $sessionLocalConfig
+}
+
 try {
     Import-Module (Join-Path $PSScriptRoot 'ConfigResolution.psm1') -Force -ErrorAction Stop
     Import-Module (Join-Path $PSScriptRoot 'MO2Control.psm1') -Force -ErrorAction Stop
@@ -55,7 +101,7 @@ try {
     $sessionCommands = @('open', 'launch', 'stop-game', 'terminate-game', 'close', 'recover-rootbuilder', 'stop', 'terminate', 'release')
     if ($Command -in $sessionCommands -and [string]::IsNullOrWhiteSpace($SessionId)) {
         $result = [pscustomobject][ordered]@{
-            contractVersion = '0.7.1'
+            contractVersion = '0.8.0'
             command = $Command
             ok = $false
             state = 'missing-session-id'
@@ -68,7 +114,7 @@ try {
     }
     elseif ($Command -in @('renew-access', 'release-access', 'recover-access') -and [string]::IsNullOrWhiteSpace($AccessId)) {
         $result = [pscustomobject][ordered]@{
-            contractVersion = '0.7.1'
+            contractVersion = '0.8.0'
             command = $Command
             ok = $false
             state = 'missing-access-id'
@@ -84,7 +130,7 @@ try {
             Invoke-MO2Inspect -Config $config -Profile $Profile -Executable $Executable
         }
         'validate' {
-            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
+            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
         }
         'request-access' {
             Invoke-MO2RequestAccess -Config $config -Label $Label -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
@@ -102,7 +148,7 @@ try {
             Invoke-MO2RecoverAccess -Config $config -AccessId $AccessId -Label $Label -ConfirmAbandoned:$ConfirmAbandoned -WhatIf:$WhatIf
         }
         'prepare' {
-            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
+            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
         }
         'open' {
             Invoke-MO2Open -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -StartOnly:$StartOnly -WhatIf:$WhatIf
@@ -142,11 +188,12 @@ try {
         }
     } }
 
-    $result.data | Add-Member -NotePropertyName configuration -NotePropertyValue $configuration -Force
+    Set-MO2ResultDataValue -Result $result -Name configuration -Value $configuration
+    Set-MO2ResultDataValue -Result $result -Name approval -Value (New-MO2ApprovalMetadata -Subcommand $Command)
 }
 catch {
     $result = [pscustomobject][ordered]@{
-        contractVersion = '0.7.1'
+        contractVersion = '0.8.0'
         command = $Command
         ok = $false
         state = 'tool-error'
@@ -158,6 +205,7 @@ catch {
             exceptionType = $_.Exception.GetType().FullName
             configuration = $configuration
             requestedConfigPath = $ConfigPath
+            approval = New-MO2ApprovalMetadata -Subcommand $Command
         }
     }
 }

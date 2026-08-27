@@ -11,9 +11,35 @@ function Get-DevBenchSemanticStatus {
     $codes = [Collections.Generic.List[string]]::new()
     $states = [Collections.Generic.List[string]]::new()
     $retryableHints = [Collections.Generic.List[bool]]::new()
+    $replaySchedulerReceipts = [Collections.Generic.List[string]]::new()
+    $explicitOutcomeEvidence = [Collections.Generic.List[string]]::new()
     $guardCodes = @('producer_mismatch', 'contract_mismatch', 'unsupported_contract_major', 'idempotency_conflict')
     $successNames = @('success', 'ok', 'ready', 'completed', 'accepted', 'idle', 'available')
     $transientNames = @('service_unavailable', 'initializing', 'starting', 'waiting_for_safe_point', 'loading_transition', 'relatch_pending', 'compiling', 'pending', 'queued', 'running')
+
+    function Test-ExplicitOutcomeValue($Value) {
+        if ($null -eq $Value) { return $false }
+        if ($Value -is [bool]) { return $true }
+        if ($Value -is [string] -or $Value -is [ValueType]) { return $false }
+        if ($Value -is [Collections.IDictionary]) {
+            $evidenceProperties = @($Value.GetEnumerator() | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Key; Value = $_.Value } })
+        }
+        elseif ($Value -is [Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
+            foreach ($entry in $Value) { if (Test-ExplicitOutcomeValue $entry) { return $true } }
+            return $false
+        }
+        else {
+            $evidenceProperties = @($Value.PSObject.Properties)
+        }
+        foreach ($property in $evidenceProperties) {
+            $name = [string]$property.Name
+            if ($name -in @('ok', 'success', 'passed', 'failed', 'aborted', 'code', 'state', 'status', 'resultStatus') -and $null -ne $property.Value) {
+                return $true
+            }
+            if (Test-ExplicitOutcomeValue $property.Value) { return $true }
+        }
+        return $false
+    }
 
     function Visit-Value($Value, [string]$Path) {
         if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return }
@@ -29,6 +55,21 @@ function Get-DevBenchSemanticStatus {
             $properties = @($Value.PSObject.Properties)
         }
 
+        $propertyNames = @($properties | ForEach-Object { [string]$_.Name })
+        if ($propertyNames -contains 'done' -and $propertyNames -contains 'runId' -and $propertyNames -contains 'result') {
+            $resultProperty = @($properties | Where-Object Name -eq 'result' | Select-Object -First 1)
+            if ($resultProperty.Count -eq 1 -and $null -ne $resultProperty[0].Value -and
+                $resultProperty[0].Value.PSObject.Properties['stepsRun']) {
+                $replaySchedulerReceipts.Add($Path)
+            }
+        }
+        foreach ($evidenceName in @('semantic', 'postconditions', 'outcomeChecks', 'assertions')) {
+            $evidenceProperty = @($properties | Where-Object Name -eq $evidenceName | Select-Object -First 1)
+            if ($evidenceProperty.Count -eq 1 -and (Test-ExplicitOutcomeValue $evidenceProperty[0].Value)) {
+                $explicitOutcomeEvidence.Add("$Path.$evidenceName")
+            }
+        }
+
         foreach ($property in $properties) {
             $name = [string]$property.Name
             $childPath = if ([string]::IsNullOrWhiteSpace($Path)) { $name } else { "$Path.$name" }
@@ -36,6 +77,14 @@ function Get-DevBenchSemanticStatus {
             if ($name -eq 'ok' -and $null -ne $child) {
                 $script:semanticKnown = $true
                 if (-not [bool]$child) { $reasons.Add("$childPath is false") }
+            }
+            elseif ($name -in @('success', 'passed') -and $child -is [bool]) {
+                $script:semanticKnown = $true
+                if (-not [bool]$child) { $reasons.Add("$childPath is false") }
+            }
+            elseif ($name -eq 'failed' -and $child -is [bool]) {
+                $script:semanticKnown = $true
+                if ([bool]$child) { $reasons.Add("$childPath is true") }
             }
             elseif ($name -eq 'aborted' -and [bool]$child) {
                 $script:semanticKnown = $true
@@ -79,10 +128,12 @@ function Get-DevBenchSemanticStatus {
     finally {
         Remove-Variable semanticKnown -Scope Script -ErrorAction SilentlyContinue
     }
+    $schedulerOnly = $replaySchedulerReceipts.Count -gt 0 -and $explicitOutcomeEvidence.Count -eq 0 -and $reasons.Count -eq 0
+    if ($schedulerOnly) { $known = $false }
     $guarded = @($codes | Where-Object { $_ -in $guardCodes }).Count -gt 0
     $transient = $retryableHints.Count -gt 0 -or @($codes + $states | Where-Object { $_ -in $transientNames }).Count -gt 0
     $ok = $reasons.Count -eq 0
-    $outcome = if ($ok) { if ($transient) { 'accepted-transient' } else { 'success' } } elseif ($guarded) { 'guard-rejected' } else { 'failure' }
+    $outcome = if ($schedulerOnly) { 'scheduler-complete-unverified' } elseif ($ok) { if ($transient) { 'accepted-transient' } else { 'success' } } elseif ($guarded) { 'guard-rejected' } else { 'failure' }
     return [pscustomobject][ordered]@{
         known = $known
         ok = $ok
@@ -92,6 +143,9 @@ function Get-DevBenchSemanticStatus {
         codes = @($codes)
         states = @($states)
         reasons = @($reasons | Select-Object -Unique)
+        schedulerOnly = $schedulerOnly
+        schedulerReceiptPaths = @($replaySchedulerReceipts)
+        explicitOutcomeEvidence = @($explicitOutcomeEvidence)
     }
 }
 

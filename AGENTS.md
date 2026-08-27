@@ -20,3 +20,9 @@
   selected and read-only unless the user has placed a state change in scope.
 - Machine-specific paths belong only in ignored `machine.local.json` files,
   explicit parameters, or documented environment variables.
+- When an automation command behaves unexpectedly, its contract is ambiguous,
+  or a concrete safety issue or enhancement is discovered, submit it through
+  `tools/feedback-control/Invoke-AutomationFeedback.ps1`. Claim that feedback
+  was recorded only when the controller returns a durable `AUTO-...` receipt.
+  Tasks report desires; they do not publish issues or edit automation source
+  unless that work is explicitly in scope.

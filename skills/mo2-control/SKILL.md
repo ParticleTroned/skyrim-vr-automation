@@ -14,14 +14,20 @@ edit `modlist.txt` ad hoc.
   stop-game, close, recover-close, stop, terminate, release, or recovery, read
   `../../tools/mo2-control/MO2-RUNBOOK.md` completely before acting. Read
   `../../tools/mo2-control/README.md` when command or schema details matter.
+- Before constructing any elevated MO2, workspace, or profile command, read
+  `../../tools/mo2-control/APPROVALS.md` completely and use the command's
+  returned `approval.reusablePrefix` when it is eligible. Never hide the
+  executable, entry point, or subcommand behind a variable or `-Command`.
 - For enabling, disabling, or restoring one exact mod marker, read
   `../../tools/mo2-profile-control/README.md` and inspect the entry point's
   parameter block before acting. For a DLL deployment, prefer the workspace
   controller's `-WinningPaths` transaction; do not guess MO2 priority order.
 - For every independent test task, read
-  `../../tools/mo2-workspace-control/README.md` and create a unique task profile
-  from `defaults.testProfileSource` before preparing a session. Never use an
-  experimental alternate profile as an implicit template.
+  `../../tools/mo2-workspace-control/README.md`, run `prepare-source` to move
+  every `ShaderCache*` directory out of overwrite, and create a unique task
+  profile from `defaults.testProfileSource` before preparing a session. Never
+  use an experimental alternate profile as an implicit template, and never
+  hand off a task profile while a ShaderCache directory remains in overwrite.
 - Treat the repository-root `AGENTS.md` as binding operational policy.
 
 Resolve all paths from this skill's installed location. The main entry points
@@ -38,19 +44,33 @@ are:
 2. Start with `inspect`. Before any planned MO2 operation, call
    `request-access`, retain its exact `accessId`, and respect `access-busy`.
    An estimated duration is advisory only and never permits lease stealing.
-   Before any closed-state mutation, run `validate -AccessId $accessId
+   Before any closed-state mutation, run `validate -AccessId <literal-access-id>
    -RequireClosed` and account for every warning or block.
 3. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
 4. For a live run, call `prepare -AccessId` with the owned lease, retain its
-   `sessionId`, and pass that exact
-   identity to every lifecycle command. Parse the JSON result; do not infer
+   `sessionId` and returned `controllerPath`, then invoke every lifecycle
+   command through that literal session-scoped controller path with the exact session
+   identity. The copied controller survives plugin cache replacement; do not
+   keep using the versioned plugin-cache entry point after prepare. A shell
+   variable may retain data for local reasoning, but an approval request must
+   contain the literal path and subcommand reported by the tool. Parse the JSON result; do not infer
    success from process appearance alone.
+   For DevBench, SKSE plugins, or any extension-dependent test, pass
+   `-RequireSKSE` to both validation and preparation. Do not accept direct
+   `SkyrimVR.exe` launch as equivalent; the requirement is retained and
+   revalidated for subsequent launches in the same session.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
+   If fixture discovery reports `fixture-not-configured` or
+   `fixture-manifest-missing`, follow its returned example path and guidance;
+   do not guess a save or manifest path.
+   If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
+   and Skyrim are still closed: catalog `prepare` the exact task cache before
+   launch, then catalog `complete` after shutdown and before workspace release.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
 6. Use `-StartOnly` when the outer host cannot safely wait for UI/game

@@ -2,6 +2,62 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## Unreleased
+
+- Treat physical-headset and Valve null-HMD SteamVR shader caches as one
+  render-compatible family while optionally hard-gating reuse on an exact
+  effective feature-set fingerprint.
+- Add a durable `-RequireSKSE` MO2 session precondition so DevBench workflows
+  reject direct `SkyrimVR.exe` entries and revalidate the loader before every
+  launch.
+- Classify replay scheduler receipts without postconditions as unverified, and
+  make `-RequireSuccess` reject them instead of reporting interaction success.
+- Make verified-fixture discovery non-throwing when its manifest is absent,
+  return exact configuration/example guidance, and expose the same state in the
+  automation doctor.
+- Require task profiles to clone the configured primary/stable profile only
+  after recursively evacuating every legacy `ShaderCache*` directory from MO2
+  overwrite into a newly enabled, receipt-backed VFS mod.
+- Classify active, rollback, swap, and other legacy ShaderCache trees during
+  MO2 inspection, flag persistent swap state, and block launch until overwrite
+  is cache-free.
+- Publish exact direct-invocation approval metadata from the MO2 lifecycle,
+  workspace, and profile controllers, document stable conversation-scoped
+  prefix rules, and keep forced termination and overwrite/removal operations
+  explicitly one-shot.
+- Preserve approval and configuration metadata in dictionary-backed lifecycle
+  results such as access acquisition and renewal.
+- Snapshot a self-contained lifecycle controller into every MO2 session so an
+  installed plugin cache replacement cannot invalidate an active run.
+- Normalize MO2 profile directory/modlist identity, add compact workspace
+  output, fixture drift inspection and guarded refresh, and select the stable
+  profile transactionally before deleting a task profile.
+- Classify and acknowledge only retained failed-to-run MO2 dialogs after a
+  game stop, returning needs-attention for unknown windows.
+- Keep MCP initialization within the full DevBench wait deadline and require a
+  fresh unloaded-to-loaded transition for `playerLoaded` by default.
+
+## 0.8.0 - 2026-08-24
+
+- Add immutable content-addressed compiled shader-cache catalogs with
+  receipt-proven provenance and explicit ABI, runtime, render-path, shader
+  source, build, preset, status, and tag metadata.
+- Add explainable compatibility selection plus transactional task preparation,
+  exact prior-cache restoration, displaced-result preservation, and opt-in
+  known-working promotion.
+- Route CSX test tasks through cache preparation before launch and completion
+  before MO2 workspace release to reduce avoidable recompilation without
+  weakening closed-state or ownership guarantees.
+
+## 0.7.0 - 2026-08-23
+
+- Add a durable local automation-feedback mailbox with atomic receipts,
+  immutable lifecycle events, duplicate hints, evidence hashes, bounded
+  concurrent writers, maintainer triage, and explicit sanitized export.
+- Add a feedback skill that prevents tasks from claiming a report was recorded
+  without a durable receipt and keeps public issue creation under explicit
+  maintainer control.
+
 ## 0.6.0 - 2026-08-23
 
 - Copy only hash-verified, explicitly selected save/co-save fixtures into task

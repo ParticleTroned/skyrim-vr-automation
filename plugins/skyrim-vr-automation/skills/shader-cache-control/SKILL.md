@@ -1,6 +1,6 @@
 ---
 name: shader-cache-control
-description: "Inventory and compare two preserved CSX compiled shader-cache trees by path, size, and SHA-256. Use for cache baseline extension, shader-family output comparisons, compilation-state evidence, or determining which files differ between controlled runs."
+description: "Select, seed, preserve, promote, inventory, and compare CSX compiled shader-cache trees with exact compatibility metadata and receipts. Use for avoiding unnecessary shader recompilation in a Skyrim VR task, preparing or completing a task cache, extending known-working cache baselines, shader-family output comparisons, compilation-state evidence, or determining which files differ between controlled runs."
 ---
 
 # Shader Cache Control
@@ -10,6 +10,7 @@ Read `../../tools/shader-cache-control/README.md` completely. Use:
 ```text
 ../../tools/shader-cache-control/Compare-CSXShaderCache.ps1
 ../../tools/shader-cache-control/Invoke-CSXShaderCacheTransaction.ps1
+../../tools/shader-cache-control/Invoke-CSXShaderCacheCatalog.ps1
 ```
 
 ## Comparison contract
@@ -29,3 +30,29 @@ authorized live-cache test, first run `providers`, then `snapshot`; use
 `verify` after the run. `restore` requires MO2/Skyrim closed and preserves the
 displaced physical tree before completing. Cache unloading, clearing, or
 replacement is never implied by a request to compare caches.
+
+## Task cache lifecycle
+
+1. For a Skyrim task that may compile CSX shaders, determine the exact cache
+   path, shader-cache ABI, game runtime, render path and family,
+   shader-source SHA-256, effective feature-set SHA-256 when available, build
+   identity, preset SHA-256, and task tags. Physical and null SteamVR may share
+   the `vr-steamvr` render family, but a supplied feature-set fingerprint must
+   still match. Do not infer semantic
+   compatibility from names or timestamps.
+2. With MO2 and Skyrim closed, call catalog `prepare` before the MO2 session.
+   Retain `shader-cache-task.plan.json` with the task evidence. No compatible
+   match is nonfatal unless the task requires `-RequireMatch`.
+3. Never clear a live cache merely to get a clean experiment. Use the task plan
+   and exact seeding transaction. A source mismatch requires both
+   `-AllowSourceMismatch` and a written `-CompatibilityReason`; it never
+   bypasses ABI, runtime, render-family, feature-set, known-working, or
+   required-tag gates.
+4. After MO2 and Skyrim are closed, call catalog `complete` before releasing
+   the task workspace. It preserves the task result and restores the exact
+   pre-task cache. Promote only after the run provides affirmative evidence
+   that the result is known-working.
+5. Preserve the plan, transaction receipts, completion receipt, catalog
+   manifest, source/build/preset identities, profiler evidence, and any cache
+   comparison report together. Do not delete content-addressed objects or edit
+   immutable manifests by hand.

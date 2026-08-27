@@ -25,7 +25,8 @@
   },
   "storage": {
     "sessionStaging": "C:\\Path\\To\\ActiveSessions",
-    "archive": "C:\\Path\\To\\SessionArchive"
+    "archive": "C:\\Path\\To\\SessionArchive",
+    "shaderCacheCatalog": "C:\\Path\\To\\ShaderCacheCatalog"
   },
   "limits": {
     "maxEnumeratedFiles": 25000,

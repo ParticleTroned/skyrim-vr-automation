@@ -31,6 +31,10 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
    read-only `-ArgumentsJson` action when registration alone is insufficient.
 9. Use `-ExpectedErrorCode` for deliberate guard tests such as
    `producer_mismatch`; do not reinterpret an unrequested API failure as a pass.
+10. Treat replay scheduler completion as execution evidence only. Require
+    explicit postconditions, outcome checks, assertions, or equivalent semantic
+    evidence before reporting that an interaction succeeded. Use
+    `-RequireSuccess` so a scheduler-only receipt is rejected by orchestration.
 
 The entry point is:
 

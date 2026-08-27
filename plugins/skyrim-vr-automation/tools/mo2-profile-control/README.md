@@ -6,6 +6,17 @@ emits a receipt; it does not launch MO2 or select a fallback profile. `-WhatIf`
 previews enable and disable operations without creating evidence or changing the
 profile.
 
+For elevated use, follow `../mo2-control/APPROVALS.md`. Every result exposes an
+exact command-specific `approval.reusablePrefix`. `inspect` is read-only; every
+profile mutation remains a one-shot approval because it overwrites
+`modlist.txt` under an exact backup transaction. Do not invoke it through a
+path variable, `-Command`, pipeline, or constructed command string.
+
+`-ProfilePath` accepts either the profile directory or its exact `modlist.txt`
+leaf (`-ModListPath` is an alias). Results and receipts preserve the legacy
+`profilePath` leaf while also reporting unambiguous `profileName`,
+`profileDirectory`, and `modListPath` fields.
+
 `register` requires an exact deployed mod directory and proves that no marker
 already exists. It inserts one disabled marker by default at `End`, `Before`,
 or `After`; relative placement requires one exact `RelativeToMod`. Prefer the
