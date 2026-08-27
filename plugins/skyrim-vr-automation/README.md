@@ -79,6 +79,13 @@ The reproducible marketplace package lives under
 See `docs/INSTALL-CODEX.md` for upgrades, removal, and release pinning. Restart
 Codex after installing or updating.
 
+From a repository checkout, the bounded updater also detects and repairs a
+stale local marketplace registration, then hash-verifies the installed copy:
+
+```powershell
+.\scripts\Install-CodexMarketplacePlugin.ps1
+```
+
 ## Local setup
 
 The repository contains no tracked machine paths or credentials. The preferred

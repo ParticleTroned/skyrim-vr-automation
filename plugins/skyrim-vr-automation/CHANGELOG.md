@@ -4,6 +4,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add a bounded Codex marketplace installer that detects a stale structured
+  plugin registration, performs one scoped marketplace refresh, and verifies
+  the final version and every installed file hash.
 - Publish the `coc-stability` skill for deadline-driven, exact-destination
   COC transition testing. It queues the 10-second Windhelm start before
   concurrent identity reads, applies the startup-active Stabilizer and

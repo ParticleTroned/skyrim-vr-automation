@@ -43,6 +43,7 @@ $requiredFiles = @(
     'tools/render-scale-qualification/Test-AutomatedVisualReviewProvider.ps1',
     'tools/render-scale-qualification/visual-review.prompt.v1.md',
     'tools/render-scale-qualification/visual-review.output-schema.v1.json',
+    'scripts/Install-CodexMarketplacePlugin.ps1',
     'plugins/skyrim-vr-automation/.codex-plugin/plugin.json'
 )
 $forbidden = @(
