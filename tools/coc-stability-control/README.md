@@ -11,9 +11,10 @@ atomic dispatch marker before calling DevBench. Consequently, a slow or stuck
 baseline cannot prevent the measured scenario from being submitted, and an
 early baseline completion cannot race the watchdog into submitting it twice.
 
-The checked-in Stabilizer targets are observations only. The controller never
-calls a CSX upscaling mutation. Update `stabilizer-targets.v1.json` when the
-approved VR FPS Stabilizer fixture changes.
+VR FPS Stabilizer exclusively owns profile selection. The controller never
+calls a CSX upscaling mutation and deliberately omits `target` from every
+`qualification_wait`; each receipt records the coherent profile selected after
+dispatch. `protocol.v1.json` contains only the route and fidelity fixture.
 
 After `run` returns, retain its state path and use `status` to obtain the final
 server transcript:

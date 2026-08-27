@@ -29,7 +29,7 @@ $requiredFiles = @(
     'skills/coc-stability/references/protocol.md',
     'tools/coc-stability-control/Invoke-CocStabilityControl.ps1',
     'tools/coc-stability-control/CocStabilityControl.psm1',
-    'tools/coc-stability-control/stabilizer-targets.v1.json',
+    'tools/coc-stability-control/protocol.v1.json',
     'tools/coc-stability-control/Test-CocStabilityControl.ps1',
     'skills/render-scale-qualification/SKILL.md',
     'skills/render-scale-qualification/agents/openai.yaml',

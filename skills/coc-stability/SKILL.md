@@ -18,19 +18,28 @@ path.
 
 When Skyrim reaches its main menu/load window, and before loading into the test
 world, establish the analysis environment. In parallel, use Community Shaders'
-`tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server and
-run `coc-evidence-control inspect` plus `arm` against the exact Skyrim PID.
+`tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server
+against the exact intended CSX DLL path and SHA-256, and run
+`coc-evidence-control inspect` plus `arm` against the exact Skyrim PID.
 Require CDB/WinDbg, ProcDump, dump storage, and an owned crash collector. It is
 exception-triggered; use `capture-hang` only after a visually confirmed freeze
 so normal COC loads cannot consume its dump quota. Require the
 trusted project `.codex/config.toml` to declare the exact DevBench and Ghidra
 loopback endpoints; do not rely on volatile global registration state. Confirm
 the current Codex window exposes both MCP tool families and make one harmless
-call through each. An enabled UI toggle is not proof. If either tool
+call through each. Require the Ghidra receipt and live MCP call to prove
+`pyGhidraReady: true`, `programMatchesExpectation: true`, and the exact active
+program path; a listening server or project name alone is not proof. If either tool
 family is absent, leave Skyrim at the main menu, keep the external servers and
 collector running, restart Codex, and repeat only the tool-call checks. Retain
 the Ghidra and ProcDump receipts. Report readiness only after every required
 receipt and real MCP call passes, then wait for the user's second command.
+
+Before reporting readiness, run the protocol's harmless one-step scenario
+probe and require DevBench to convert the extension's embedded
+`missing_expected_cell` receipt into `ok:false`, `aborted:true`, and exactly one
+executed step. This proves `continueOnError:false` will stop later COCs on a
+real embedded tool failure.
 
 When the user confirms Skyrim VR is visibly loaded and says `start`, make the
 first live operation an async DevBench server scenario that waits exactly 10
@@ -49,7 +58,9 @@ settings and must not save.
 
 VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe its
 per-cell profiles; never apply an upscaling method, quality, preset, render
-scale, or dynamic policy through CSX.
+scale, or dynamic policy through CSX. Every measured `qualification_wait`
+omits `target`; it requires a post-dispatch profile change and returns the
+coherent observed profile as evidence.
 
 The controller starts one monotonic 10-second watchdog immediately after the
 fixture receipt and collects exact-cell, profile, lifecycle, stereo,
@@ -64,8 +75,9 @@ in one async server scenario. On transition 1, `qualification_dispatch` uses
 GPU counters share the first COC command boundary and exclude setup. Use
 `continueOnError: false`: semantic timeout/profile/fidelity/lifecycle faults are
 normal successful waiter receipts and continue, while an actual failed tool
-step or lost main thread aborts later COCs immediately. Do not split ordinary
-transitions into client round trips.
+step, including a top-level embedded tool `error`/`ok:false`, or lost main
+thread aborts later COCs immediately. Preserve the embedded receipt. Do not
+split ordinary transitions into client round trips.
 
 After transition 20, attempt guarded GPU, CPU, stress, and ProcDump cleanup only
 while their control planes are responsive. On CTD or hang, make no further

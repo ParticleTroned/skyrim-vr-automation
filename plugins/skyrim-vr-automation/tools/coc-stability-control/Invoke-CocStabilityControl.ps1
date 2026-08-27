@@ -11,7 +11,7 @@ param(
     [string]$CollectorStatePath,
     [string]$EvidenceRoot,
     [string]$StatePath,
-    [string]$TargetConfigPath = (Join-Path $PSScriptRoot 'stabilizer-targets.v1.json'),
+    [string]$ProtocolConfigPath = (Join-Path $PSScriptRoot 'protocol.v1.json'),
     [ValidateRange(1000, 60000)][int]$BaselineDeadlineMs = 10000,
     [switch]$Compact,
     [switch]$NoExit
@@ -162,11 +162,11 @@ try {
             throw 'EvidenceRoot is required for run.'
         }
 
-        $targetConfig = Get-Content -LiteralPath ([IO.Path]::GetFullPath(
-            $TargetConfigPath
+        $protocolConfig = Get-Content -LiteralPath ([IO.Path]::GetFullPath(
+            $ProtocolConfigPath
         )) -Raw | ConvertFrom-Json -Depth 30
-        if ([string]$targetConfig.schema -ne 'csx-coc-stabilizer-targets-v1') {
-            throw 'The Stabilizer target config schema is unsupported.'
+        if ([string]$protocolConfig.schema -ne 'csx-coc-stability-protocol-v1') {
+            throw 'The COC stability protocol config schema is unsupported.'
         }
         $ownerId = "coc-$([Guid]::NewGuid().ToString('N'))"
         $runDirectory = Join-Path ([IO.Path]::GetFullPath($EvidenceRoot)) $ownerId
@@ -212,7 +212,7 @@ try {
         $dueTimestamp = $originTimestamp + [long](
             [double]$BaselineDeadlineMs * [double]$frequency / 1000.0
         )
-        $scenario = New-CocMeasuredScenario -TargetConfig $targetConfig `
+        $scenario = New-CocMeasuredScenario -ProtocolConfig $protocolConfig `
             -ExpectedBuildId $ExpectedBuildId -OwnerId $ownerId
         $scenarioJson = $scenario | ConvertTo-Json -Depth 100 -Compress
 
@@ -276,8 +276,7 @@ try {
                 }).Count -eq $baselineSpecs.Count
                 if ($successful) {
                     $baselineVerdict = Test-CocBaseline -Results $baselineResults `
-                        -ExpectedCell ([string]$targetConfig.startCellEditorId) `
-                        -TargetConfig $targetConfig
+                        -ExpectedCell ([string]$protocolConfig.startCellEditorId)
                     if ([bool]$baselineVerdict.acceptable -and
                         [Diagnostics.Stopwatch]::GetTimestamp() -lt $dueTimestamp) {
                         $earlyJob = Start-ThreadJob -Name "$ownerId-early" `
@@ -332,7 +331,7 @@ try {
             expectedPid = $ExpectedPid
             expectedBuildId = $ExpectedBuildId
             collectorStatePath = [IO.Path]::GetFullPath($CollectorStatePath)
-            targetConfigPath = [IO.Path]::GetFullPath($TargetConfigPath)
+            protocolConfigPath = [IO.Path]::GetFullPath($ProtocolConfigPath)
             baselineDeadlineMs = $BaselineDeadlineMs
             dispatchSource = [string]$dispatchResult.source
             dispatchAcceptedElapsedMs = $acceptedElapsedMs

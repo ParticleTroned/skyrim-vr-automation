@@ -8,11 +8,11 @@ Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot 'CocStabilityControl.psm1'
 $scriptPath = Join-Path $PSScriptRoot 'Invoke-CocStabilityControl.ps1'
-$configPath = Join-Path $PSScriptRoot 'stabilizer-targets.v1.json'
+$configPath = Join-Path $PSScriptRoot 'protocol.v1.json'
 Import-Module $modulePath -Force
 
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json -Depth 30
-$scenario = New-CocMeasuredScenario -TargetConfig $config `
+$scenario = New-CocMeasuredScenario -ProtocolConfig $config `
     -ExpectedBuildId ('a' * 64) -OwnerId 'test-owner'
 $steps = @($scenario.steps)
 $dispatches = @($steps | Where-Object label -like 'coc-*-dispatch')
@@ -45,6 +45,9 @@ for ($index = 0; $index -lt 20; $index++) {
     }
     if ([int]$waiters[$index].args.timeoutMs -ne 10000) {
         throw "Transition $($index + 1) does not use the fixed waiter deadline."
+    }
+    if ($waiters[$index].args.Contains('target')) {
+        throw "Transition $($index + 1) attempts to own the Stabilizer profile."
     }
 }
 

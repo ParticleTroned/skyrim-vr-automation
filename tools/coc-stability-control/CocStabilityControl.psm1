@@ -124,52 +124,29 @@ function Invoke-CocMcpTool {
     }
 }
 
-function Get-CocTarget {
-    param(
-        [Parameter(Mandatory)]$TargetConfig,
-        [Parameter(Mandatory)][string]$Cell
-    )
-
-    $property = $TargetConfig.profiles.PSObject.Properties[$Cell]
-    if (-not $property) { throw "No Stabilizer target is defined for '$Cell'." }
-    $source = $property.Value
-    $target = [ordered]@{
-        method = [string]$source.method
-        qualityMode = [int]$source.qualityMode
-        renderScaleMode = [bool]$source.renderScaleMode
-    }
-    if ($source.PSObject.Properties['dlssProfile']) {
-        $target.dlssProfile = [string]$source.dlssProfile
-    }
-    if ($source.PSObject.Properties['fsrRuntime']) {
-        $target.fsrRuntime = [string]$source.fsrRuntime
-    }
-    return $target
-}
-
 function New-CocMeasuredScenario {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]$TargetConfig,
+        [Parameter(Mandatory)]$ProtocolConfig,
         [Parameter(Mandatory)][string]$ExpectedBuildId,
         [Parameter(Mandatory)][string]$OwnerId
     )
 
-    $startCell = [string]$TargetConfig.startCellEditorId
-    $interiorCell = [string]$TargetConfig.interiorCellEditorId
+    $startCell = [string]$ProtocolConfig.startCellEditorId
+    $interiorCell = [string]$ProtocolConfig.interiorCellEditorId
     if ($startCell -ne 'WindhelmExterior01' -or
         $interiorCell -ne 'WhiterunDragonsreach') {
-        throw 'The target fixture does not describe the fixed COC route.'
+        throw 'The protocol config does not describe the fixed COC route.'
     }
-    $transitionCount = [int]$TargetConfig.transitionCount
+    $transitionCount = [int]$ProtocolConfig.transitionCount
     if ($transitionCount -ne 20) { throw 'The measured COC run must contain 20 transitions.' }
 
     $foveation = [ordered]@{
-        foveatedVendorDispatch = [bool]$TargetConfig.foveation.foveatedVendorDispatch
-        foveatedCenterArea = [double]$TargetConfig.foveation.foveatedCenterArea
-        peripheryTAAEnable = [bool]$TargetConfig.foveation.peripheryTAAEnable
-        peripheryTAACenterArea = [double]$TargetConfig.foveation.peripheryTAACenterArea
-        peripheryTAAOuterScale = [double]$TargetConfig.foveation.peripheryTAAOuterScale
+        foveatedVendorDispatch = [bool]$ProtocolConfig.foveation.foveatedVendorDispatch
+        foveatedCenterArea = [double]$ProtocolConfig.foveation.foveatedCenterArea
+        peripheryTAAEnable = [bool]$ProtocolConfig.foveation.peripheryTAAEnable
+        peripheryTAACenterArea = [double]$ProtocolConfig.foveation.peripheryTAACenterArea
+        peripheryTAAOuterScale = [double]$ProtocolConfig.foveation.peripheryTAAOuterScale
     }
     $steps = [Collections.Generic.List[object]]::new()
     $steps.Add([ordered]@{
@@ -223,7 +200,6 @@ function New-CocMeasuredScenario {
                 ownerId = $OwnerId
                 expectedBuildId = $ExpectedBuildId
                 expectedCellEditorId = $cell
-                target = Get-CocTarget -TargetConfig $TargetConfig -Cell $cell
                 foveation = $foveation
                 timeoutMs = 10000
             }
@@ -241,8 +217,7 @@ function Test-CocBaseline {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable]$Results,
-        [Parameter(Mandatory)][string]$ExpectedCell,
-        [Parameter(Mandatory)]$TargetConfig
+        [Parameter(Mandatory)][string]$ExpectedCell
     )
 
     $reasons = [Collections.Generic.List[string]]::new()
@@ -272,27 +247,6 @@ function Test-CocBaseline {
     $stability = Test-DevBenchUpscalingStable `
         -UpscalingSnapshot $upscaling -RenderScaleStatus $renderScale
     foreach ($reason in @($stability.reasons)) { $reasons.Add([string]$reason) }
-    $expectedProfile = $TargetConfig.profiles.PSObject.Properties[
-        $ExpectedCell
-    ].Value
-    if ((Get-DevBenchNamedValue $stability.method) -ne
-        (Get-DevBenchNamedValue $expectedProfile.method)) {
-        $reasons.Add('the effective method differs from the Stabilizer fixture')
-    }
-    if ((Get-DevBenchNamedValue $stability.qualityMode) -ne
-        (Get-DevBenchNamedValue $expectedProfile.qualityModeName)) {
-        $reasons.Add('the effective quality mode differs from the Stabilizer fixture')
-    }
-    if ([bool]$stability.effectiveRenderScaleMode -ne
-        [bool]$expectedProfile.renderScaleMode) {
-        $reasons.Add('the effective render-scale mode differs from the Stabilizer fixture')
-    }
-    if ($expectedProfile.PSObject.Properties['dlssProfile'] -and
-        (Get-DevBenchNamedValue $stability.dlssProfile) -ne
-        (Get-DevBenchNamedValue $expectedProfile.dlssProfile)) {
-        $reasons.Add('the effective DLSS profile differs from the Stabilizer fixture')
-    }
-
     $status = if ($renderScale.PSObject.Properties['status']) {
         $renderScale.status
     } else {

@@ -32,16 +32,19 @@ save or test world is loaded. Do not defer it into the in-game start window.
    configuration, then verify both exact live identities. Require the installed
    `devbench-control` entrypoint.
 2. In one parallel local setup group:
-   - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status`;
-     if stopped, call `start` and reuse its saved project and paths;
+   - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status
+     -ProgramPath <exact intended CSX DLL>`; if stopped or mismatched, stop only
+     its managed session and call `start -ProgramPath <exact intended CSX DLL>`;
    - run `coc-evidence-control inspect` and require CDB/WinDbg, ProcDump, and
      free-space readiness;
    - arm ProcDump with `-TargetPid <exact Skyrim PID>`, unless an existing owned
      waiting collector has attached to that same PID. The automatic monitor is
      exception-triggered, not window-hang-triggered.
 3. Require the Ghidra receipt to report `ok: true`, `state: ready`,
-   `managed: true`, `endpointReady: true`, and
-   `listenerOwnedBySession: true`. Prefer `listenerOwnershipSource` equal to
+   `managed: true`, `endpointReady: true`, `listenerOwnedBySession: true`,
+   `pyGhidraReady: true`, and `programMatchesExpectation: true`. Its active
+   program path and SHA-256 must match the intended DLL, not merely share its
+   filename or project name. Prefer `listenerOwnershipSource` equal to
    `session-binding`, which verifies the saved listener PID and process start
    time without privileged process-tree access. A legacy session may use one
    ancestry-proven check to capture that binding. Its selected persistent
@@ -49,9 +52,18 @@ save or test world is loaded. Do not defer it into the in-game start window.
 4. Inspect the current Codex tool registry and require both DevBench and Ghidra
    MCP tool families to be attached to this window. An enabled settings toggle
    is not proof.
-5. Make one harmless Ghidra health/version/project call and one harmless
-   DevBench health/identity call. Require DevBench to identify VR,
+5. Make one harmless Ghidra `eval_python` call that reads the active program
+   path/hash and one harmless DevBench health/identity call. The Python call
+   must execute successfully; tool presence alone does not prove that the
+   Ghidra instance was launched through PyGhidra. Require DevBench to identify VR,
    `SkyrimVR.exe`, the exact PID, and port 8921.
+6. Run one synchronous DevBench scenario containing only a
+   `communityshaders.renderscale` `qualification_wait` without an expected
+   cell. Do not begin or dispatch a qualification. Require the embedded
+   `missing_expected_cell` receipt to produce scenario `ok:false`,
+   `aborted:true`, `stepsRun:1`, and step `ok:false`. This harmless negative
+   probe proves that `continueOnError:false` recognizes extension-domain
+   errors before the live sequence can dispatch multiple COCs.
 
 If either MCP tool family is absent, leave Skyrim at the main menu and keep the
 managed Ghidra server and owned ProcDump collector running. Restart Codex while
@@ -87,6 +99,8 @@ A readiness receipt is reusable only while all of these remain true:
 - the same Codex window still exposes both MCP tool families;
 - the exact DevBench loopback registration is unchanged;
 - the Ghidra receipt still proves the same managed process and owned listener;
+- PyGhidra remains callable and the active program still matches the intended
+  artifact path and SHA-256;
 - the owned ProcDump PID and start time still match the state receipt;
 - `coc-evidence-control status` reports a live monitor;
 - DevBench and ProcDump still identify the same exact Skyrim PID.
@@ -177,10 +191,11 @@ search, capture-provider probing, installation, retries, or a second status
 chain. Missing optional capture remains evidence; the in-headset visual check
 and CSX two-eye evidence remain valid fidelity inputs.
 
-Use the approved Stabilizer fixture to define the expected profile for
-`WindhelmExterior01` and `WhiterunDragonsreach`. Never derive a target by
-changing CSX. Record exact cell, lifecycle, requested/effective/stable profiles,
-render/display dimensions, and two-eye presentation/fidelity.
+Do not define or send an expected upscaling target. VR FPS Stabilizer owns the
+selection for `WindhelmExterior01` and `WhiterunDragonsreach`. Record the exact
+cell, lifecycle, coherent observed requested/effective/stable profiles,
+render/display dimensions, and two-eye presentation/fidelity without changing
+CSX upscaling state.
 
 Before launching baseline calls, the controller creates the complete measured
 scenario and starts an independent monotonic watchdog job. The watchdog and an
@@ -211,7 +226,8 @@ Use the one async server scenario generated and submitted by
 3. call `qualification_dispatch` with
    `startPerformanceTelemetry: true` immediately adjacent to exactly one COC;
 4. call `qualification_wait` once with the same ownership pair, exact target
-   cell, expected Stabilizer profile, and `timeoutMs: 10000`;
+   cell, no `target` argument, and `timeoutMs: 10000`; require its externally
+   owned observation mode to return the coherent Stabilizer-selected profile;
 5. repeat begin, adjacent dispatch plus one COC, and one waiter for transitions
    2 through 20, omitting `startPerformanceTelemetry` after transition 1.
 
@@ -228,9 +244,11 @@ this first-COC-through-final-transition interval as assay performance data.
 Set `continueOnError: false`. This does not make semantic stability faults
 fail-fast: `qualification_wait` returns timeout, profile, lifecycle, fidelity,
 and presentation anomalies as normal tool receipts, so the scenario advances.
-It does make an actual failed tool step abort the remaining scenario. A rejected
-COC, ownership loss, vanished waiter, or main-thread timeout is a control-plane
-failure; dispatching further COCs after it cannot add valid evidence.
+It does make an actual failed tool step abort the remaining scenario. DevBench
+must classify a top-level embedded tool `error` or `ok:false` as a failed step
+and preserve the complete receipt. A rejected COC, ownership loss, vanished
+waiter, or main-thread timeout is a control-plane failure; dispatching further
+COCs after it cannot add valid evidence.
 
 Advance immediately after each coherent waiter receipt. Do not add fixed
 inter-transition waits, menu checks, client polling, or per-transition client
