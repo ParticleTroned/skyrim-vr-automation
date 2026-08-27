@@ -22,6 +22,8 @@ foreach ($requiredText in @(
     'csx-coc-evidence-state-v1',
     'MinimumFreeGiB = 100',
     'CSX_COC_EVIDENCE_ROOT',
+    'DateTimeOffset]::Parse',
+    'InvariantCulture',
     'cdb'
 )) {
     if (-not $script.Contains($requiredText, [StringComparison]::Ordinal)) {

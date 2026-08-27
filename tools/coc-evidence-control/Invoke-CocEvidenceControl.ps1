@@ -180,9 +180,18 @@ function Read-OwnedState {
 function Get-OwnedMonitor($State) {
     $monitor = Get-Process -Id ([int]$State.monitorPid) -ErrorAction SilentlyContinue
     if (-not $monitor) { return $null }
-    $expected = [DateTime]::Parse(
-        [string]$State.monitorStartedUtc
-    ).ToUniversalTime()
+    $expectedValue = $State.monitorStartedUtc
+    $expected = if ($expectedValue -is [DateTime]) {
+        $expectedValue.ToUniversalTime()
+    } elseif ($expectedValue -is [DateTimeOffset]) {
+        $expectedValue.UtcDateTime
+    } else {
+        [DateTimeOffset]::Parse(
+            [string]$expectedValue,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind
+        ).UtcDateTime
+    }
     $actual = $monitor.StartTime.ToUniversalTime()
     if ([math]::Abs(($actual - $expected).TotalSeconds) -gt 2) { return $null }
     return $monitor
