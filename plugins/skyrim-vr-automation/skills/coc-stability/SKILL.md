@@ -38,10 +38,11 @@ the current Codex window exposes both MCP tool families and make one harmless
 call through each. Require the Ghidra receipt and live MCP call to prove
 `pyGhidraReady: true`, `programMatchesExpectation: true`, and the exact active
 program path; a listening server or project name alone is not proof. If either tool
-family is absent, leave Skyrim at the main menu, keep the external servers and
-collector running, restart Codex, and repeat only the tool-call checks. Retain
-the Ghidra and ProcDump receipts. Report readiness only after every required
-receipt and real MCP call passes, then wait for the user's second command.
+family is absent, leave Skyrim at the main menu, preserve the receipts, and ask
+the user to restart Codex. After the user returns and explicitly repeats
+`start COC protocol`, repeat only the tool-call checks. Retain the Ghidra and
+ProcDump receipts. Report readiness only after every required receipt and real
+MCP call passes, then wait for the user's second command.
 
 Before reporting readiness, run the protocol's harmless one-step scenario
 probe and require DevBench to convert the extension's embedded
@@ -59,10 +60,11 @@ After Windhelm loads, invoke `coc-stability-control run` once with the exact
 Skyrim PID, Build ID, owned collector state, and evidence root. Do not call
 `prepare_coc`, baseline tools, or the measured scenario separately. The
 controller calls `communityshaders.menu` exactly once with
-`{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}` and requires
+`{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}` and records
 `ready: true`, `persisted: false`, startup-active VR FPS Stabilizer, developer
 mode, and the FOV/TAA 0.3/0.3/0.7 fixture. It may correct only those runtime CSX
-settings and must not save.
+settings and must not save. A returned fixture defect prevents only the
+early-start shortcut; the 10-second watchdog still runs the measured assay.
 
 VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe its
 per-cell profiles; never apply an upscaling method, quality, preset, render

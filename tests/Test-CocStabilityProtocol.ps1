@@ -96,6 +96,7 @@ foreach ($requiredProtocolText in @(
     'closed grammar',
     'blocked awaiting user direction',
     'ask one concise question',
+    'ask the user to restart Codex',
     'It authorizes only readiness',
     'Do not issue a console command',
     'second command is `start`',
@@ -235,6 +236,10 @@ Assert-Protocol ($runner.Contains(
     'fixtureAnomalies',
     [StringComparison]::Ordinal
 )) 'Fixture anomalies must be preserved for the measured assay.'
+Assert-Protocol (-not $protocol.Contains(
+    'Restart Codex after repairing project configuration',
+    [StringComparison]::Ordinal
+)) 'A readiness block must ask the user before a Codex restart.'
 
 foreach ($pair in @(
     @($sourceSkillPath, $pluginSkillPath, 'COC skill'),

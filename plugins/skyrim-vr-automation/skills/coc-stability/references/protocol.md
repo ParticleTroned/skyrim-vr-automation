@@ -55,9 +55,10 @@ save or test world is loaded. Do not defer it into the in-game start window.
    project-scoped `.codex/config.toml` to declare `devbench_vr` at
    `http://127.0.0.1:8921/mcp` and `ghidra` at
    `http://127.0.0.1:8080/mcp`. Do not treat a volatile global `codex mcp add`
-   result as durable registration. Restart Codex after repairing project
-   configuration, then verify both exact live identities. Require the installed
-   `devbench-control` entrypoint.
+   result as durable registration. If repair requires a new Codex window,
+   preserve the repair receipt, block readiness, and ask the user to restart
+   Codex and repeat `start COC protocol`; then verify both exact live
+   identities. Require the installed `devbench-control` entrypoint.
 2. In one parallel local setup group:
    - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status
      -ProgramPath <exact intended CSX DLL>`; if stopped or mismatched, stop only
@@ -93,10 +94,11 @@ save or test world is loaded. Do not defer it into the in-game start window.
    errors before the live sequence can dispatch multiple COCs.
 
 If either MCP tool family is absent, leave Skyrim at the main menu and keep the
-managed Ghidra server and owned ProcDump collector running. Restart Codex while
-both game-owned DevBench and Ghidra endpoints are available, then repeat only
-steps 4 and 5. Do not restart Skyrim, Ghidra, or ProcDump merely to attach the
-tools to a new Codex window.
+managed Ghidra server and owned ProcDump collector running. Preserve the
+receipt, block readiness, and ask the user to restart Codex. After the user
+returns and explicitly repeats `start COC protocol`, repeat only steps 4 and 5.
+Do not restart Skyrim, Ghidra, or ProcDump merely to attach the tools to a new
+Codex window.
 
 The repository Ghidra controller exclusively owns the persistent headless
 GhidrAssistMCP server and project. The evidence controller discovers the
@@ -112,8 +114,8 @@ monitor, captures one full dump of the exact PID, and labels the trigger as
 analyzers.
 
 If a real local readiness check or harmless MCP call fails after attachment,
-stop at the main menu and preserve the receipt. Do not diagnose a missing
-installation merely from a missing tool.
+stop at the main menu, preserve the receipt, and ask the user what to do. Do
+not diagnose a missing installation merely from a missing tool.
 
 When every check passes, report `ready to load` with the exact Skyrim PID,
 DevBench and Ghidra endpoint identities, managed Ghidra PID/listener ownership,
@@ -132,8 +134,9 @@ A readiness receipt is reusable only while all of these remain true:
 - `coc-evidence-control status` reports a live monitor;
 - DevBench and ProcDump still identify the same exact Skyrim PID.
 
-A new Codex window, missing tool, exited collector, or new Skyrim PID requires
-the corresponding recheck or re-arm before another live trigger.
+A new Codex window, missing tool, exited collector, or new Skyrim PID invalidates
+readiness. Do not perform a recheck or re-arm from `start`; ask the user to
+return to the main menu and explicitly repeat `start COC protocol`.
 
 ## Fast start-cell establishment
 
@@ -180,6 +183,9 @@ from the successful start-cell COC is an anomaly because the exception-only
 monitor should still be live. Do not add this local check ahead of the
 already-scheduled Windhelm COC.
 
+If this post-COC collector status is not `armed-attached` for the observed PID,
+preserve the receipt, do not start the controller, and ask the user what to do.
+
 ## One-time post-load fixture gate
 
 Once Windhelm is loaded, invoke `coc-stability-control run` once with the exact
@@ -197,7 +203,7 @@ The controller invokes the direct `communityshaders.menu` tool once:
 }
 ```
 
-Require:
+Record these fixture fields without making a returned mismatch a dispatch gate:
 
 - `ready: true`, `promptRequired: false`, and `persisted: false`;
 - `after.vr` and `after.inGame` are true;
@@ -232,7 +238,7 @@ shortcut; the independent 10-second watchdog still dispatches the complete
 ## Bounded parallel baseline
 
 The controller starts one monotonic 10-second watchdog immediately when the
-successful `prepare_coc` receipt arrives. In parallel thread jobs it launches
+direct `prepare_coc` call returns. In parallel thread jobs it launches
 one bundle containing:
 
 - exact scene/player state;
