@@ -23,6 +23,18 @@ $sourceEvidencePath = Join-Path $repositoryRoot (
 $pluginEvidencePath = Join-Path $repositoryRoot (
     'plugins\skyrim-vr-automation\tools\coc-evidence-control\Invoke-CocEvidenceControl.ps1'
 )
+$sourceRunnerPath = Join-Path $repositoryRoot (
+    'tools\coc-stability-control\Invoke-CocStabilityControl.ps1'
+)
+$pluginRunnerPath = Join-Path $repositoryRoot (
+    'plugins\skyrim-vr-automation\tools\coc-stability-control\Invoke-CocStabilityControl.ps1'
+)
+$sourceRunnerModulePath = Join-Path $repositoryRoot (
+    'tools\coc-stability-control\CocStabilityControl.psm1'
+)
+$pluginRunnerModulePath = Join-Path $repositoryRoot (
+    'plugins\skyrim-vr-automation\tools\coc-stability-control\CocStabilityControl.psm1'
+)
 
 function Assert-Protocol {
     param(
@@ -52,7 +64,9 @@ foreach ($requiredSkillText in @(
     'During that server wait',
     '"action":"prepare_coc"',
     'one monotonic 10-second watchdog',
-    'one parallel',
+    'atomic dispatch claim',
+    'coc-stability-control run',
+    'capture-hang',
     'VR FPS Stabilizer exclusively owns',
     'startPerformanceTelemetry: true',
     'continueOnError: false',
@@ -89,8 +103,10 @@ foreach ($requiredProtocolText in @(
     '"action": "prepare_coc"',
     'This fixture receipt is the only hard pre-measurement gate',
     '## Bounded parallel baseline',
-    'same orchestration cell',
-    'when the watchdog reaches 10 seconds, start the assay',
+    'independent monotonic watchdog job',
+    'at 10 seconds the watchdog starts it',
+    'coc-stability-control run',
+    'capture-hang',
     'not permission to delay or cancel',
     '## Atomic diagnostics and measured assay',
     'startPerformanceTelemetry: true',
@@ -174,7 +190,9 @@ Assert-Protocol (([regex]::Matches(
 foreach ($pair in @(
     @($sourceSkillPath, $pluginSkillPath, 'COC skill'),
     @($sourceProtocolPath, $pluginProtocolPath, 'COC protocol'),
-    @($sourceEvidencePath, $pluginEvidencePath, 'COC evidence controller')
+    @($sourceEvidencePath, $pluginEvidencePath, 'COC evidence controller'),
+    @($sourceRunnerPath, $pluginRunnerPath, 'COC stability controller'),
+    @($sourceRunnerModulePath, $pluginRunnerModulePath, 'COC stability module')
 )) {
     $sourceHash = (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash
     $pluginHash = (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash
@@ -194,12 +212,23 @@ Assert-Protocol (
     $evidenceEntry[0].entryPoint -eq
         'tools/coc-evidence-control/Invoke-CocEvidenceControl.ps1'
 ) 'COC evidence controller entry point is incorrect.'
+$runnerEntry = @($manifest.tools | Where-Object {
+    $_.name -eq 'coc-stability-control'
+})
+Assert-Protocol ($runnerEntry.Count -eq 1) (
+    'COC stability controller registration is missing or ambiguous.'
+)
+Assert-Protocol (
+    $runnerEntry[0].entryPoint -eq
+        'tools/coc-stability-control/Invoke-CocStabilityControl.ps1'
+) 'COC stability controller entry point is incorrect.'
 
 [pscustomobject][ordered]@{
     ok = $true
     mainMenuReadinessBeforeLiveStart = $true
     timedStartQueuedFirst = $true
     boundedParallelBaseline = $true
+    independentBaselineWatchdog = $true
     firstCocOwnsPerformanceOrigin = $true
     semanticAnomaliesContinue = $true
     hardControlFailuresAbort = $true

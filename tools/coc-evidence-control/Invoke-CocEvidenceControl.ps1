@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('inspect', 'arm', 'status', 'stop')]
+    [ValidateSet('inspect', 'arm', 'status', 'capture-hang', 'stop')]
     [string]$Command = 'inspect',
 
     [string]$ProcDumpPath = $env:CSX_PROCDUMP_PATH,
@@ -14,6 +14,7 @@ param(
     [string]$TargetName = 'SkyrimVR.exe',
     [ValidateRange(0, [int]::MaxValue)][int]$TargetPid = 0,
     [ValidateRange(1, 2048)][int]$MinimumFreeGiB = 100,
+    [ValidateRange(10, 300)][int]$CaptureTimeoutSeconds = 120,
     [switch]$Compact,
     [switch]$NoExit
 )
@@ -205,6 +206,29 @@ function Get-TargetProcesses([string]$Name, [int]$ProcessId) {
     return @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
 }
 
+function Stop-OwnedProcDumpMonitor($Owned, $Monitor) {
+    $target = if ([int]$Owned.data.targetPid -gt 0) {
+        [string]$Owned.data.targetPid
+    } else {
+        [string]$Owned.data.targetName
+    }
+    $cancelInfo = [Diagnostics.ProcessStartInfo]::new()
+    $cancelInfo.FileName = [string]$Owned.data.procDump.path
+    $cancelInfo.UseShellExecute = $false
+    $cancelInfo.CreateNoWindow = $true
+    foreach ($argument in @('-accepteula', '-cancel', $target)) {
+        $null = $cancelInfo.ArgumentList.Add($argument)
+    }
+    $cancel = [Diagnostics.Process]::Start($cancelInfo)
+    $null = $cancel.WaitForExit(5000)
+    $null = $Monitor.WaitForExit(5000)
+    return [pscustomobject]@{
+        stopped = [bool]$Monitor.HasExited
+        target = $target
+        cancelExitCode = if ($cancel.HasExited) { $cancel.ExitCode } else { $null }
+    }
+}
+
 function New-InspectionResult($Readiness) {
     [pscustomobject][ordered]@{
         schema = 'csx-coc-evidence-control-v1'
@@ -246,7 +270,7 @@ try {
         }
 
         $arguments = @(
-            '-accepteula', '-ma', '-e', '-h', '-n', '2', '-r', '1', '-a'
+            '-accepteula', '-ma', '-e', '-n', '2', '-r', '1', '-a'
         )
         if ($TargetPid -gt 0) {
             $arguments += [string]$TargetPid
@@ -259,6 +283,8 @@ try {
         $startInfo.FileName = $readiness.paths.procDump
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
         foreach ($argument in $arguments) {
             $null = $startInfo.ArgumentList.Add($argument)
         }
@@ -267,7 +293,11 @@ try {
         if (-not $monitor.Start()) { throw 'ProcDump did not start.' }
         Start-Sleep -Milliseconds 500
         if ($monitor.HasExited) {
-            throw "ProcDump exited during arming with code $($monitor.ExitCode)."
+            $detail = @(
+                $monitor.StandardOutput.ReadToEnd().Trim()
+                $monitor.StandardError.ReadToEnd().Trim()
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            throw "ProcDump exited during arming with code $($monitor.ExitCode): $($detail -join ' ')"
         }
 
         $stateRecord = [pscustomobject][ordered]@{
@@ -283,6 +313,8 @@ try {
             procDump = Get-ExecutableRecord $readiness.paths.procDump
             cdb = Get-ExecutableRecord $readiness.paths.cdb
             procDumpArguments = $arguments
+            triggerPolicy = 'unhandled-exception'
+            manualHangCaptureCommand = 'capture-hang'
         }
         $stateRecord | ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $resolvedStatePath -Encoding utf8
@@ -337,13 +369,122 @@ try {
                 monitorPid = [int]$owned.data.monitorPid
                 targetPids = @($targets | ForEach-Object Id)
                 captureDirectory = [string]$owned.data.captureDirectory
+                coverageActive = $null -ne $monitor
+                triggerPolicy = if ($owned.data.PSObject.Properties['triggerPolicy']) {
+                    [string]$owned.data.triggerPolicy
+                } elseif (@($owned.data.procDumpArguments) -contains '-h') {
+                    'unhandled-exception-or-window-hang'
+                } else {
+                    'unhandled-exception'
+                }
                 dumps = @($dumps | ForEach-Object {
                     [pscustomobject]@{
                         path = $_.FullName
                         length = $_.Length
                         lastWriteUtc = $_.LastWriteTimeUtc.ToString('o')
+                        trigger = if ($_.BaseName -like '*-hang-*') {
+                            'operator-confirmed-hang'
+                        } elseif ($owned.data.PSObject.Properties['triggerPolicy']) {
+                            [string]$owned.data.triggerPolicy
+                        } elseif (@($owned.data.procDumpArguments) -contains '-h') {
+                            'unhandled-exception-or-window-hang'
+                        } else {
+                            'unhandled-exception'
+                        }
                     }
                 })
+            }
+        }
+    }
+    elseif ($Command -eq 'capture-hang') {
+        $owned = Read-OwnedState
+        $monitor = Get-OwnedMonitor $owned.data
+        if (-not $monitor) {
+            throw 'The state does not identify a live owned ProcDump monitor.'
+        }
+        $targetPid = [int]$owned.data.targetPid
+        if ($targetPid -le 0 -or
+            -not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {
+            throw 'An exact live target PID is required for a hang capture.'
+        }
+        $cancel = Stop-OwnedProcDumpMonitor -Owned $owned -Monitor $monitor
+        if (-not $cancel.stopped) {
+            throw 'The crash monitor did not stop before the explicit hang capture.'
+        }
+
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+        $dumpPath = Join-Path ([string]$owned.data.captureDirectory) (
+            "SkyrimVR-hang-$stamp.dmp"
+        )
+        $arguments = @('-accepteula', '-ma', [string]$targetPid, $dumpPath)
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = [string]$owned.data.procDump.path
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in $arguments) {
+            $null = $startInfo.ArgumentList.Add($argument)
+        }
+        $capture = [Diagnostics.Process]::Start($startInfo)
+        $completed = $capture.WaitForExit($CaptureTimeoutSeconds * 1000)
+        if (-not $completed) {
+            $result = [pscustomobject][ordered]@{
+                schema = 'csx-coc-evidence-control-v1'
+                ok = $true
+                command = 'capture-hang'
+                timestampUtc = [DateTime]::UtcNow.ToString('o')
+                state = 'capture-running'
+                checks = @()
+                errors = @()
+                data = [pscustomobject]@{
+                    statePath = $owned.path
+                    capturePid = $capture.Id
+                    targetPid = $targetPid
+                    dumpPath = $dumpPath
+                    trigger = 'operator-confirmed-hang'
+                }
+            }
+        }
+        else {
+            $output = $capture.StandardOutput.ReadToEnd().Trim()
+            $errorOutput = $capture.StandardError.ReadToEnd().Trim()
+            if ($capture.ExitCode -ne 0) {
+                throw "ProcDump hang capture exited with code $($capture.ExitCode): $output $errorOutput"
+            }
+            $dump = Get-Item -LiteralPath $dumpPath -ErrorAction Stop
+            if ($dump.Length -le 0) { throw 'The hang dump is empty.' }
+            $receiptPath = Join-Path ([string]$owned.data.captureDirectory) (
+                "hang-capture-$stamp.json"
+            )
+            $captureReceipt = [pscustomobject][ordered]@{
+                schema = 'csx-coc-hang-capture-v1'
+                capturedUtc = [DateTime]::UtcNow.ToString('o')
+                trigger = 'operator-confirmed-hang'
+                targetPid = $targetPid
+                dumpPath = $dump.FullName
+                length = $dump.Length
+                hashDeferred = $true
+                procDumpExitCode = $capture.ExitCode
+            }
+            $captureReceipt | ConvertTo-Json -Depth 10 |
+                Set-Content -LiteralPath $receiptPath -Encoding utf8
+            $result = [pscustomobject][ordered]@{
+                schema = 'csx-coc-evidence-control-v1'
+                ok = $true
+                command = 'capture-hang'
+                timestampUtc = [DateTime]::UtcNow.ToString('o')
+                state = 'capture-complete'
+                checks = @()
+                errors = @()
+                data = [pscustomobject]@{
+                    statePath = $owned.path
+                    targetPid = $targetPid
+                    dumpPath = $dump.FullName
+                    length = $dump.Length
+                    trigger = 'operator-confirmed-hang'
+                    receiptPath = $receiptPath
+                }
             }
         }
     }
@@ -363,22 +504,8 @@ try {
             throw 'A dump was written recently; wait before stopping ProcDump.'
         }
 
-        $target = if ([int]$owned.data.targetPid -gt 0) {
-            [string]$owned.data.targetPid
-        } else {
-            [string]$owned.data.targetName
-        }
-        $cancelInfo = [Diagnostics.ProcessStartInfo]::new()
-        $cancelInfo.FileName = [string]$owned.data.procDump.path
-        $cancelInfo.UseShellExecute = $false
-        $cancelInfo.CreateNoWindow = $true
-        foreach ($argument in @('-accepteula', '-cancel', $target)) {
-            $null = $cancelInfo.ArgumentList.Add($argument)
-        }
-        $cancel = [Diagnostics.Process]::Start($cancelInfo)
-        $null = $cancel.WaitForExit(5000)
-        $null = $monitor.WaitForExit(5000)
-        $stopped = $monitor.HasExited
+        $cancel = Stop-OwnedProcDumpMonitor -Owned $owned -Monitor $monitor
+        $stopped = $cancel.stopped
         $result = [pscustomobject][ordered]@{
             schema = 'csx-coc-evidence-control-v1'
             ok = $stopped
@@ -394,7 +521,7 @@ try {
             data = [pscustomobject][ordered]@{
                 statePath = $owned.path
                 monitorPid = [int]$owned.data.monitorPid
-                target = $target
+                target = $cancel.target
                 captureDirectory = [string]$owned.data.captureDirectory
             }
         }

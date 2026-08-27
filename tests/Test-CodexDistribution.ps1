@@ -56,6 +56,9 @@ try {
         'tools\process-control\Invoke-BoundedProcess.ps1'
         'tools\process-control\Invoke-WindowsThreadContext.ps1'
         'tools\coc-evidence-control\Invoke-CocEvidenceControl.ps1'
+        'tools\coc-stability-control\Invoke-CocStabilityControl.ps1'
+        'tools\coc-stability-control\CocStabilityControl.psm1'
+        'tools\coc-stability-control\stabilizer-targets.v1.json'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $simulatedCache $entryPoint) -PathType Leaf)) { throw "Installed entry point is missing: $entryPoint" }
     }

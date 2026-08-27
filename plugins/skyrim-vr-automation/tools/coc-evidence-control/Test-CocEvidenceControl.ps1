@@ -10,10 +10,9 @@ $scriptPath = Join-Path $PSScriptRoot 'Invoke-CocEvidenceControl.ps1'
 $script = Get-Content -LiteralPath $scriptPath -Raw
 
 foreach ($requiredText in @(
-    "[ValidateSet('inspect', 'arm', 'status', 'stop')]",
+    "[ValidateSet('inspect', 'arm', 'status', 'capture-hang', 'stop')]",
     "'-ma'",
     "'-e'",
-    "'-h'",
     "'-n', '2'",
     "'-r', '1'",
     "'-a'",
@@ -24,6 +23,9 @@ foreach ($requiredText in @(
     'CSX_COC_EVIDENCE_ROOT',
     'DateTimeOffset]::Parse',
     'InvariantCulture',
+    "triggerPolicy = 'unhandled-exception'",
+    "trigger = 'operator-confirmed-hang'",
+    'Stop-OwnedProcDumpMonitor',
     'cdb'
 )) {
     if (-not $script.Contains($requiredText, [StringComparison]::Ordinal)) {
@@ -34,6 +36,7 @@ foreach ($requiredText in @(
 foreach ($forbiddenText in @(
     "'-t'",
     "'-e', '1'",
+    "'-h'",
     'Stop-Process',
     'GhidraMcpUrl',
     'GhidraInstallRoot',
@@ -47,7 +50,8 @@ foreach ($forbiddenText in @(
 [pscustomobject][ordered]@{
     ok = $true
     fullUnhandledCrashDump = $true
-    hangDump = $true
+    automaticHangDump = $false
+    explicitHangDump = $true
     normalExitDump = $false
     firstChanceDump = $false
     boundedDumpCount = 2

@@ -37,7 +37,8 @@ save or test world is loaded. Do not defer it into the in-game start window.
    - run `coc-evidence-control inspect` and require CDB/WinDbg, ProcDump, and
      free-space readiness;
    - arm ProcDump with `-TargetPid <exact Skyrim PID>`, unless an existing owned
-     waiting collector has attached to that same PID.
+     waiting collector has attached to that same PID. The automatic monitor is
+     exception-triggered, not window-hang-triggered.
 3. Require the Ghidra receipt to report `ok: true`, `state: ready`,
    `managed: true`, `endpointReady: true`, and
    `listenerOwnedBySession: true`. Prefer `listenerOwnershipSource` equal to
@@ -61,10 +62,15 @@ tools to a new Codex window.
 The repository Ghidra controller exclusively owns the persistent headless
 GhidrAssistMCP server and project. The evidence controller discovers the
 installed GitHub `codex-ghidra-live` layout but owns only ProcDump and CDB.
-ProcDump is the live collector because it can already be waiting for the game
-and can capture both an unhandled exception and a Windows hang. It uses full
-dumps, a two-dump limit, and no normal-exit or first-chance trigger. CDB/WinDbg
-and Ghidra MCP are the post-capture analyzers.
+ProcDump is the live crash collector because it can already be waiting for an
+unhandled exception. It uses full dumps, a two-dump limit, and no normal-exit,
+first-chance, or automatic five-second window-hang trigger. A healthy Skyrim
+COC can stop pumping window messages for longer than that heuristic and must
+not consume the crash quota. For a visually confirmed freeze, use the evidence
+controller's explicit `capture-hang` action; it cancels the owned exception
+monitor, captures one full dump of the exact PID, and labels the trigger as
+`operator-confirmed-hang`. CDB/WinDbg and Ghidra MCP are the post-capture
+analyzers.
 
 If a real local readiness check or harmless MCP call fails after attachment,
 stop at the main menu and preserve the receipt. Do not diagnose a missing
@@ -110,12 +116,20 @@ client sleep. After the COC step returns, wait for the load event and take one
 exact-cell scene observation. Start-cell establishment is not measured.
 
 Call `coc-evidence-control status` off the game control plane and bind the
-collector receipt to the observed Skyrim PID. Do not add this local check ahead
-of the already-scheduled Windhelm COC.
+collector receipt to the observed Skyrim PID. Require `armed-attached`; a dump
+from the successful start-cell COC is an anomaly because the exception-only
+monitor should still be live. Do not add this local check ahead of the
+already-scheduled Windhelm COC.
 
 ## One-time post-load fixture gate
 
-Once Windhelm is loaded, invoke the direct `communityshaders.menu` tool once:
+Once Windhelm is loaded, invoke `coc-stability-control run` once with the exact
+Skyrim PID, Build ID, owned collector state path, and evidence root. From this
+point the controller owns the fixture, baseline deadline, and measured scenario
+submission. Do not separately invoke `prepare_coc`, baseline reads, or the
+scenario.
+
+The controller invokes the direct `communityshaders.menu` tool once:
 
 ```json
 {
@@ -149,9 +163,9 @@ never established.
 
 ## Bounded parallel baseline
 
-Start one monotonic 10-second watchdog immediately when the successful
-`prepare_coc` receipt arrives. In the same orchestration cell, launch one
-parallel bundle containing:
+The controller starts one monotonic 10-second watchdog immediately when the
+successful `prepare_coc` receipt arrives. In parallel thread jobs it launches
+one bundle containing:
 
 - exact scene/player state;
 - the public upscaling snapshot and render-scale lifecycle/status;
@@ -168,11 +182,14 @@ Use the approved Stabilizer fixture to define the expected profile for
 changing CSX. Record exact cell, lifecycle, requested/effective/stable profiles,
 render/display dimensions, and two-eye presentation/fidelity.
 
-If the complete bundle proves the expected baseline before the watchdog, start
-the measured assay immediately. Otherwise, when the watchdog reaches 10
-seconds, start the assay with the latest completed evidence. A slow, missing,
-or faulty baseline value is an anomaly, not permission to delay or cancel the
-20-transition history.
+Before launching baseline calls, the controller creates the complete measured
+scenario and starts an independent monotonic watchdog job. The watchdog and an
+early-success path compete for one atomic file claim. The winner submits the
+scenario exactly once. If the complete bundle proves the expected baseline
+before the watchdog, the early path starts the assay immediately. Otherwise,
+at 10 seconds the watchdog starts it with the latest completed evidence. A
+slow, missing, or faulty baseline value cannot block the watchdog and is an
+anomaly, not permission to delay or cancel the 20-transition history.
 
 The only diagnostic ownership exception is an already-active CPU, GPU, or
 stress session not owned by this run. Do not take it over. Preserve its receipt
@@ -185,7 +202,8 @@ The measured run starts in `WindhelmExterior01`. Run exactly 20 alternating
 transitions: odd ordinals target `WhiterunDragonsreach` and even ordinals target
 `WindhelmExterior01`.
 
-Use one async server scenario for setup and the complete transition sequence:
+Use the one async server scenario generated and submitted by
+`coc-stability-control` for setup and the complete transition sequence:
 
 1. render-scale stress `reset` then `start`; retain its `sessionId`;
 2. for transition 1, call `qualification_begin` with a unique transition ID and
@@ -250,8 +268,10 @@ a CTD, or loss of the server:
 
 1. issue no more console, menu, qualification, or other main-thread calls;
 2. preserve the scenario progress marker and every completed receipt;
-3. use the local evidence controller only to observe the already-armed ProcDump
-   monitor and wait until the dump exists and its length/write time settle;
+3. for a CTD, use the local evidence controller to observe the already-armed
+   exception monitor and wait until its dump settles; for a visually confirmed
+   hang, invoke its one explicit `capture-hang` action, then wait until that dump
+   settles;
 4. preserve the dump, Community Shaders log, DevBench log, Build ID, DLL, and
    matching PDB;
 5. analyze the dump first with CDB/WinDbg, then correlate implicated code and

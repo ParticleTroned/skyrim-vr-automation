@@ -9,9 +9,16 @@ It verifies:
 - the dump drive has at least 100 GiB free by default.
 
 The arm command starts one hidden ProcDump monitor for SkyrimVR.exe. It records
-full dumps for unhandled exceptions and Windows hangs, caps the run at two
-dumps, and does not create a normal-process-exit dump. The returned state path
-owns later status and stop operations.
+full dumps for unhandled exceptions, caps the run at two dumps, and does not
+create a normal-process-exit dump. It deliberately does not use ProcDump's
+five-second window-hang trigger because a healthy Skyrim COC load can satisfy
+that heuristic twice and exhaust evidence coverage before the assay.
+
+For a visually confirmed freeze, `capture-hang` officially cancels the owned
+crash monitor and immediately takes one classified full dump of the exact PID.
+The returned receipt records `operator-confirmed-hang` and dump length, while
+deferring the multi-gigabyte hash so analysis can begin immediately.
+The returned state path owns status, hang-capture, and stop operations.
 
 The controller discovers the sibling `codex-ghidra-live` GitHub folder.
 Portable overrides are `CSX_COC_EVIDENCE_ROOT`, `CSX_PROCDUMP_PATH`,

@@ -37,6 +37,10 @@ optional integration rather than the identity or boundary of the toolkit.
   catalogs, task seeding/restoration/promotion, and comparison reports.
 - `tools/process-control` — bounded exact-process execution with classified,
   evidence-backed retries for known transient failures.
+- `tools/coc-evidence-control` — exception-triggered crash coverage plus an
+  explicit, classified full-dump route for a visually confirmed hang.
+- `tools/coc-stability-control` — the one-shot post-Windhelm fixture, parallel
+  baseline, monotonic deadline, and exactly-once 20-transition dispatcher.
 - `tools/build-test-control` — CTest-aware branch testing with a direct-test
   fallback when a configured build contains test binaries but registers none.
 

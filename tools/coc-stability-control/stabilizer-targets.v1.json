@@ -1,0 +1,29 @@
+{
+  "schema": "csx-coc-stabilizer-targets-v1",
+  "startCellEditorId": "WindhelmExterior01",
+  "interiorCellEditorId": "WhiterunDragonsreach",
+  "transitionCount": 20,
+  "foveation": {
+    "foveatedVendorDispatch": true,
+    "foveatedCenterArea": 0.3,
+    "peripheryTAAEnable": true,
+    "peripheryTAACenterArea": 0.3,
+    "peripheryTAAOuterScale": 0.7
+  },
+  "profiles": {
+    "WindhelmExterior01": {
+      "method": "dlss",
+      "qualityMode": 1,
+      "qualityModeName": "hoshipa",
+      "renderScaleMode": true,
+      "dlssProfile": "K"
+    },
+    "WhiterunDragonsreach": {
+      "method": "dlss",
+      "qualityMode": 0,
+      "qualityModeName": "native_aa",
+      "renderScaleMode": false,
+      "dlssProfile": "K"
+    }
+  }
+}

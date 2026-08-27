@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Keep COC evidence coverage through normal long loads by using automatic
+  unhandled-exception dumps plus an explicit classified hang capture, and add a
+  post-Windhelm controller whose independent monotonic watchdog submits the
+  measured 20-transition scenario exactly once even when baseline calls stall.
 - Make COC readiness use durable project-scoped DevBench/Ghidra registrations
   and a saved Ghidra listener PID/start binding that sandboxed status checks can
   verify without privileged process ancestry.
