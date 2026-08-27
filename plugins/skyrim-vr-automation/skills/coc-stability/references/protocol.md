@@ -1,29 +1,36 @@
 # Deadline-driven COC stability protocol
 
-## Pre-session Codex and evidence readiness
+## Main-menu Codex and evidence readiness
 
-Complete this phase before asking the user to load Skyrim. Do not defer it into
-the live start window.
+Complete this phase when Skyrim reaches its main menu/load window and before a
+save or test world is loaded. Do not defer it into the in-game start window.
 
-1. Locate Community Shaders' canonical `tools/ghidra-mcp-control.ps1` and call
-   `status`. Require `ok: true`, `state: ready`, `managed: true`,
-   `endpointReady: true`, and `listenerOwnedBySession: true`. If it is stopped,
-   call `start`; it reuses the persistent project and saved paths. Only a first
-   setup may supply the GitHub `ghidra_*_PUBLIC` installation, Java home, and
-   exact analysis program for the intended build.
-2. Inspect the current Codex tool registry and require the Ghidra MCP tools to
-   be present. Confirm `devbench_vr` remains registered at
-   `http://127.0.0.1:8921/mcp` and the installed `devbench-control` entrypoint
-   is present. DevBench is game-owned, so its endpoint and direct MCP tools are
-   not required to be live before Skyrim starts.
-3. Make one harmless Ghidra MCP health, version, or project-list call. The
-   installed GitHub files and a ready controller receipt are not substitutes
-   for a successful call through the current Codex window.
-4. Run `coc-evidence-control inspect`. Require its CDB/WinDbg, ProcDump, and
-   free-space checks to pass.
-5. Run `coc-evidence-control arm` for `SkyrimVR.exe` and retain the returned
-   state path, collector PID/start time, capture directory, and tool hashes.
-   `armed-waiting` is the expected state before Skyrim starts.
+1. Resolve the one live `SkyrimVR.exe` PID. Confirm `devbench_vr` is registered
+   at `http://127.0.0.1:8921/mcp` and the installed `devbench-control`
+   entrypoint is present.
+2. In one parallel local setup group:
+   - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status`;
+     if stopped, call `start` and reuse its saved project and paths;
+   - run `coc-evidence-control inspect` and require CDB/WinDbg, ProcDump, and
+     free-space readiness;
+   - arm ProcDump with `-TargetPid <exact Skyrim PID>`, unless an existing owned
+     waiting collector has attached to that same PID.
+3. Require the Ghidra receipt to report `ok: true`, `state: ready`,
+   `managed: true`, `endpointReady: true`, and
+   `listenerOwnedBySession: true`. Its selected persistent analysis project
+   must match the intended build.
+4. Inspect the current Codex tool registry and require both DevBench and Ghidra
+   MCP tool families to be attached to this window. An enabled settings toggle
+   is not proof.
+5. Make one harmless Ghidra health/version/project call and one harmless
+   DevBench health/identity call. Require DevBench to identify VR,
+   `SkyrimVR.exe`, the exact PID, and port 8921.
+
+If either MCP tool family is absent, leave Skyrim at the main menu and keep the
+managed Ghidra server and owned ProcDump collector running. Restart Codex while
+both game-owned DevBench and Ghidra endpoints are available, then repeat only
+steps 4 and 5. Do not restart Skyrim, Ghidra, or ProcDump merely to attach the
+tools to a new Codex window.
 
 The repository Ghidra controller exclusively owns the persistent headless
 GhidrAssistMCP server and project. The evidence controller discovers the
@@ -33,42 +40,38 @@ and can capture both an unhandled exception and a Windows hang. It uses full
 dumps, a two-dump limit, and no normal-exit or first-chance trigger. CDB/WinDbg
 and Ghidra MCP are the post-capture analyzers.
 
-If the Ghidra MCP tool is absent, its call fails, DevBench registration or its
-local controller is missing, or local evidence readiness fails, stop before the
-game is loaded. Start the managed Ghidra MCP server through the repository
-controller as needed, restart Codex so Ghidra tools are attached, and repeat
-this phase. Do not diagnose a missing installation merely from a missing tool.
+If a real local readiness check or harmless MCP call fails after attachment,
+stop at the main menu and preserve the receipt. Do not diagnose a missing
+installation merely from a missing tool.
 
 A readiness receipt is reusable only while all of these remain true:
 
-- the same Codex window still exposes Ghidra MCP and the DevBench controller;
+- the same Codex window still exposes both MCP tool families;
 - the exact DevBench loopback registration is unchanged;
 - the Ghidra receipt still proves the same managed process and owned listener;
 - the owned ProcDump PID and start time still match the state receipt;
 - `coc-evidence-control status` reports a live monitor;
-- after Skyrim starts, exactly the intended game PID is observed.
+- DevBench and ProcDump still identify the same exact Skyrim PID.
 
 A new Codex window, missing tool, exited collector, or new Skyrim PID requires
 the corresponding recheck or re-arm before another live trigger.
 
 ## Fast start-cell establishment
 
-Before the live signal, select the direct DevBench MCP route if it is attached;
-otherwise select the installed `devbench-control` loopback route. At the moment
-the user confirms Skyrim VR is in-game, immediately queue one async server
-scenario whose only steps are a 10,000 ms wait followed by exactly:
+At the moment the user confirms Skyrim VR is in-game, immediately queue one
+async DevBench server scenario whose only steps are a 10,000 ms wait followed
+by exactly:
 
 ```text
 coc WindhelmExterior01
 ```
 
-Queue that deadline before live endpoint discovery, identity, status,
-capability, schema, or capture calls. The selected loopback controller may make
-the minimum connection needed to submit that known scenario; it must not run a
-discovery/status chain first. While the server owns the 10-second clock,
-concurrently read runtime identity and the exact CSX producer Build ID. Do not
-await one read before starting the other, and do not add work after both finish.
-These reads may complete early or late, but never postpone the scheduled COC.
+Queue that deadline before identity, status, capability, schema, or capture
+calls. Do not run another discovery or readiness chain. While the server owns
+the 10-second clock, concurrently read runtime identity and the exact CSX
+producer Build ID. Do not await one read before starting the other, and do not
+add work after both finish. These reads may complete early or late, but never
+postpone the scheduled COC.
 
 If the server does not accept the timed scenario, stop without substituting a
 client sleep. After the COC step returns, wait for the load event and take one

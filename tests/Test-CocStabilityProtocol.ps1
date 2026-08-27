@@ -37,12 +37,11 @@ $skill = Get-Content -LiteralPath $sourceSkillPath -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocolPath -Raw
 
 foreach ($requiredSkillText in @(
-    'Before asking the user to load Skyrim',
+    'When Skyrim reaches its main menu/load window',
     'tools/ghidra-mcp-control.ps1',
-    'managed, ready, session-owned',
-    'harmless Ghidra MCP health/list call',
-    'game-owned DevBench endpoint',
-    'installed loopback controller',
+    'both DevBench and Ghidra MCP tools',
+    'harmless call through each',
+    'leave Skyrim at the main menu',
     'coc-evidence-control inspect',
     'waits exactly 10 seconds',
     'During that server wait',
@@ -62,15 +61,16 @@ foreach ($requiredSkillText in @(
 }
 
 foreach ($requiredProtocolText in @(
-    '## Pre-session Codex and evidence readiness',
+    '## Main-menu Codex and evidence readiness',
     'tools/ghidra-mcp-control.ps1',
     'listenerOwnedBySession: true',
     'exclusively owns the persistent headless',
-    'DevBench is game-owned',
-    'not required to be live before Skyrim starts',
-    'installed `devbench-control` loopback route',
-    'successful MCP call',
-    'coc-evidence-control arm',
+    'In one parallel local setup group',
+    '-TargetPid <exact Skyrim PID>',
+    'both DevBench and Ghidra',
+    'both game-owned DevBench and Ghidra endpoints',
+    'harmless MCP call fails',
+    'arm ProcDump',
     '## Fast start-cell establishment',
     'immediately queue one',
     'Queue that deadline before identity',
@@ -103,7 +103,7 @@ foreach ($requiredProtocolText in @(
 }
 
 $readinessPosition = $protocol.IndexOf(
-    '## Pre-session Codex and evidence readiness',
+    '## Main-menu Codex and evidence readiness',
     [StringComparison]::Ordinal
 )
 $startPosition = $protocol.IndexOf(
@@ -182,7 +182,7 @@ Assert-Protocol (
 
 [pscustomobject][ordered]@{
     ok = $true
-    readinessBeforeLiveStart = $true
+    mainMenuReadinessBeforeLiveStart = $true
     timedStartQueuedFirst = $true
     boundedParallelBaseline = $true
     firstCocOwnsPerformanceOrigin = $true

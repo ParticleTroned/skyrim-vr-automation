@@ -10,25 +10,22 @@ Use this entrypoint for live operation. Read
 diagnosing the protocol, never after the user has entered the live start
 window.
 
-Before asking the user to load Skyrim, use Community Shaders'
-`tools/ghidra-mcp-control.ps1` to require a managed, ready, session-owned
-Ghidra MCP endpoint from the GitHub installation. Confirm the current Codex
-window exposes Ghidra MCP tools, then make one harmless Ghidra MCP health/list
-call; an enabled UI toggle is not proof. Confirm `devbench_vr` remains
-registered at its exact loopback URL and the installed `devbench-control`
-entrypoint is present. Do not require the game-owned DevBench endpoint to be
-live before Skyrim starts. Run `coc-evidence-control inspect` and `arm` so
-CDB/WinDbg, ProcDump, dump storage, and an owned crash/hang collector are ready.
-If a pre-game tool is absent or the Ghidra call fails, stop before the game is
-loaded and tell the user to start the managed Ghidra server and restart Codex.
-Retain both readiness receipts and the ProcDump state path.
+When Skyrim reaches its main menu/load window, and before loading into the test
+world, establish the analysis environment. In parallel, use Community Shaders'
+`tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server and
+run `coc-evidence-control inspect` plus `arm` against the exact Skyrim PID.
+Require CDB/WinDbg, ProcDump, dump storage, and an owned collector. Confirm the
+current Codex window exposes both DevBench and Ghidra MCP tools and make one
+harmless call through each. An enabled UI toggle is not proof. If either tool
+family is absent, leave Skyrim at the main menu, keep the external servers and
+collector running, restart Codex, and repeat only the tool-call checks. Retain
+the Ghidra and ProcDump receipts.
 
-When the user confirms Skyrim VR is in-game, use the already-selected direct
-DevBench MCP route when attached, otherwise the installed loopback controller.
-Make the first live operation an async server scenario that waits exactly 10
-seconds and dispatches one isolated `coc WindhelmExterior01`. During that
-server wait, read runtime identity and the exact CSX Build ID concurrently. Do
-not put discovery or sequential status calls ahead of this COC.
+When the user confirms Skyrim VR is in-game, make the first live operation an
+async DevBench server scenario that waits exactly 10 seconds and dispatches one
+isolated `coc WindhelmExterior01`. During that server wait, read runtime
+identity and the exact CSX Build ID concurrently. Do not put discovery or
+sequential status calls ahead of this COC.
 
 After Windhelm loads, call `communityshaders.menu` once with
 `{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}`. Require
