@@ -73,6 +73,102 @@ function Resolve-WorkspaceConfiguredPath([string]$Path, [string]$Purpose) {
     return [IO.Path]::GetFullPath($expanded)
 }
 
+function Test-WorkspaceSamePath([string]$Left, [string]$Right) {
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+    return [string]::Equals(
+        [IO.Path]::GetFullPath($Left).TrimEnd('\', '/'),
+        [IO.Path]::GetFullPath($Right).TrimEnd('\', '/'),
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Set-WorkspaceCustomOverwrite([string]$SettingsPath, [string]$Executable, [string]$ModName) {
+    if ($Executable -match '[\r\n=]' -or $ModName -match '[\r\n]') {
+        throw 'Executable and runtime-output mod names must be safe INI key/value text.'
+    }
+    $text = if (Test-Path -LiteralPath $SettingsPath -PathType Leaf) {
+        [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8)
+    }
+    else { '' }
+    $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($line in @([regex]::Split($text, '\r\n|\n|\r'))) { $lines.Add($line) }
+    while ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Length -eq 0) { $lines.RemoveAt($lines.Count - 1) }
+
+    $sectionIndexes = @()
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index].Trim() -ieq '[custom_overwrites]') {
+            $sectionIndexes += $index
+        }
+    }
+    if ($sectionIndexes.Count -gt 1) { throw 'Task profile settings contain duplicate [custom_overwrites] sections.' }
+    $sectionStart = if ($sectionIndexes.Count -eq 1) { [int]$sectionIndexes[0] } else { -1 }
+    $sectionEnd = $lines.Count
+    if ($sectionStart -ge 0) {
+        for ($index = $sectionStart + 1; $index -lt $lines.Count; $index++) {
+            if ($lines[$index].Trim() -match '^\[.+\]$') { $sectionEnd = $index; break }
+        }
+    }
+    if ($sectionStart -lt 0) {
+        if ($lines.Count -gt 0) { $lines.Add('') }
+        $lines.Add('[custom_overwrites]')
+        $lines.Add($Executable + '=' + $ModName)
+    }
+    else {
+        for ($index = $sectionEnd - 1; $index -gt $sectionStart; $index--) {
+            $separator = $lines[$index].IndexOf('=')
+            if ($separator -gt 0 -and $lines[$index].Substring(0, $separator).Trim() -ceq $Executable) {
+                $lines.RemoveAt($index)
+                $sectionEnd--
+            }
+        }
+        $lines.Insert($sectionEnd, $Executable + '=' + $ModName)
+    }
+    Write-WorkspaceBytesAtomic -Path $SettingsPath -Bytes ([Text.UTF8Encoding]::new($false).GetBytes(($lines -join $newline) + $newline))
+}
+
+function Get-WorkspaceTreeInventory([string]$Root) {
+    $resolved = [IO.Path]::GetFullPath($Root)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Container)) { throw "Runtime-output directory does not exist: $resolved" }
+    $entries = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $resolved -File -Recurse -Force | Sort-Object FullName)) {
+        $entries += [pscustomobject][ordered]@{
+            relativePath = [IO.Path]::GetRelativePath($resolved, $file.FullName)
+            bytes = [long]$file.Length
+            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        }
+    }
+    $canonical = $entries | ConvertTo-Json -Compress -Depth 4
+    $treeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical)))
+    return [pscustomobject][ordered]@{
+        path = $resolved; files = $entries.Count
+        bytes = [long](($entries | Measure-Object -Property bytes -Sum).Sum)
+        treeSha256 = $treeHash; entries = @($entries)
+    }
+}
+
+function Preserve-WorkspaceRuntimeOutput([string]$Source, [string]$EvidenceRoot, [string]$WorkspaceId, [switch]$WhatIf) {
+    $inventory = Get-WorkspaceTreeInventory -Root $Source
+    $target = Join-Path $EvidenceRoot 'runtime-output'
+    $receiptPath = Join-Path $EvidenceRoot 'runtime-output-preservation.receipt.json'
+    if ($WhatIf) {
+        return [pscustomobject][ordered]@{ source = $Source; preservedPath = $target; receiptPath = $receiptPath; inventory = $inventory; preserved = $false }
+    }
+    if (Test-Path -LiteralPath $target) { throw "Refusing to overwrite retained runtime-output evidence: $target" }
+    New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $target -Recurse
+    $preserved = Get-WorkspaceTreeInventory -Root $target
+    if ([string]$preserved.treeSha256 -cne [string]$inventory.treeSha256 -or $preserved.files -ne $inventory.files -or $preserved.bytes -ne $inventory.bytes) {
+        throw 'Retained runtime-output evidence differs from the exact task-owned source.'
+    }
+    $receipt = [pscustomobject][ordered]@{
+        contractVersion = '1.0.0'; operation = 'preserve-task-runtime-output'
+        workspaceId = $WorkspaceId; source = $Source; preservedPath = $target
+        inventory = $inventory; preservedUtc = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-WorkspaceJsonAtomic -Path $receiptPath -Value $receipt
+    return [pscustomobject][ordered]@{ source = $Source; preservedPath = $target; receiptPath = $receiptPath; inventory = $inventory; preserved = $true }
+}
+
 function Get-ProfileSnapshot([string]$Path) {
     $records = @()
     foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Sort-Object FullName)) {
@@ -335,53 +431,126 @@ try {
         if (Test-Path -LiteralPath $manifestPath) { throw "Generated workspace already exists: $manifestPath" }
         $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
         $initialMods = @(Get-ChildItem -LiteralPath $modsRoot -Directory -Force | Select-Object -ExpandProperty Name | Sort-Object)
+        $runtimeOutputName = 'Codex Runtime Output - ' + $workspaceId
+        $runtimeOutputPath = Join-Path $modsRoot $runtimeOutputName
+        $runtimeCachePath = Join-Path $runtimeOutputPath 'ShaderCache'
+        $runtimeSentinelPath = Join-Path $runtimeCachePath '.codex-vfs-sentinel.txt'
+        $cacheEvidenceDirectory = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-shader-cache')
+        $runtimeExecutable = [string]$config.defaults.executable
+        if ([string]::IsNullOrWhiteSpace($runtimeExecutable)) { throw 'defaults.executable is required for task runtime-output isolation.' }
+        if (Test-Path -LiteralPath $runtimeOutputPath) { throw "Generated runtime-output mod already exists: $runtimeOutputPath" }
+        if ($initialMods -ccontains $runtimeOutputName) { throw "Generated runtime-output mod was present in the initial mod snapshot: $runtimeOutputName" }
         $fixture = $null
         if ($SavePolicy -eq 'VerifiedFixture') {
             $fixture = Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '1.2.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
+            contractVersion = '1.3.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
             sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
             profile = $profileName; profilePath = $profilePath; profileName = $profileName; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             savePolicy = $SavePolicy; fixtureManifestPath = if ($fixture) { [string]$fixture.manifestPath } else { $null }
             saveFixture = $fixture; initialModNames = $initialMods; registeredMods = @(); inheritedSaves = $false
+            runtimeOutput = [pscustomobject][ordered]@{
+                state = 'planned'; executable = $runtimeExecutable; modName = $runtimeOutputName
+                modPath = $runtimeOutputPath; cachePath = $runtimeCachePath; sentinelPath = $runtimeSentinelPath
+                cacheEvidenceDirectory = $cacheEvidenceDirectory
+                cachePlanPath = (Join-Path $cacheEvidenceDirectory 'shader-cache-task.plan.json')
+                cacheCompletionPath = (Join-Path $cacheEvidenceDirectory 'shader-cache-task.completion.json')
+                cachePrepareArguments = [pscustomobject][ordered]@{
+                    ProfilePath = (Join-Path $profilePath 'modlist.txt'); ModsPath = $modsRoot
+                    CacheModName = $runtimeOutputName; EvidenceDirectory = $cacheEvidenceDirectory
+                    RequireMaterializedOutput = $true
+                }
+                registrationEvidenceDirectory = (Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-register-runtime-output'))
+                registrationReceiptPath = $null
+            }
             ownershipRule = 'The workspace may mutate only its cloned profile and mod directories absent from initialModNames and registered by this workspace.'
         }
         if ($PSCmdlet.ShouldProcess($profilePath, "clone stable MO2 profile '$sourceName' without saves")) {
-            New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
-            foreach ($directory in @(Get-ChildItem -LiteralPath $sourcePath -Directory -Recurse -Force)) {
-                $relative = [IO.Path]::GetRelativePath($sourcePath, $directory.FullName)
-                if ($relative -match '^(?i:saves)([\\/]|$)') { continue }
-                New-Item -ItemType Directory -Path (Join-Path $profilePath $relative) -Force | Out-Null
-            }
-            foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Recurse -Force)) {
-                $relative = [IO.Path]::GetRelativePath($sourcePath, $file.FullName)
-                if ($relative -match '^(?i:saves)[\\/]') { continue }
-                $target = Join-Path $profilePath $relative
-                New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-                Copy-Item -LiteralPath $file.FullName -Destination $target
-            }
-            New-Item -ItemType Directory -Path (Join-Path $profilePath 'saves') -Force | Out-Null
-            if ($fixture) {
-                $targetSaves = [IO.Path]::GetFullPath((Join-Path $profilePath 'saves'))
-                foreach ($file in @($fixture.files)) {
-                    $target = [IO.Path]::GetFullPath((Join-Path $targetSaves ([string]$file.relativePath)))
-                    if (-not $target.StartsWith($targetSaves + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Fixture target escapes the task saves directory: $($file.relativePath)" }
-                    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-                    Copy-Item -LiteralPath ([string]$file.sourcePath) -Destination $target
-                    if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -cne [string]$file.sha256) { throw "Copied fixture verification failed: $target" }
+            try {
+                New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
+                foreach ($directory in @(Get-ChildItem -LiteralPath $sourcePath -Directory -Recurse -Force)) {
+                    $relative = [IO.Path]::GetRelativePath($sourcePath, $directory.FullName)
+                    if ($relative -match '^(?i:saves)([\\/]|$)') { continue }
+                    New-Item -ItemType Directory -Path (Join-Path $profilePath $relative) -Force | Out-Null
                 }
-                $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true
+                foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Recurse -Force)) {
+                    $relative = [IO.Path]::GetRelativePath($sourcePath, $file.FullName)
+                    if ($relative -match '^(?i:saves)[\\/]') { continue }
+                    $target = Join-Path $profilePath $relative
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+                    Copy-Item -LiteralPath $file.FullName -Destination $target
+                }
+                New-Item -ItemType Directory -Path (Join-Path $profilePath 'saves') -Force | Out-Null
+                if ($fixture) {
+                    $targetSaves = [IO.Path]::GetFullPath((Join-Path $profilePath 'saves'))
+                    foreach ($file in @($fixture.files)) {
+                        $target = [IO.Path]::GetFullPath((Join-Path $targetSaves ([string]$file.relativePath)))
+                        if (-not $target.StartsWith($targetSaves + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Fixture target escapes the task saves directory: $($file.relativePath)" }
+                        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+                        Copy-Item -LiteralPath ([string]$file.sourcePath) -Destination $target
+                        if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -cne [string]$file.sha256) { throw "Copied fixture verification failed: $target" }
+                    }
+                    $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true
+                }
+
+                New-Item -ItemType Directory -Path $runtimeCachePath -Force | Out-Null
+                [IO.File]::WriteAllText($runtimeSentinelPath, $workspaceId + "`r`n", [Text.UTF8Encoding]::new($false))
+                Set-WorkspaceCustomOverwrite -SettingsPath (Join-Path $profilePath 'settings.ini') -Executable $runtimeExecutable -ModName $runtimeOutputName
+
+                $transactionTool = Join-Path $toolRoot 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'
+                $providersBefore = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -Confirm:$false | ConvertFrom-Json
+                if (-not $providersBefore.ok) { throw "Could not inspect the task profile's initial ShaderCache providers: $($providersBefore.errors -join '; ')" }
+                $winnerBefore = $providersBefore.data.effectiveWinnerAmongEnabledMods
+                $placement = if ($null -ne $winnerBefore) { 'Before' } else { 'End' }
+                $relativeTo = if ($null -ne $winnerBefore) { [string]$winnerBefore.modName } else { $null }
+                $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
+                $registrationArguments = @{
+                    Command = 'register'; ProfilePath = (Join-Path $profilePath 'modlist.txt')
+                    ModName = $runtimeOutputName; ModDirectory = $runtimeOutputPath
+                    Placement = $placement; RegisterEnabled = $true
+                    EvidenceDirectory = [string]$manifest.runtimeOutput.registrationEvidenceDirectory
+                    BlockingProcessNames = @('MO2WorkspaceImpossibleFixtureProcess'); Confirm = $false
+                }
+                if (-not [string]::IsNullOrWhiteSpace($relativeTo)) { $registrationArguments['RelativeToMod'] = $relativeTo }
+                $registration = & $profileTool @registrationArguments | ConvertFrom-Json
+                if (-not $registration.ok -or -not [bool]$registration.enabled) { throw 'Task runtime-output mod registration failed.' }
+
+                $providersAfter = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -Confirm:$false | ConvertFrom-Json
+                $winnerAfter = $providersAfter.data.effectiveWinnerAmongEnabledMods
+                if (-not $providersAfter.ok -or $null -eq $winnerAfter -or [string]$winnerAfter.modName -cne $runtimeOutputName -or [string]$winnerAfter.providerType -cne 'directory') {
+                    $observed = if ($null -eq $winnerAfter) { '<none>' } else { [string]$winnerAfter.modName }
+                    throw "Task runtime-output mod is not the effective enabled ShaderCache provider; observed '$observed'."
+                }
+                $outputEntry = [pscustomobject][ordered]@{
+                    name = $runtimeOutputName; path = $runtimeOutputPath; registeredUtc = [DateTime]::UtcNow.ToString('o')
+                    enabled = $true; placement = $placement; relativeToMod = $relativeTo; winningPaths = @('ShaderCache')
+                    evidenceDirectory = [string]$manifest.runtimeOutput.registrationEvidenceDirectory
+                }
+                $manifest.registeredMods = @($outputEntry)
+                $manifest.runtimeOutput.state = 'ready'
+                $manifest.runtimeOutput.registrationReceiptPath = [string]$registration.receiptPath
+                $manifest.status = 'ready'
+                $manifest | Add-Member -NotePropertyName profileSnapshot -NotePropertyValue (Get-ProfileSnapshot -Path $profilePath)
+                Write-WorkspaceJsonAtomic -Path $manifestPath -Value $manifest
             }
-            $manifest.status = 'ready'
-            $manifest | Add-Member -NotePropertyName profileSnapshot -NotePropertyValue (Get-ProfileSnapshot -Path $profilePath)
-            Write-WorkspaceJsonAtomic -Path $manifestPath -Value $manifest
+            catch {
+                $manifest.status = 'creation-failed'
+                $manifest.runtimeOutput.state = 'creation-failed'
+                $manifest | Add-Member -NotePropertyName creationFailure -NotePropertyValue $_.Exception.Message -Force
+                Write-WorkspaceJsonAtomic -Path $manifestPath -Value $manifest
+                throw "Workspace creation failed closed; partial task-owned paths and manifest were retained. $($_.Exception.Message)"
+            }
         }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-ready' }); data = $manifest }
     }
     elseif ($Command -eq 'inspect') {
         $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId
+        if ($owned.data.PSObject.Properties['runtimeOutput'] -and $null -ne $owned.data.runtimeOutput) {
+            $isolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile ([string]$owned.data.profile) -Executable ([string]$owned.data.runtimeOutput.executable) -AccessId $AccessId
+            $owned.data | Add-Member -NotePropertyName runtimeOutputIsolation -NotePropertyValue $isolation -Force
+        }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = [string]$owned.data.status; data = $owned.data }
     }
     elseif ($Command -eq 'register-mod') {
@@ -450,7 +619,45 @@ try {
             $cleanupMods += $modPath
         }
         $releaseEvidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-release')
+        $runtimeOutputPreservation = $null
+        $runtimeIsolation = $null
+        if ($owned.data.PSObject.Properties['runtimeOutput'] -and $null -ne $owned.data.runtimeOutput) {
+            $runtimeIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile ([string]$owned.data.profile) -Executable ([string]$owned.data.runtimeOutput.executable) -AccessId $AccessId
+            if (-not $runtimeIsolation.ok) {
+                throw "Task runtime-output isolation is no longer valid; refusing release: $($runtimeIsolation.errors -join '; ')"
+            }
+            $planPath = [string]$owned.data.runtimeOutput.cachePlanPath
+            $completionPath = [string]$owned.data.runtimeOutput.cacheCompletionPath
+            if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+                if (-not (Test-Path -LiteralPath $completionPath -PathType Leaf)) {
+                    throw "The task shader-cache transaction is still open. Complete it after game/MO2 shutdown before releasing the workspace: $planPath"
+                }
+                $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 40
+                $completionBinding = if ($completion.PSObject.Properties['cacheBinding']) { $completion.cacheBinding } else { $null }
+                $materializedFiles = if ($completion.PSObject.Properties['workingTree'] -and $completion.workingTree.PSObject.Properties['materializedFiles']) { [int]$completion.workingTree.materializedFiles } else { 0 }
+                if ([string]$completion.state -cne 'complete' -or
+                    -not (Test-WorkspaceSamePath ([string]$completion.planPath) $planPath) -or
+                    $null -eq $completionBinding -or
+                    [string]$completionBinding.modName -cne [string]$owned.data.runtimeOutput.modName -or
+                    -not (Test-WorkspaceSamePath ([string]$completionBinding.cachePath) ([string]$owned.data.runtimeOutput.cachePath)) -or
+                    $materializedFiles -lt 1) {
+                    throw "Shader-cache completion does not close the exact task plan: $completionPath"
+                }
+            }
+            else {
+                $unpreparedInventory = Get-WorkspaceTreeInventory -Root ([string]$owned.data.runtimeOutput.modPath)
+                $unclassified = @($unpreparedInventory.entries | Where-Object {
+                    [string]$_.relativePath -cne 'ShaderCache\.codex-vfs-sentinel.txt'
+                })
+                if ($unclassified.Count -gt 0) {
+                    throw 'The task runtime-output mod contains files without a shader-cache prepare/completion transaction. The workspace and output are retained for classification.'
+                }
+            }
+        }
         $releaseApproved = $PSCmdlet.ShouldProcess($profilePath, "select stable profile '$($owned.data.sourceProfile)' and remove exact task-owned profile")
+        if ($null -ne $runtimeIsolation) {
+            $runtimeOutputPreservation = Preserve-WorkspaceRuntimeOutput -Source ([string]$owned.data.runtimeOutput.modPath) -EvidenceRoot $releaseEvidence -WorkspaceId $WorkspaceId -WhatIf:(-not $releaseApproved)
+        }
         $profileSelection = Set-MO2SelectedProfileForRelease -Config $config -TaskProfile ([string]$owned.data.profile) -StableProfile ([string]$owned.data.sourceProfile) -EvidenceRoot $releaseEvidence -WhatIf:(-not $releaseApproved)
         if ($releaseApproved) {
             try {
@@ -468,12 +675,16 @@ try {
             $owned.data | Add-Member -NotePropertyName profileRemoved -NotePropertyValue $true -Force
             $owned.data | Add-Member -NotePropertyName ownedModsRemoved -NotePropertyValue ([bool]$CleanupOwnedMods) -Force
             $owned.data | Add-Member -NotePropertyName selectedProfileRelease -NotePropertyValue $profileSelection -Force
+            if ($null -ne $runtimeOutputPreservation) {
+                $owned.data | Add-Member -NotePropertyName runtimeOutputPreservation -NotePropertyValue $runtimeOutputPreservation -Force
+            }
             Write-WorkspaceJsonAtomic -Path $owned.path -Value $owned.data
         }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-released' }); data = @{
             workspaceId = $WorkspaceId; profile = [string]$owned.data.profile; profilePath = $profilePath
             profileName = [string]$owned.data.profile; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             selectedProfileRelease = $profileSelection; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods
+            runtimeOutputPreservation = $runtimeOutputPreservation
             releaseAccessRequired = $true; manifestPath = $owned.path
         } }
     }

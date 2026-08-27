@@ -57,6 +57,27 @@ the exact prior INI bytes and receipt, and only then removes the task profile.
 Workspace manifests and results expose `profileName`, `profileDirectory`, and
 `modListPath` while retaining the legacy `profile` and `profilePath` fields.
 
+Creation also makes one unique `Codex Runtime Output - <workspace-id>` mod,
+enables it ahead of every loose `ShaderCache` provider, writes
+`ShaderCache/.codex-vfs-sentinel.txt`, and maps the exact
+`defaults.executable` to that mod in the cloned profile's
+`[custom_overwrites]` section. Existing mappings, including mappings owned by
+unrelated executables, remain unchanged. The result returns
+`runtimeOutput.cachePrepareArguments`; pass those exact `ProfilePath`,
+`ModsPath`, `CacheModName`, and `EvidenceDirectory` values to shader-cache
+catalog `prepare` together with `-RequireMaterializedOutput` and the build's
+compatibility metadata.
+
+MO2 `prepare` and `launch` fail closed for every `Codex Task -` profile unless
+that output mapping is still exact, the task mod remains the effective enabled
+loose cache provider, and its cache plan is open and bound to the current
+modlist hash. After game and MO2 shutdown, run shader-cache catalog `complete`
+before workspace `release`. Release refuses an open transaction, a completion
+without materialized files, or unclassified output without a plan. It retains
+a hash-verified copy of the complete task output before `-CleanupOwnedMods`
+may remove the owned mod. A failure leaves the profile, output mod, and
+transaction evidence in place.
+
 `-WinningPaths` changes `register-mod` into an enabled winning-provider
 transaction. `ensure-mod-wins` can subsequently re-check and reposition only a
 mod already proven task-owned by that workspace. Winner proof intentionally

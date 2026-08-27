@@ -82,6 +82,206 @@ function Read-MO2IniFile {
     return $sections
 }
 
+function Test-MO2SamePath {
+    param([string]$Left, [string]$Right)
+
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+    return [string]::Equals(
+        [IO.Path]::GetFullPath($Left).TrimEnd('\', '/'),
+        [IO.Path]::GetFullPath($Right).TrimEnd('\', '/'),
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-MO2ShaderCacheTransactionTool {
+    $candidates = @(
+        (Join-Path (Split-Path -Parent $PSScriptRoot) 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'),
+        (Join-Path $PSScriptRoot 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1')
+    )
+    $matches = @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | ForEach-Object { [IO.Path]::GetFullPath($_) } | Select-Object -Unique)
+    if ($matches.Count -ne 1) {
+        throw "Expected exactly one shader-cache transaction controller beside the MO2 controller; found $($matches.Count)."
+    }
+    return $matches[0]
+}
+
+function Get-MO2TaskWorkspaceIsolation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$Profile,
+        [Parameter(Mandatory)][string]$Executable,
+        [string]$AccessId,
+        [switch]$RequirePreparedCache
+    )
+
+    if (-not $Profile.StartsWith('Codex Task - ', [StringComparison]::Ordinal)) {
+        return [pscustomobject][ordered]@{
+            applicable = $false; ok = $true; profile = $Profile
+            executable = $Executable; checks = @(); errors = @()
+        }
+    }
+
+    $errors = [Collections.Generic.List[string]]::new()
+    $checks = [Collections.Generic.List[object]]::new()
+    $stagingRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.storage.sessionStaging)))
+    $workspaceRoot = Join-Path $stagingRoot 'workspaces'
+    $manifests = @()
+    if (Test-Path -LiteralPath $workspaceRoot -PathType Container) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $workspaceRoot -Filter '*.json' -File -ErrorAction Stop)) {
+            try {
+                $candidate = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop)
+                if ([string]$candidate.profile -ceq $Profile) {
+                    $manifests += [pscustomobject]@{ path = $file.FullName; data = $candidate }
+                }
+            }
+            catch {
+                $errors.Add("Workspace manifest is unreadable: $($file.FullName). $($_.Exception.Message)")
+            }
+        }
+    }
+    if (@($manifests).Count -ne 1) {
+        $errors.Add("Expected exactly one owned workspace manifest for task profile '$Profile'; found $(@($manifests).Count).")
+        return [pscustomobject][ordered]@{
+            applicable = $true; ok = $false; profile = $Profile
+            executable = $Executable; workspace = $null; runtimeOutput = $null
+            cachePlan = $null; checks = @($checks); errors = @($errors)
+        }
+    }
+
+    $owned = $manifests[0]
+    $manifest = $owned.data
+    if ([string]$manifest.status -cne 'ready') {
+        $errors.Add("Task workspace status must be 'ready' before launch; observed '$($manifest.status)'.")
+    }
+    if ([string]::IsNullOrWhiteSpace($AccessId)) {
+        $errors.Add('Task workspaces require the exact explicit MO2 access lease.')
+    }
+    elseif ([string]$manifest.accessId -cne $AccessId) {
+        $errors.Add('Task workspace and MO2 session are owned by different access leases.')
+    }
+    if (-not $manifest.PSObject.Properties['runtimeOutput'] -or $null -eq $manifest.runtimeOutput) {
+        $errors.Add('Task workspace has no owned runtime-output contract. Recreate it with the current workspace controller.')
+        return [pscustomobject][ordered]@{
+            applicable = $true; ok = $false; profile = $Profile
+            executable = $Executable; workspace = $owned; runtimeOutput = $null
+            cachePlan = $null; checks = @($checks); errors = @($errors)
+        }
+    }
+
+    $output = $manifest.runtimeOutput
+    $profilesRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory)))
+    $modsRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.modsDirectory)))
+    $expectedProfilePath = Join-Path $profilesRoot $Profile
+    $expectedModPath = Join-Path $modsRoot ([string]$output.modName)
+    $expectedCachePath = Join-Path $expectedModPath 'ShaderCache'
+    $profilePath = [string]$manifest.profilePath
+    $modPath = [string]$output.modPath
+    $cachePath = [string]$output.cachePath
+
+    foreach ($check in @(
+        [pscustomobject]@{ name = 'profile-path'; passed = Test-MO2SamePath $profilePath $expectedProfilePath },
+        [pscustomobject]@{ name = 'runtime-output-path'; passed = Test-MO2SamePath $modPath $expectedModPath },
+        [pscustomobject]@{ name = 'shader-cache-path'; passed = Test-MO2SamePath $cachePath $expectedCachePath },
+        [pscustomobject]@{ name = 'runtime-output-directory'; passed = Test-Path -LiteralPath $expectedModPath -PathType Container },
+        [pscustomobject]@{ name = 'shader-cache-directory'; passed = Test-Path -LiteralPath $expectedCachePath -PathType Container },
+        [pscustomobject]@{ name = 'executable-binding'; passed = [string]$output.executable -ceq $Executable }
+    )) {
+        $checks.Add($check)
+        if (-not $check.passed) { $errors.Add("Task runtime-output check failed: $($check.name).") }
+    }
+
+    $initialNameMatches = @($manifest.initialModNames | Where-Object { [string]$_ -ceq [string]$output.modName })
+    if (@($initialNameMatches).Count -ne 0) { $errors.Add('The runtime-output mod existed before the workspace and is not task-owned.') }
+    $registeredMatches = @($manifest.registeredMods | Where-Object {
+        [string]$_.name -ceq [string]$output.modName -and (Test-MO2SamePath ([string]$_.path) $expectedModPath)
+    })
+    if (@($registeredMatches).Count -ne 1 -or -not [bool]$registeredMatches[0].enabled) {
+        $errors.Add('The runtime-output mod is not the one enabled task-owned registration.')
+    }
+
+    $modListPath = Join-Path $expectedProfilePath 'modlist.txt'
+    $enabledLines = if (Test-Path -LiteralPath $modListPath -PathType Leaf) {
+        @(Get-Content -LiteralPath $modListPath | Where-Object { $_ -ceq ('+' + [string]$output.modName) })
+    }
+    else { @() }
+    if (@($enabledLines).Count -ne 1) { $errors.Add('The runtime-output mod is not enabled exactly once in the task profile.') }
+    $providerResult = $null
+    if (Test-Path -LiteralPath $modListPath -PathType Leaf) {
+        try {
+            $transactionTool = Resolve-MO2ShaderCacheTransactionTool
+            $providerJson = & $transactionTool providers -ProfilePath $modListPath -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -NoExit -Confirm:$false
+            $providerResult = ConvertFrom-MO2JsonText ([string]$providerJson)
+            $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
+            if (-not $providerResult.ok -or $null -eq $winner -or
+                [string]$winner.modName -cne [string]$output.modName -or
+                -not (Test-MO2SamePath ([string]$winner.cachePath) $expectedCachePath)) {
+                $observed = if ($null -eq $winner) { '<none>' } else { [string]$winner.modName }
+                $errors.Add("The task runtime-output mod is not the effective enabled ShaderCache provider; observed '$observed'.")
+            }
+        }
+        catch { $errors.Add("Could not verify the current ShaderCache provider: $($_.Exception.Message)") }
+    }
+
+    $settingsPath = Join-Path $expectedProfilePath 'settings.ini'
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        $errors.Add("Task profile settings do not exist: $settingsPath")
+    }
+    else {
+        $settings = Read-MO2IniFile -Path $settingsPath
+        $mappingMatches = if ($settings.Contains('custom_overwrites')) {
+            @($settings['custom_overwrites'].Keys | Where-Object { [string]$_ -ceq $Executable })
+        }
+        else { @() }
+        if (@($mappingMatches).Count -ne 1 -or [string]$settings['custom_overwrites'][$Executable] -cne [string]$output.modName) {
+            $errors.Add("Task profile does not map executable '$Executable' to its owned runtime-output mod.")
+        }
+    }
+
+    $planPath = Join-Path ([string]$output.cacheEvidenceDirectory) 'shader-cache-task.plan.json'
+    $completionPath = Join-Path ([string]$output.cacheEvidenceDirectory) 'shader-cache-task.completion.json'
+    $plan = $null
+    if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+        try { $plan = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $planPath -Raw -ErrorAction Stop) }
+        catch { $errors.Add("Shader-cache plan is unreadable: $planPath. $($_.Exception.Message)") }
+    }
+    elseif ($RequirePreparedCache) {
+        $errors.Add("Task launch requires the bound shader-cache prepare plan: $planPath")
+    }
+
+    if ($null -ne $plan) {
+        $binding = if ($plan.PSObject.Properties['cacheBinding']) { $plan.cacheBinding } else { $null }
+        if ([string]$plan.state -cne 'prepared' -or $null -eq $binding -or
+            [string]$binding.mode -cne 'mo2-winning-loose-provider' -or
+            -not (Test-MO2SamePath ([string]$binding.profilePath) $modListPath) -or
+            -not (Test-MO2SamePath ([string]$binding.modsPath) $modsRoot) -or
+            [string]$binding.modName -cne [string]$output.modName -or
+            -not (Test-MO2SamePath ([string]$binding.modRoot) $expectedModPath) -or
+            -not (Test-MO2SamePath ([string]$binding.cachePath) $expectedCachePath) -or
+            $null -eq $providerResult -or
+            [string]$binding.profileSha256 -cne [string]$providerResult.data.profileSha256 -or
+            -not [bool]$plan.requireMaterializedOutput) {
+            $errors.Add('Shader-cache plan is not prepared with the exact task profile, winning output mod, and RequireMaterializedOutput contract.')
+        }
+        if ($RequirePreparedCache -and (Test-Path -LiteralPath $completionPath -PathType Leaf)) {
+            $errors.Add('The task shader-cache transaction is already complete and cannot authorize another launch.')
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        applicable = $true; ok = $errors.Count -eq 0; profile = $Profile
+        executable = $Executable; workspace = $owned; runtimeOutput = $output
+        cachePlan = [pscustomobject][ordered]@{
+            required = [bool]$RequirePreparedCache; path = $planPath
+            exists = Test-Path -LiteralPath $planPath -PathType Leaf
+            completionPath = $completionPath
+            completed = Test-Path -LiteralPath $completionPath -PathType Leaf
+        }
+        checks = @($checks); errors = @($errors)
+    }
+}
+
 function ConvertFrom-MO2ByteArrayValue {
     param([AllowNull()][string]$Value)
 
@@ -788,18 +988,25 @@ function New-MO2DurableSessionController {
     $configDirectory = Join-Path $controllerDirectory 'config'
     $configPath = Join-Path $configDirectory 'machine.local.json'
     $receiptPath = Join-Path $controllerDirectory 'controller-bundle.json'
-    $sourceFiles = @('Invoke-MO2Control.ps1', 'ConfigResolution.psm1', 'MO2Control.psm1')
+    $sourceFiles = @(
+        [pscustomobject]@{ source = (Join-Path $PSScriptRoot 'Invoke-MO2Control.ps1'); relativePath = 'Invoke-MO2Control.ps1' },
+        [pscustomobject]@{ source = (Join-Path $PSScriptRoot 'ConfigResolution.psm1'); relativePath = 'ConfigResolution.psm1' },
+        [pscustomobject]@{ source = (Join-Path $PSScriptRoot 'MO2Control.psm1'); relativePath = 'MO2Control.psm1' },
+        [pscustomobject]@{ source = (Join-Path (Split-Path -Parent $PSScriptRoot) 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'); relativePath = 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1' }
+    )
     if ($WhatIf) {
-        return [pscustomobject][ordered]@{ controllerPath = $entryPath; configPath = $configPath; receiptPath = $receiptPath; durable = $true; wouldCopy = $sourceFiles }
+        return [pscustomobject][ordered]@{ controllerPath = $entryPath; configPath = $configPath; receiptPath = $receiptPath; durable = $true; wouldCopy = @($sourceFiles | ForEach-Object relativePath) }
     }
     New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
     $files = @()
-    foreach ($name in $sourceFiles) {
-        $source = Join-Path $PSScriptRoot $name
-        $target = Join-Path $controllerDirectory $name
+    foreach ($sourceFile in $sourceFiles) {
+        $source = [string]$sourceFile.source
+        $target = Join-Path $controllerDirectory ([string]$sourceFile.relativePath)
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "MO2 session controller source is missing: $source" }
+        $targetDirectory = Split-Path -Parent $target
+        if (-not (Test-Path -LiteralPath $targetDirectory -PathType Container)) { New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null }
         Copy-Item -LiteralPath $source -Destination $target
-        $files += [pscustomobject][ordered]@{ name = $name; path = $target; sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
+        $files += [pscustomobject][ordered]@{ name = [string]$sourceFile.relativePath; path = $target; sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
     }
     Write-MO2JsonAtomic -Path $configPath -Value $Config -CreateNew
     $files += [pscustomobject][ordered]@{ name = 'config/machine.local.json'; path = $configPath; sha256 = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash }
@@ -1841,6 +2048,10 @@ function Invoke-MO2Prepare {
 
     $profileName = [string]$validation.data.requested.profile
     $executableName = [string]$validation.data.requested.executable
+    $runtimeOutputIsolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile $profileName -Executable $executableName -AccessId $AccessId -RequirePreparedCache
+    if (-not $runtimeOutputIsolation.ok) {
+        return New-MO2ActionResult -Config $Config -Command 'prepare' -Ok $false -State 'blocked' -Data @{ validation = $validation; runtimeOutputIsolation = $runtimeOutputIsolation } -Warnings $validation.warnings -Errors $runtimeOutputIsolation.errors
+    }
     $safeLabel = ConvertTo-MO2SafeLabel $Label
     $sessionId = '{0}-{1}-{2}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')), $safeLabel, ([guid]::NewGuid().ToString('N').Substring(0, 8))
     $stagingRoot = Resolve-MO2ControlPath ([string]$Config.storage.sessionStaging)
@@ -1883,6 +2094,7 @@ function Invoke-MO2Prepare {
         controllerPath = [string]$controller.controllerPath
         controllerConfigPath = [string]$controller.configPath
         controllerReceiptPath = [string]$controller.receiptPath
+        runtimeOutputIsolation = $runtimeOutputIsolation
     }
     $lock = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
@@ -2081,6 +2293,10 @@ function Invoke-MO2Launch {
     $validation = Invoke-MO2Validate -Config $Config -Profile ([string]$lockData.profile) -Executable ([string]$lockData.executable) -RequireClosed:(-not $resumeExistingMO2) -OwnedSessionId $SessionId
     if (-not $validation.ok) {
         return New-MO2ActionResult -Config $Config -Command 'launch' -Ok $false -State 'blocked' -Data @{ validation = $validation; lock = $owned } -Warnings $validation.warnings -Errors $validation.errors
+    }
+    $runtimeOutputIsolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile ([string]$lockData.profile) -Executable ([string]$lockData.executable) -AccessId ([string]$lockData.accessId) -RequirePreparedCache
+    if (-not $runtimeOutputIsolation.ok) {
+        return New-MO2ActionResult -Config $Config -Command 'launch' -Ok $false -State 'blocked' -Data @{ validation = $validation; lock = $owned; runtimeOutputIsolation = $runtimeOutputIsolation } -Warnings $validation.warnings -Errors $runtimeOutputIsolation.errors
     }
     if ($resumeExistingMO2) {
         $mo2Processes = @($validation.data.processes.mo2)
@@ -2801,4 +3017,4 @@ function Get-MO2ControlHelp {
     }
 }
 
-Export-ModuleMember -Function Read-MO2ControlConfig, Invoke-MO2Inspect, Invoke-MO2Validate, Invoke-MO2RequestAccess, Invoke-MO2AccessStatus, Invoke-MO2RenewAccess, Invoke-MO2ReleaseAccess, Invoke-MO2RecoverAccess, Invoke-MO2Prepare, Invoke-MO2Open, Invoke-MO2Launch, Invoke-MO2Status, Invoke-MO2StopGame, Invoke-MO2TerminateGame, Invoke-MO2Close, Invoke-MO2RecoverClose, Invoke-MO2RecoverRootBuilder, Invoke-MO2Stop, Invoke-MO2Terminate, Invoke-MO2Release, Get-MO2ControlHelp
+Export-ModuleMember -Function Read-MO2ControlConfig, Get-MO2TaskWorkspaceIsolation, Invoke-MO2Inspect, Invoke-MO2Validate, Invoke-MO2RequestAccess, Invoke-MO2AccessStatus, Invoke-MO2RenewAccess, Invoke-MO2ReleaseAccess, Invoke-MO2RecoverAccess, Invoke-MO2Prepare, Invoke-MO2Open, Invoke-MO2Launch, Invoke-MO2Status, Invoke-MO2StopGame, Invoke-MO2TerminateGame, Invoke-MO2Close, Invoke-MO2RecoverClose, Invoke-MO2RecoverRootBuilder, Invoke-MO2Stop, Invoke-MO2Terminate, Invoke-MO2Release, Get-MO2ControlHelp

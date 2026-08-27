@@ -21,6 +21,7 @@ try {
     foreach ($p in @($source, (Join-Path $source 'saves'), $loaderMod, (Join-Path $loaderMod 'SKSE\Plugins'), (Join-Path $mo2 'overwrite'), (Join-Path $mo2 'rb'), $sessions, (Join-Path $fixture 'archive'))) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
     '+Loader' | Set-Content -LiteralPath (Join-Path $source 'modlist.txt') -Encoding utf8
     '*Skyrim.esm' | Set-Content -LiteralPath (Join-Path $source 'plugins.txt') -Encoding utf8
+    "[custom_overwrites]`r`nSynthesis=Synthesis Patch (SFW)`r`n" | Set-Content -LiteralPath (Join-Path $source 'settings.ini') -Encoding utf8 -NoNewline
     'do-not-copy' | Set-Content -LiteralPath (Join-Path $source 'saves\unknown.ess') -Encoding utf8
     'known-good-save' | Set-Content -LiteralPath (Join-Path $source 'saves\Save2_KnownGood.ess') -Encoding utf8
     'known-good-cosave' | Set-Content -LiteralPath (Join-Path $source 'saves\Save2_KnownGood.skse') -Encoding utf8
@@ -60,6 +61,14 @@ try {
     if (-not (Test-Path -LiteralPath $expectedManifestPath -PathType Leaf)) { throw 'Workspace storage path did not expand its environment variable.' }
     if ($created.data.profileName -ne $created.data.profile -or $created.data.profileDirectory -ne $created.data.profilePath -or $created.data.modListPath -ne (Join-Path $created.data.profilePath 'modlist.txt')) { throw 'Workspace profile identity fields are not explicit and canonical.' }
     if (Test-Path -LiteralPath (Join-Path $created.data.profilePath 'saves\unknown.ess')) { throw 'Workspace inherited an unknown save.' }
+    if (-not (Test-Path -LiteralPath $created.data.runtimeOutput.sentinelPath -PathType Leaf)) { throw 'Workspace did not create its owned ShaderCache sentinel.' }
+    if ((Get-Content -LiteralPath (Join-Path $created.data.profilePath 'settings.ini') -Raw) -notmatch "(?m)^Test=$([regex]::Escape([string]$created.data.runtimeOutput.modName))\r?$") { throw 'Workspace did not bind the exact runtime executable to its owned output mod.' }
+    if ((Get-Content -LiteralPath (Join-Path $created.data.profilePath 'settings.ini') -Raw) -notmatch '(?m)^Synthesis=Synthesis Patch \(SFW\)\r?$') { throw 'Workspace replaced an unrelated executable output mapping.' }
+    if (@(Get-Content -LiteralPath $created.data.modListPath | Where-Object { $_ -ceq ('+' + [string]$created.data.runtimeOutput.modName) }).Count -ne 1) { throw 'Workspace runtime-output mod is not enabled exactly once.' }
+    $initialIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId
+    if (-not $initialIsolation.ok -or $initialIsolation.cachePlan.exists) { throw 'Fresh workspace runtime-output isolation was not valid and unprepared.' }
+    $unpreparedSession = Invoke-MO2Prepare -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -Label fixture-unprepared -WhatIf
+    if ($unpreparedSession.ok -or @($unpreparedSession.errors | Where-Object { $_ -match 'shader-cache prepare plan' }).Count -ne 1) { throw 'MO2 prepare did not fail closed before the bound cache plan existed.' }
     $verified = & $entry create -ConfigPath $configPath -AccessId $accessId -Label verified -SavePolicy VerifiedFixture -Confirm:$false | ConvertFrom-Json
     if (-not $verified.ok -or -not $verified.data.copiedVerifiedSaves -or $verified.data.saveFixture.id -ne 'interior') { throw 'Verified fixture workspace was not created from the configured default.' }
     foreach ($name in @('Save2_KnownGood.ess', 'Save2_KnownGood.skse')) {
@@ -79,8 +88,46 @@ try {
     if (-not $ensured.ok -or $ensured.state -ne 'winner-verified') { throw 'Workspace could not re-verify its task-owned winning mod.' }
     $preexisting = & $entry register-mod -ConfigPath $configPath -AccessId $accessId -WorkspaceId $created.data.workspaceId -ModName Loader -ModDirectory $loaderMod -NoExit -Confirm:$false | ConvertFrom-Json
     if ($preexisting.ok) { throw 'Workspace claimed a pre-existing mod.' }
+    $cacheEvidence = [string]$created.data.runtimeOutput.cacheEvidenceDirectory
+    New-Item -ItemType Directory -Path $cacheEvidence -Force | Out-Null
+    $planPath = [string]$created.data.runtimeOutput.cachePlanPath
+    [ordered]@{
+        contractVersion='1.1.0';state='prepared';cachePath=[string]$created.data.runtimeOutput.cachePath
+        cacheBinding=[ordered]@{
+            mode='mo2-winning-loose-provider';profilePath=[string]$created.data.modListPath
+            profileSha256=(Get-FileHash -LiteralPath $created.data.modListPath -Algorithm SHA256).Hash
+            modsPath=$mods;relativeCachePath='ShaderCache';modName=[string]$created.data.runtimeOutput.modName
+            modRoot=[string]$created.data.runtimeOutput.modPath;cachePath=[string]$created.data.runtimeOutput.cachePath
+        }
+        requireMaterializedOutput=$true
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $planPath -Encoding utf8
+    $modListBytes = [IO.File]::ReadAllBytes([string]$created.data.modListPath)
+    Add-Content -LiteralPath $created.data.modListPath -Value '# plan drift' -Encoding utf8
+    $staleIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
+    [IO.File]::WriteAllBytes([string]$created.data.modListPath, $modListBytes)
+    if ($staleIsolation.ok -or @($staleIsolation.errors | Where-Object { $_ -match 'exact task profile' }).Count -ne 1) { throw 'A cache plan with a stale modlist hash authorized launch.' }
+    $preparedIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
+    if (-not $preparedIsolation.ok) { throw "Prepared task isolation did not validate: $($preparedIsolation.errors -join '; ')" }
+    $preparedSession = Invoke-MO2Prepare -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -Label fixture-prepared -WhatIf
+    if (-not $preparedSession.ok -or $preparedSession.state -ne 'dry-run') { throw 'MO2 prepare did not accept the exact bound open cache plan.' }
+    $openRelease = & $entry release -ConfigPath $configPath -AccessId $accessId -WorkspaceId $created.data.workspaceId -CleanupOwnedMods -NoExit -Confirm:$false | ConvertFrom-Json
+    if ($openRelease.ok -or -not (Test-Path -LiteralPath $created.data.profilePath -PathType Container) -or -not (Test-Path -LiteralPath $created.data.runtimeOutput.modPath -PathType Container)) { throw 'Workspace release did not retain an open cache transaction and its owned paths.' }
+    [ordered]@{
+        contractVersion='1.1.0';state='complete';planPath=$planPath
+        cacheBinding=[ordered]@{modName=[string]$created.data.runtimeOutput.modName;cachePath=[string]$created.data.runtimeOutput.cachePath}
+        workingTree=[ordered]@{materializedFiles=0}
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $created.data.runtimeOutput.cacheCompletionPath -Encoding utf8
+    $emptyRelease = & $entry release -ConfigPath $configPath -AccessId $accessId -WorkspaceId $created.data.workspaceId -CleanupOwnedMods -NoExit -Confirm:$false | ConvertFrom-Json
+    if ($emptyRelease.ok -or -not (Test-Path -LiteralPath $created.data.runtimeOutput.modPath -PathType Container)) { throw 'Workspace release accepted a cache completion without materialized output.' }
+    [ordered]@{
+        contractVersion='1.1.0';state='complete';planPath=$planPath
+        cacheBinding=[ordered]@{modName=[string]$created.data.runtimeOutput.modName;cachePath=[string]$created.data.runtimeOutput.cachePath}
+        workingTree=[ordered]@{materializedFiles=1}
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $created.data.runtimeOutput.cacheCompletionPath -Encoding utf8
     $released = & $entry release -ConfigPath $configPath -AccessId $accessId -WorkspaceId $created.data.workspaceId -CleanupOwnedMods -Confirm:$false | ConvertFrom-Json
     if (-not $released.ok -or (Test-Path -LiteralPath $created.data.profilePath) -or (Test-Path -LiteralPath $newMod)) { throw "Workspace cleanup did not remove only its owned artifacts: $($released | ConvertTo-Json -Depth 12 -Compress)" }
+    if (Test-Path -LiteralPath $created.data.runtimeOutput.modPath -PathType Container) { throw 'Workspace cleanup retained its already-preserved task runtime-output mod.' }
+    if (-not (Test-Path -LiteralPath $released.data.runtimeOutputPreservation.receiptPath -PathType Leaf) -or -not (Test-Path -LiteralPath $released.data.runtimeOutputPreservation.preservedPath -PathType Container)) { throw 'Workspace release did not preserve exact runtime-output evidence before cleanup.' }
     if ((Get-Content -LiteralPath $ini -Raw) -notmatch 'selected_profile=@ByteArray\(Mad God Stable\)') { throw 'Workspace release did not select the stable source before deleting the task profile.' }
     if (-not (Test-Path -LiteralPath $released.data.selectedProfileRelease.backupPath -PathType Leaf) -or -not (Test-Path -LiteralPath $released.data.selectedProfileRelease.receiptPath -PathType Leaf)) { throw 'Workspace release did not retain exact INI backup and receipt evidence.' }
     if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $loaderMod)) { throw 'Workspace cleanup damaged stable state.' }
@@ -88,7 +135,7 @@ try {
     if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace cleanup failed.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     if (-not $releasedAccess.ok) { throw 'Access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=28; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=41; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally {
     $env:SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT = $previousFixtureRoot

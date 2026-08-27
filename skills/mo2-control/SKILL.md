@@ -67,11 +67,14 @@ are:
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
-   If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
-   and Skyrim are still closed: create a task-owned winning loose cache mod,
-   bind catalog `prepare` to its exact profile/provider with materialization
-   required, then catalog `complete` after shutdown and before workspace
-   release. A missing-output failure retains the task mod and open transaction.
+   Every new workspace already creates and enables its unique runtime-output
+   mod. While MO2 and Skyrim are still closed, apply `$shader-cache-control`
+   and pass the workspace's exact `runtimeOutput.cachePrepareArguments` to
+   catalog `prepare`, together with the build compatibility metadata. Do not
+   create a second cache mod or substitute a shared output provider. MO2
+   prepare/launch requires that bound plan and `RequireMaterializedOutput`.
+   Run catalog `complete` after shutdown and before workspace release; missing
+   output retains the profile, task mod, and open transaction.
 6. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
 7. Use `-StartOnly` when the outer host cannot safely wait for UI/game

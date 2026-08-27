@@ -41,6 +41,14 @@ Validation also resolves a registered executable stored under MO2's `mods`
 directory back to its owning mod. Launch is blocked when that exact mod is
 disabled, missing, or ambiguous in the requested profile.
 
+For profiles named `Codex Task - ...`, `prepare` and `launch` additionally
+verify the workspace controller's owned runtime-output contract. The exact
+executable must map to the unique task mod, that mod must remain the effective
+enabled loose `ShaderCache` provider, and an open shader-cache plan must match
+the current profile hash and require materialized output. Legacy task profiles
+without this contract must be recreated; ordinary non-task profiles are not
+subject to this workspace-only gate.
+
 ## Quick start
 
 Read `APPROVALS.md` before submitting an elevated command. Controllers report

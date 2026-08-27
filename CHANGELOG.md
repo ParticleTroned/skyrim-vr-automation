@@ -31,10 +31,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Add exact-identity AMD64 live-thread context capture with bit-preserving
   pointer/register conversions validated under Windows PowerShell and
   PowerShell 7.
-- Bind task shader caches to the exact winning MO2 loose provider and fail
-  completion closed when no physical compiled output materializes, preserving
-  the provider and open transaction for diagnosis instead of deleting an empty
-  task mod as a successful cache save.
+- Give every task profile a unique executable-bound runtime-output mod, require
+  its current winning loose cache provider and materialization plan at MO2
+  prepare/launch, and preserve its complete output on release. Cache completion
+  and workspace cleanup now fail closed when output is missing, unclassified,
+  stale, or still transactionally open.
 - Add the repository-local Git launcher required by agent policy, with
   command-scoped `safe.directory` handling and exact exit-code propagation.
 - Prefer direct plugin MCP tools for live DevBench work, retaining the bundled
