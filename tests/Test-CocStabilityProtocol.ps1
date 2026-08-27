@@ -35,6 +35,7 @@ function Assert-Protocol {
 
 $skill = Get-Content -LiteralPath $sourceSkillPath -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocolPath -Raw
+$normalizedSkill = [regex]::Replace($skill, '\s+', ' ')
 
 foreach ($requiredSkillText in @(
     'When Skyrim reaches its main menu/load window',
@@ -58,7 +59,7 @@ foreach ($requiredSkillText in @(
     'actual failed tool step',
     'make no further main-thread calls'
 )) {
-    Assert-Protocol $skill.Contains(
+    Assert-Protocol $normalizedSkill.Contains(
         $requiredSkillText,
         [StringComparison]::Ordinal
     ) "COC skill is missing: $requiredSkillText"
