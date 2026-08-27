@@ -1,5 +1,53 @@
 # Deadline-driven COC stability protocol
 
+## Pre-session Codex and evidence readiness
+
+Complete this phase before asking the user to load Skyrim. Do not defer it into
+the live start window.
+
+1. Locate Community Shaders' canonical `tools/ghidra-mcp-control.ps1` and call
+   `status`. Require `ok: true`, `state: ready`, `managed: true`,
+   `endpointReady: true`, and `listenerOwnedBySession: true`. If it is stopped,
+   call `start`; it reuses the persistent project and saved paths. Only a first
+   setup may supply the GitHub `ghidra_*_PUBLIC` installation, Java home, and
+   exact analysis program for the intended build.
+2. Inspect the current Codex tool registry and require the DevBench and Ghidra
+   MCP tools to be present. A server shown as enabled in settings is not proof
+   that its tools were attached to this window.
+3. Make one harmless Ghidra MCP health, version, or project-list call. The
+   installed GitHub files and a ready controller receipt are not substitutes
+   for a successful call through the current Codex window.
+4. Run `coc-evidence-control inspect`. Require its CDB/WinDbg, ProcDump, and
+   free-space checks to pass.
+5. Run `coc-evidence-control arm` for `SkyrimVR.exe` and retain the returned
+   state path, collector PID/start time, capture directory, and tool hashes.
+   `armed-waiting` is the expected state before Skyrim starts.
+
+The repository Ghidra controller exclusively owns the persistent headless
+GhidrAssistMCP server and project. The evidence controller discovers the
+installed GitHub `codex-ghidra-live` layout but owns only ProcDump and CDB.
+ProcDump is the live collector because it can already be waiting for the game
+and can capture both an unhandled exception and a Windows hang. It uses full
+dumps, a two-dump limit, and no normal-exit or first-chance trigger. CDB/WinDbg
+and Ghidra MCP are the post-capture analyzers.
+
+If either MCP tool is absent, the Ghidra MCP call fails, or local evidence
+readiness fails, stop before the game is loaded. Start the managed Ghidra MCP
+server through the repository controller as needed, restart Codex so MCP tools
+are attached, and repeat this phase. Do not diagnose a missing installation
+merely from a missing tool.
+
+A readiness receipt is reusable only while all of these remain true:
+
+- the same Codex window still exposes both MCP tool families;
+- the Ghidra receipt still proves the same managed process and owned listener;
+- the owned ProcDump PID and start time still match the state receipt;
+- `coc-evidence-control status` reports a live monitor;
+- after Skyrim starts, exactly the intended game PID is observed.
+
+A new Codex window, missing tool, exited collector, or new Skyrim PID requires
+the corresponding recheck or re-arm before another live trigger.
+
 ## Fast start-cell establishment
 
 At the moment the user confirms Skyrim VR is in-game, immediately queue one
@@ -9,16 +57,19 @@ async server scenario whose only steps are a 10,000 ms wait followed by exactly:
 coc WindhelmExterior01
 ```
 
-Queue that deadline before any identity, status, capability, schema, or capture
-call. While the server owns the 10-second clock, concurrently read the runtime
-identity and exact CSX producer Build ID. Do not await one read before starting
-the other, and do not add work after both finish. These reads may complete
-early or late, but they never postpone the scheduled COC.
+Queue that deadline before identity, status, capability, schema, or capture
+calls. While the server owns the 10-second clock, concurrently read runtime
+identity and the exact CSX producer Build ID. Do not await one read before
+starting the other, and do not add work after both finish. These reads may
+complete early or late, but never postpone the scheduled COC.
 
 If the server does not accept the timed scenario, stop without substituting a
 client sleep. After the COC step returns, wait for the load event and take one
-exact-cell scene observation. Start-cell establishment is not measured and
-does not yet assert render or stereo stability.
+exact-cell scene observation. Start-cell establishment is not measured.
+
+Call `coc-evidence-control status` off the game control plane and bind the
+collector receipt to the observed Skyrim PID. Do not add this local check ahead
+of the already-scheduled Windhelm COC.
 
 ## One-time post-load fixture gate
 
@@ -31,110 +82,103 @@ Once Windhelm is loaded, invoke the direct `communityshaders.menu` tool once:
 }
 ```
 
-Require this receipt:
+Require:
 
 - `ready: true`, `promptRequired: false`, and `persisted: false`;
-- `after.vr` and `after.inGame` are `true`;
+- `after.vr` and `after.inGame` are true;
 - developer mode is active;
 - foveated vendor dispatch is enabled;
-- FOV center area is `0.3`;
-- periphery TAA is enabled with center area `0.3` and outer scale `0.7`;
-- VR FPS Stabilizer is startup-active for the session.
+- FOV center area is 0.3;
+- periphery TAA is enabled with center area 0.3 and outer scale 0.7;
+- VR FPS Stabilizer was startup-active for this session.
 
 `prepare_coc` may idempotently correct developer mode and the FOV/TAA fixture
-in memory. It must not save settings. Call it exactly once; do not repeat it in
-the baseline or measured assay.
+in memory. It must not save settings. Call it exactly once.
 
-VR FPS Stabilizer exclusively owns all DLSS/upscaling changes. Never call
+VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Never call
 `communityshaders.renderscale` with `apply`, and never change method, quality,
 preset, render scale, or dynamic policy through a menu or console command. The
-protocol only observes and validates the profile selected by Stabilizer.
+protocol observes the profile selected by Stabilizer.
 
-If this one-time action is missing, Stabilizer was not startup-active, or the
-runtime fixture cannot be corrected, preserve the receipt and stop before
-measurement because the assay fixture itself was never established.
+This fixture receipt is the only hard pre-measurement gate. If the action is
+missing, Stabilizer was not startup-active, or the runtime fixture cannot be
+corrected, preserve the receipt and stop because the controlled fixture was
+never established.
 
-## Baseline and profile fixture
+## Bounded parallel baseline
 
-After the gate, launch one parallel baseline bundle containing the exact scene,
-the public upscaling snapshot, render-scale status, GPU telemetry status, and
-any already-configured CSX image capture. Do not serialize these independent
-reads. Do not probe for, install, or retry an optional capture provider on the
-critical path; a missing provider is recorded while the user's in-headset
-visual check and CSX two-eye fidelity evidence remain authoritative.
+Start one monotonic 10-second watchdog immediately when the successful
+`prepare_coc` receipt arrives. In the same orchestration cell, launch one
+parallel bundle containing:
 
-Require the exact cell, loaded player, stable lifecycle, expected
-Stabilizer-selected profile, correct render/display dimensions, and applicable
-two-eye presentation and fidelity evidence. Parallelism changes only latency,
-never the fidelity predicate. This is the only pre-assay image-stability gate.
+- exact scene/player state;
+- the public upscaling snapshot and render-scale lifecycle/status;
+- render-scale stress, CPU telemetry, and GPU telemetry status;
+- already-configured CSX image capture, when available.
 
-Use the approved Stabilizer fixture to define the expected profile for both
-`WindhelmExterior01` and `WhiterunDragonsreach`. Do not derive a new target by
-changing CSX. A later mismatch is recorded against the expected per-cell
-profile and does not end the assay.
+Do not serialize these reads. Do not perform capability discovery, schema
+search, capture-provider probing, installation, retries, or a second status
+chain. Missing optional capture remains evidence; the in-headset visual check
+and CSX two-eye evidence remain valid fidelity inputs.
 
-## Diagnostic sessions
+Use the approved Stabilizer fixture to define the expected profile for
+`WindhelmExterior01` and `WhiterunDragonsreach`. Never derive a target by
+changing CSX. Record exact cell, lifecycle, requested/effective/stable profiles,
+render/display dimensions, and two-eye presentation/fidelity.
 
-Use the status records already returned by the parallel baseline bundle to
-inspect render-scale stress, CPU telemetry, and GPU telemetry once. Do not issue
-a second status chain and do not take over an active capture. Preserve retained
-stopped-session evidence.
+If the complete bundle proves the expected baseline before the watchdog, start
+the measured assay immediately. Otherwise, when the watchdog reaches 10
+seconds, start the assay with the latest completed evidence. A slow, missing,
+or faulty baseline value is an anomaly, not permission to delay or cancel the
+20-transition history.
 
-Start all diagnostics in one server setup scenario before transition 1. Within
-each diagnostic, preserve reset-before-start ordering:
+The only diagnostic ownership exception is an already-active CPU, GPU, or
+stress session not owned by this run. Do not take it over. Preserve its receipt
+and classify the assay as interrupted because atomic run ownership cannot be
+established.
 
-1. render-scale stress `reset` then `start`; retain `sessionId`;
-2. `cpu_performance_reset` then `cpu_performance_start`; retain its `sessionId`;
-3. `gpu_performance_reset` then `gpu_performance_start`; retain its nonnegative
-   `startFrame`.
-
-Keep all three sessions continuous across the complete assay. Do not restart
-them between transitions and do not enable the readback probe.
-
-## Deadline-driven measured assay
+## Atomic diagnostics and measured assay
 
 The measured run starts in `WindhelmExterior01`. Run exactly 20 alternating
-transitions: odd ordinals target `WhiterunDragonsreach`; even ordinals target
+transitions: odd ordinals target `WhiterunDragonsreach` and even ordinals target
 `WindhelmExterior01`.
 
-Use one async server-side scenario containing the complete transition sequence
-so client round trips cannot create idle gaps. Set `continueOnError: true`
-intentionally: every imperfect result or step error is assay evidence, and the
-bounded 20-transition batch must not be rejected as fail-fast. For every
-ordinal:
+Use one async server scenario for setup and the complete transition sequence:
 
-1. call `qualification_begin` with a unique transition ID and one run owner ID;
-2. place `qualification_dispatch` immediately adjacent to the COC step with no
-   intervening action, then dispatch exactly one `coc <target>`;
-3. call `qualification_wait` once with the same ownership pair, exact target
-   cell, expected Stabilizer profile, and `timeoutMs: 10000`.
+1. render-scale stress `reset` then `start`; retain its `sessionId`;
+2. for transition 1, call `qualification_begin` with a unique transition ID and
+   run owner ID;
+3. call `qualification_dispatch` with
+   `startPerformanceTelemetry: true` immediately adjacent to exactly one COC;
+4. call `qualification_wait` once with the same ownership pair, exact target
+   cell, expected Stabilizer profile, and `timeoutMs: 10000`;
+5. repeat begin, adjacent dispatch plus one COC, and one waiter for transitions
+   2 through 20, omitting `startPerformanceTelemetry` after transition 1.
 
-The measured transition timer begins at the COC command. It excludes
-`qualification_begin`, diagnostic setup, and all other preparation. The
-adjacent dispatch marker arms the server QPC clock at that command boundary;
-report the measurement as COC-to-first-stable or COC-to-deadline latency.
+Do not issue separate `cpu_performance_reset`, `cpu_performance_start`,
+`gpu_performance_reset`, or `gpu_performance_start` actions. The first dispatch
+atomically resets/starts both performance captures on its dispatch frame and
+returns the CPU session ID and GPU start frame used for guarded cleanup.
 
-Advance immediately when the waiter returns a coherent stable state. If it
-reaches the 10-second deadline, preserve the final observation and advance
-immediately after the timed-out waiter releases its ownership. Do not add fixed
-inter-transition waits, menu checks, or client-side polling.
+The adjacent dispatch marker defines the first COC command boundary. Therefore
+the CPU window, GPU window, and transition timer exclude the Windhelm settle,
+fixture correction, baseline, stress setup, and client latency. Report only
+this first-COC-through-final-transition interval as assay performance data.
 
-A timeout, exact-profile mismatch, lifecycle delay, fidelity fault, or
-presentation fault is a normal anomaly receipt. It affects the final verdict,
-but the remaining transitions still run. This deliberately lets a faulty build
-accumulate a useful error history.
+Set `continueOnError: false`. This does not make semantic stability faults
+fail-fast: `qualification_wait` returns timeout, profile, lifecycle, fidelity,
+and presentation anomalies as normal tool receipts, so the scenario advances.
+It does make an actual failed tool step abort the remaining scenario. A rejected
+COC, ownership loss, vanished waiter, or main-thread timeout is a control-plane
+failure; dispatching further COCs after it cannot add valid evidence.
 
-Do not cancel the bounded server batch for a normal anomaly or a tool-step
-error. If Skyrim exits, DevBench disappears, producer or diagnostic ownership
-changes, a COC is rejected, or the waiter disappears, later guarded steps may
-also return errors; preserve every receipt and let the fixed batch terminate.
-A normal `qualification_wait` timeout is a semantic anomaly receipt, not a
-reason to stop or restart the client-side orchestration. The final verdict is
-interrupted when fewer than 20 COCs report `dispatched: true`.
+Advance immediately after each coherent waiter receipt. Do not add fixed
+inter-transition waits, menu checks, client polling, or per-transition client
+round trips.
 
-## Stability interpretation
+## Fidelity interpretation
 
-Shared stability requirements are exact destination cell and loaded player;
+Shared stability requires the exact destination cell and loaded player;
 provider check complete; no active operation, restart requirement, loading or
 method transition, relatch, first-world-frame wait, post-load recovery,
 provider wait, resource recovery, device loss, unresolved physical mutation,
@@ -144,38 +188,54 @@ effective, and stable profiles; and positive render/display dimensions.
 When render scale is active, require the owner-bound applied/stable physical
 contract, correct method/quality/backend/dimensions, ready lifecycle, valid
 two-eye fidelity, and at least two completed both-eye vendor presentation
-frames. `ContractPublished` is a transient publication phase; steady-state
-stability is proved by durable owner keys and matching applied/stable contracts,
-not by requiring that transient phase to still be current.
+frames. `ContractPublished` is transient; steady state is proved by durable
+owner keys and matching applied/stable contracts.
 
 For vendor presentation, use the last completed both-eye compositor frame and
-cycle as the durable coherent pair. A snapshot may legitimately show one
-current eye on the next frame/cycle while the other still represents that last
-completed pair. Do not require the two instantaneous current-eye frame fields
-to be identical. Reject stale completed-pair evidence, invalid paths, epoch or
-generation mismatches, transition flags, and a snapshot where both current
-eyes have moved beyond the recorded completed pair.
+cycle as the coherent pair. One current eye may already be on the next pair.
+Reject stale completed-pair evidence, invalid paths, epoch/generation mismatch,
+transition flags, or a snapshot where both current eyes moved beyond the
+recorded completed pair.
 
-For native resolution, require valid frame-coherent `NativeOriginal` eyes,
-inactive render-scale flags, matching render/display dimensions, and agreed
-native profiles.
+For native resolution, require frame-coherent `NativeOriginal` eyes, inactive
+render-scale flags, matching render/display dimensions, and agreed native
+profiles.
+
+## Hard control failure and immediate analysis
+
+After a failed scenario tool step, a DevBench 504, a non-advancing main thread,
+a CTD, or loss of the server:
+
+1. issue no more console, menu, qualification, or other main-thread calls;
+2. preserve the scenario progress marker and every completed receipt;
+3. use the local evidence controller only to observe the already-armed ProcDump
+   monitor and wait until the dump exists and its length/write time settle;
+4. preserve the dump, Community Shaders log, DevBench log, Build ID, DLL, and
+   matching PDB;
+5. analyze the dump first with CDB/WinDbg, then correlate implicated code and
+   symbols through the already-verified managed Ghidra MCP lane.
+
+Tell the user it is safe to quit Skyrim only after the collector has finalized
+the dump. Do not repeatedly retry COCs or status calls against the hung main
+thread.
 
 ## Cleanup and final evaluation
 
-After transition 20, always attempt owned cleanup while the control plane is
-available:
+After transition 20, and only while DevBench/main-thread control is responsive:
 
-1. `gpu_performance_stop` with the captured `expectedStartFrame`;
-2. `cpu_performance_stop` with the captured `expectedSessionId`;
-3. render-scale stress `stop` with the captured `expectedSessionId`.
+1. `gpu_performance_stop` with the first dispatch's `expectedStartFrame`;
+2. `cpu_performance_stop` with its `expectedSessionId`;
+3. render-scale stress `stop` with its `expectedSessionId`.
 
-Preserve all raw transition receipts and diagnostic final records. Report
-requested and dispatched transition counts, stable and anomalous counts, each
+After all dump activity is settled, stop the owned ProcDump monitor through
+`coc-evidence-control stop`. Never cancel an unowned collector.
+
+Preserve all raw transition receipts and final diagnostic records. Report
+requested and dispatched transition counts, stable and anomalous counts, every
 ordinal/target/outcome/deadline/profile/stereo/lifecycle result, and CPU/GPU
-telemetry. Compute latency statistics for stable transitions separately from
-deadline-hit counts.
+telemetry. Compute stable-transition latency separately from deadline hits.
 
 The verdict is `clean` only if all 20 transitions dispatched and stabilized
-without anomalies. If all 20 dispatched but one or more were imperfect, the
-verdict is `completed_with_anomalies`. Use an interrupted verdict only when a
-real control failure prevented dispatching all requested transitions.
+without anomalies. If all 20 dispatched but one or more were imperfect, use
+`completed_with_anomalies`. Use `interrupted` only when a real control failure
+prevented all requested COCs from being dispatched.

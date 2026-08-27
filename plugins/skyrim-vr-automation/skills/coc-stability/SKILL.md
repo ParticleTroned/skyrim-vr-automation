@@ -1,21 +1,31 @@
 ---
 name: coc-stability
-description: Run a fast, deadline-driven Skyrim VR COC stability assay that preserves imperfect transitions instead of stopping at the first stability fault.
+description: Run a fast, deadline-driven Skyrim VR COC stability assay that preserves semantic anomalies but stops dispatching after a real control failure.
 ---
 
 # COC stability
 
 Use this entrypoint for live operation. Read
-[references/protocol.md](references/protocol.md) only when maintaining or
-diagnosing the protocol; rereading it must never delay the live 10-second
-start.
+[references/protocol.md](references/protocol.md) while maintaining or
+diagnosing the protocol, never after the user has entered the live start
+window.
 
-When the user confirms Skyrim VR is in-game, make the first operation an async
-server scenario that waits exactly 10 seconds and dispatches one isolated
+Before asking the user to load Skyrim, use Community Shaders'
+`tools/ghidra-mcp-control.ps1` to require a managed, ready, session-owned
+Ghidra MCP endpoint from the GitHub installation. Confirm the current Codex
+window exposes DevBench and Ghidra MCP tools, then make one harmless Ghidra MCP
+health/list call; an enabled UI toggle is not proof. Run
+`coc-evidence-control inspect` and `arm` so CDB/WinDbg, ProcDump, dump storage,
+and an owned crash/hang collector are ready. If a tool is absent or the Ghidra
+call fails, stop before the game is loaded and tell the user to start the
+managed Ghidra server and restart Codex. Retain both readiness receipts and the
+ProcDump state path.
+
+When the user confirms Skyrim VR is in-game, make the first live operation an
+async server scenario that waits exactly 10 seconds and dispatches one isolated
 `coc WindhelmExterior01`. During that server wait, read runtime identity and
-the exact CSX Build ID concurrently. Do not put capability discovery, schema
-searches, sequential status calls, or capture-provider probing ahead of the
-first COC.
+the exact CSX Build ID concurrently. Do not put discovery or sequential status
+calls ahead of this COC.
 
 After Windhelm loads, call `communityshaders.menu` once with
 `{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}`. Require
@@ -27,21 +37,28 @@ VR FPS Stabilizer exclusively owns every DLSS/upscaling change. Observe its
 per-cell profiles; never apply an upscaling method, quality, preset, render
 scale, or dynamic policy through CSX.
 
-After the gate, collect the exact-cell, profile, lifecycle, stereo, diagnostic,
-and already-available image evidence in one parallel baseline bundle. Do not
-turn optional screenshot-provider discovery into a blocking pre-assay gate.
-Start one continuous render-scale stress session, CPU telemetry session, and
-GPU telemetry session in one setup scenario, retaining their owner identities.
+Start one monotonic 10-second watchdog immediately after the fixture receipt.
+In the same orchestration cell, collect the exact-cell, profile, lifecycle,
+stereo, diagnostic-status, and already-available image evidence in one parallel
+bundle. Do not probe providers or retry checks. A complete acceptable bundle
+starts the assay immediately; otherwise the watchdog starts it at 10 seconds
+and the incomplete or faulty baseline remains evidence.
 
-Run all 20 alternating measured transitions in one async server scenario with
-`continueOnError: true`. Each transition is exactly
-`qualification_begin`, adjacent `qualification_dispatch` plus COC, then one
-`qualification_wait` with a 10-second deadline. The command-boundary dispatch
-tick excludes setup and client latency. A stable receipt advances immediately;
-a timeout or other imperfect receipt also advances immediately and remains
-assay evidence. Do not split ordinary transitions into client round trips.
+Run the stress reset/start and all 20 alternating transitions in one async
+server scenario. On transition 1, `qualification_dispatch` uses
+`startPerformanceTelemetry: true` immediately adjacent to the COC, so CPU and
+GPU counters share the first COC command boundary and exclude setup. Use
+`continueOnError: false`: semantic timeout/profile/fidelity/lifecycle faults are
+normal successful waiter receipts and continue, while an actual failed tool
+step or lost main thread aborts later COCs immediately. Do not split ordinary
+transitions into client round trips.
 
-After transition 20, attempt guarded GPU, CPU, and stress cleanup. Classify a
-fully stable run as `clean`; classify a complete imperfect run as
-`completed_with_anomalies`; use an interrupted verdict only when the server
-cannot dispatch all 20 COCs.
+After transition 20, attempt guarded GPU, CPU, stress, and ProcDump cleanup only
+while their control planes are responsive. On CTD or hang, make no further
+main-thread calls; wait for the already-armed dump to settle, preserve it, and
+analyze it with WinDbg and the managed Ghidra MCP server before telling the user
+it is safe to quit.
+
+Classify a fully stable run as `clean` and a complete imperfect run as
+`completed_with_anomalies`. Use an interrupted verdict only when a hard control
+failure prevented all 20 COCs from being dispatched.

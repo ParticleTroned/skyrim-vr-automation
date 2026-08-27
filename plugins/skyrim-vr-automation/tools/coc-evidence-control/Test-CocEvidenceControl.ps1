@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$scriptPath = Join-Path $PSScriptRoot 'Invoke-CocEvidenceControl.ps1'
+$script = Get-Content -LiteralPath $scriptPath -Raw
+
+foreach ($requiredText in @(
+    "[ValidateSet('inspect', 'arm', 'status', 'stop')]",
+    "'-ma'",
+    "'-e'",
+    "'-h'",
+    "'-n', '2'",
+    "'-r', '1'",
+    "'-a'",
+    '@(''-w'', $TargetName)',
+    "'-cancel'",
+    'csx-coc-evidence-state-v1',
+    'MinimumFreeGiB = 100',
+    'CSX_COC_EVIDENCE_ROOT',
+    'cdb'
+)) {
+    if (-not $script.Contains($requiredText, [StringComparison]::Ordinal)) {
+        throw "COC evidence controller is missing: $requiredText"
+    }
+}
+
+foreach ($forbiddenText in @(
+    "'-t'",
+    "'-e', '1'",
+    'Stop-Process',
+    'GhidraMcpUrl',
+    'GhidraInstallRoot',
+    'PyGhidraPath'
+)) {
+    if ($script.Contains($forbiddenText, [StringComparison]::Ordinal)) {
+        throw "COC evidence controller contains unsafe behavior: $forbiddenText"
+    }
+}
+
+[pscustomobject][ordered]@{
+    ok = $true
+    fullUnhandledCrashDump = $true
+    hangDump = $true
+    normalExitDump = $false
+    firstChanceDump = $false
+    boundedDumpCount = 2
+    officialCancellation = $true
+} | ConvertTo-Json

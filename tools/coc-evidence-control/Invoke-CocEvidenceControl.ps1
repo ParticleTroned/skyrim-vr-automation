@@ -1,0 +1,410 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[CmdletBinding()]
+param(
+    [Parameter(Position = 0)]
+    [ValidateSet('inspect', 'arm', 'status', 'stop')]
+    [string]$Command = 'inspect',
+
+    [string]$ProcDumpPath = $env:CSX_PROCDUMP_PATH,
+    [string]$CdbPath = $env:CSX_CDB_PATH,
+    [string]$EvidenceRoot = $env:CSX_COC_EVIDENCE_ROOT,
+    [string]$DumpRoot = $env:CSX_COC_DUMP_ROOT,
+    [string]$StatePath,
+    [string]$TargetName = 'SkyrimVR.exe',
+    [ValidateRange(0, [int]::MaxValue)][int]$TargetPid = 0,
+    [ValidateRange(1, 2048)][int]$MinimumFreeGiB = 100,
+    [switch]$Compact,
+    [switch]$NoExit
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Get-CandidateEvidenceRoots {
+    $roots = [Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        $roots.Add([IO.Path]::GetFullPath($EvidenceRoot))
+    }
+
+    $cursor = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath((Get-Location).Path))
+    for ($depth = 0; $cursor -and $depth -lt 6; $depth++) {
+        $candidate = Join-Path $cursor.FullName 'codex-ghidra-live'
+        if (-not $roots.Contains($candidate)) { $roots.Add($candidate) }
+        $cursor = $cursor.Parent
+    }
+    foreach ($drive in @(Get-PSDrive -PSProvider FileSystem)) {
+        foreach ($relative in @(
+            'Coding\GitHub\codex-ghidra-live',
+            'GitHub\codex-ghidra-live'
+        )) {
+            $candidate = Join-Path $drive.Root $relative
+            if (-not $roots.Contains($candidate)) { $roots.Add($candidate) }
+        }
+    }
+    return @($roots)
+}
+
+function Resolve-FirstFile {
+    param(
+        [string]$ExplicitPath,
+        [string[]]$CommandNames,
+        [string[]]$CandidatePaths
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        $resolved = [IO.Path]::GetFullPath($ExplicitPath)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+            throw "Configured executable does not exist: $resolved"
+        }
+        return $resolved
+    }
+
+    foreach ($name in $CommandNames) {
+        $commandInfo = Get-Command $name -ErrorAction SilentlyContinue
+        if ($commandInfo -and
+            (Test-Path -LiteralPath $commandInfo.Source -PathType Leaf)) {
+            return [IO.Path]::GetFullPath($commandInfo.Source)
+        }
+    }
+    foreach ($candidate in $CandidatePaths) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return $null
+}
+
+function Get-ToolPaths {
+    $evidenceRoots = @(Get-CandidateEvidenceRoots)
+    $procDumpCandidates = @($evidenceRoots | ForEach-Object {
+        Join-Path $_ 'tools\procdump\procdump64.exe'
+    })
+    $cdbCandidates = @($evidenceRoots | ForEach-Object {
+        Join-Path $_ 'tools\windbg-x64\amd64\cdb.exe'
+    })
+
+    [pscustomobject][ordered]@{
+        procDump = Resolve-FirstFile $ProcDumpPath @(
+            'procdump64.exe', 'procdump64'
+        ) $procDumpCandidates
+        cdb = Resolve-FirstFile $CdbPath @('cdb.exe', 'cdb') $cdbCandidates
+        evidenceRoots = $evidenceRoots
+    }
+}
+
+function Resolve-DumpRoot([string[]]$EvidenceRoots) {
+    if (-not [string]::IsNullOrWhiteSpace($DumpRoot)) {
+        return [IO.Path]::GetFullPath($DumpRoot)
+    }
+    foreach ($root in $EvidenceRoots) {
+        if (Test-Path -LiteralPath $root -PathType Container) {
+            return [IO.Path]::GetFullPath(
+                (Join-Path $root 'captures\coc-stability')
+            )
+        }
+    }
+    throw 'DumpRoot is required. Pass -DumpRoot or set CSX_COC_DUMP_ROOT.'
+}
+
+function Get-ExecutableRecord([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $item = Get-Item -LiteralPath $Path
+    [pscustomobject][ordered]@{
+        path = $item.FullName
+        version = $item.VersionInfo.FileVersion
+        length = $item.Length
+        sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+    }
+}
+
+function Get-LocalReadiness {
+    $paths = Get-ToolPaths
+    $resolvedDumpRoot = Resolve-DumpRoot $paths.evidenceRoots
+    $driveRoot = [IO.Path]::GetPathRoot($resolvedDumpRoot)
+    $drive = [IO.DriveInfo]::new($driveRoot)
+    $freeGiB = [math]::Round($drive.AvailableFreeSpace / 1GB, 2)
+    $checks = [Collections.Generic.List[object]]::new()
+    $checks.Add([pscustomobject]@{
+        name = 'procdump'
+        ok = -not [string]::IsNullOrWhiteSpace($paths.procDump)
+        value = $paths.procDump
+    })
+    $checks.Add([pscustomobject]@{
+        name = 'cdb'
+        ok = -not [string]::IsNullOrWhiteSpace($paths.cdb)
+        value = $paths.cdb
+    })
+    $checks.Add([pscustomobject]@{
+        name = 'dump-space'
+        ok = $freeGiB -ge $MinimumFreeGiB
+        value = [pscustomobject]@{
+            root = $resolvedDumpRoot
+            drive = $driveRoot
+            freeGiB = $freeGiB
+            requiredGiB = $MinimumFreeGiB
+        }
+    })
+
+    $failed = @($checks | Where-Object { -not $_.ok })
+    [pscustomobject][ordered]@{
+        ok = $failed.Count -eq 0
+        checks = @($checks)
+        errors = @($failed | ForEach-Object {
+            "Readiness check failed: $($_.name)"
+        })
+        paths = [pscustomobject][ordered]@{
+            procDump = $paths.procDump
+            cdb = $paths.cdb
+            dumpRoot = $resolvedDumpRoot
+        }
+    }
+}
+
+function Read-OwnedState {
+    if ([string]::IsNullOrWhiteSpace($StatePath)) {
+        throw 'StatePath is required for status and stop.'
+    }
+    $resolved = [IO.Path]::GetFullPath($StatePath)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Evidence state does not exist: $resolved"
+    }
+    $state = Get-Content -LiteralPath $resolved -Raw |
+        ConvertFrom-Json -Depth 20
+    if ([string]$state.schema -ne 'csx-coc-evidence-state-v1') {
+        throw "Evidence state schema is not owned by this tool: $resolved"
+    }
+    return [pscustomobject]@{ path = $resolved; data = $state }
+}
+
+function Get-OwnedMonitor($State) {
+    $monitor = Get-Process -Id ([int]$State.monitorPid) -ErrorAction SilentlyContinue
+    if (-not $monitor) { return $null }
+    $expected = [DateTime]::Parse(
+        [string]$State.monitorStartedUtc
+    ).ToUniversalTime()
+    $actual = $monitor.StartTime.ToUniversalTime()
+    if ([math]::Abs(($actual - $expected).TotalSeconds) -gt 2) { return $null }
+    return $monitor
+}
+
+function Get-TargetProcesses([string]$Name, [int]$ProcessId) {
+    if ($ProcessId -gt 0) {
+        return @(Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+    }
+    $processName = [IO.Path]::GetFileNameWithoutExtension($Name)
+    return @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+}
+
+function New-InspectionResult($Readiness) {
+    [pscustomobject][ordered]@{
+        schema = 'csx-coc-evidence-control-v1'
+        ok = $Readiness.ok
+        command = 'inspect'
+        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        state = if ($Readiness.ok) { 'ready' } else { 'configuration-required' }
+        checks = $Readiness.checks
+        errors = $Readiness.errors
+        data = [pscustomobject][ordered]@{
+            tools = [pscustomobject][ordered]@{
+                procDump = Get-ExecutableRecord $Readiness.paths.procDump
+                cdb = Get-ExecutableRecord $Readiness.paths.cdb
+            }
+            dumpRoot = $Readiness.paths.dumpRoot
+        }
+    }
+}
+
+try {
+    if ($Command -eq 'inspect') {
+        $result = New-InspectionResult (Get-LocalReadiness)
+    }
+    elseif ($Command -eq 'arm') {
+        $readiness = Get-LocalReadiness
+        if (-not $readiness.ok) { throw ($readiness.errors -join '; ') }
+        $runId = '{0}-{1}' -f [DateTime]::UtcNow.ToString(
+            'yyyyMMddTHHmmssfffZ'
+        ), ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+        $captureDirectory = Join-Path $readiness.paths.dumpRoot $runId
+        New-Item -ItemType Directory -Path $captureDirectory -Force | Out-Null
+        $resolvedStatePath = if ([string]::IsNullOrWhiteSpace($StatePath)) {
+            Join-Path $captureDirectory 'coc-evidence-state.json'
+        } else {
+            [IO.Path]::GetFullPath($StatePath)
+        }
+        if (Test-Path -LiteralPath $resolvedStatePath) {
+            throw "Refusing to overwrite evidence state: $resolvedStatePath"
+        }
+
+        $arguments = @(
+            '-accepteula', '-ma', '-e', '-h', '-n', '2', '-r', '1', '-a'
+        )
+        if ($TargetPid -gt 0) {
+            $arguments += [string]$TargetPid
+        } else {
+            $arguments += @('-w', $TargetName)
+        }
+        $arguments += $captureDirectory
+
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $readiness.paths.procDump
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        foreach ($argument in $arguments) {
+            $null = $startInfo.ArgumentList.Add($argument)
+        }
+        $monitor = [Diagnostics.Process]::new()
+        $monitor.StartInfo = $startInfo
+        if (-not $monitor.Start()) { throw 'ProcDump did not start.' }
+        Start-Sleep -Milliseconds 500
+        if ($monitor.HasExited) {
+            throw "ProcDump exited during arming with code $($monitor.ExitCode)."
+        }
+
+        $stateRecord = [pscustomobject][ordered]@{
+            schema = 'csx-coc-evidence-state-v1'
+            runId = $runId
+            armedUtc = [DateTime]::UtcNow.ToString('o')
+            monitorPid = $monitor.Id
+            monitorStartedUtc = $monitor.StartTime.ToUniversalTime().ToString('o')
+            targetName = $TargetName
+            targetPid = $TargetPid
+            captureDirectory = $captureDirectory
+            statePath = $resolvedStatePath
+            procDump = Get-ExecutableRecord $readiness.paths.procDump
+            cdb = Get-ExecutableRecord $readiness.paths.cdb
+            procDumpArguments = $arguments
+        }
+        $stateRecord | ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $resolvedStatePath -Encoding utf8
+        $targets = @(Get-TargetProcesses $TargetName $TargetPid)
+        $result = [pscustomobject][ordered]@{
+            schema = 'csx-coc-evidence-control-v1'
+            ok = $true
+            command = 'arm'
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            state = if ($targets.Count -gt 0) {
+                'armed-attached'
+            } else {
+                'armed-waiting'
+            }
+            checks = $readiness.checks
+            errors = @()
+            data = $stateRecord
+        }
+    }
+    elseif ($Command -eq 'status') {
+        $owned = Read-OwnedState
+        $monitor = Get-OwnedMonitor $owned.data
+        $targets = @(Get-TargetProcesses (
+            [string]$owned.data.targetName
+        ) ([int]$owned.data.targetPid))
+        $dumps = @(Get-ChildItem -LiteralPath (
+            [string]$owned.data.captureDirectory
+        ) -Filter '*.dmp' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc)
+        $result = [pscustomobject][ordered]@{
+            schema = 'csx-coc-evidence-control-v1'
+            ok = $null -ne $monitor -or $dumps.Count -gt 0
+            command = 'status'
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            state = if (-not $monitor -and $dumps.Count -gt 0) {
+                'capture-complete'
+            } elseif (-not $monitor) {
+                'monitor-exited'
+            } elseif ($targets.Count -gt 0) {
+                'armed-attached'
+            } else {
+                'armed-waiting'
+            }
+            checks = @()
+            errors = if ($monitor -or $dumps.Count -gt 0) {
+                @()
+            } else {
+                @('The owned ProcDump monitor is no longer running.')
+            }
+            data = [pscustomobject][ordered]@{
+                statePath = $owned.path
+                monitorPid = [int]$owned.data.monitorPid
+                targetPids = @($targets | ForEach-Object Id)
+                captureDirectory = [string]$owned.data.captureDirectory
+                dumps = @($dumps | ForEach-Object {
+                    [pscustomobject]@{
+                        path = $_.FullName
+                        length = $_.Length
+                        lastWriteUtc = $_.LastWriteTimeUtc.ToString('o')
+                    }
+                })
+            }
+        }
+    }
+    else {
+        $owned = Read-OwnedState
+        $monitor = Get-OwnedMonitor $owned.data
+        if (-not $monitor) {
+            throw 'The state does not identify a live owned ProcDump monitor.'
+        }
+        $recentDump = @(Get-ChildItem -LiteralPath (
+            [string]$owned.data.captureDirectory
+        ) -Filter '*.dmp' -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                ([DateTime]::UtcNow - $_.LastWriteTimeUtc).TotalSeconds -lt 15
+            })
+        if ($recentDump.Count -gt 0) {
+            throw 'A dump was written recently; wait before stopping ProcDump.'
+        }
+
+        $target = if ([int]$owned.data.targetPid -gt 0) {
+            [string]$owned.data.targetPid
+        } else {
+            [string]$owned.data.targetName
+        }
+        $cancelInfo = [Diagnostics.ProcessStartInfo]::new()
+        $cancelInfo.FileName = [string]$owned.data.procDump.path
+        $cancelInfo.UseShellExecute = $false
+        $cancelInfo.CreateNoWindow = $true
+        foreach ($argument in @('-accepteula', '-cancel', $target)) {
+            $null = $cancelInfo.ArgumentList.Add($argument)
+        }
+        $cancel = [Diagnostics.Process]::Start($cancelInfo)
+        $null = $cancel.WaitForExit(5000)
+        $null = $monitor.WaitForExit(5000)
+        $stopped = $monitor.HasExited
+        $result = [pscustomobject][ordered]@{
+            schema = 'csx-coc-evidence-control-v1'
+            ok = $stopped
+            command = 'stop'
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            state = if ($stopped) { 'stopped' } else { 'cancel-failed' }
+            checks = @()
+            errors = if ($stopped) {
+                @()
+            } else {
+                @('ProcDump did not stop after its official cancel command.')
+            }
+            data = [pscustomobject][ordered]@{
+                statePath = $owned.path
+                monitorPid = [int]$owned.data.monitorPid
+                target = $target
+                captureDirectory = [string]$owned.data.captureDirectory
+            }
+        }
+    }
+}
+catch {
+    $result = [pscustomobject][ordered]@{
+        schema = 'csx-coc-evidence-control-v1'
+        ok = $false
+        command = $Command
+        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        state = 'tool-error'
+        checks = @()
+        errors = @($_.Exception.Message)
+        data = $null
+    }
+}
+
+$json = @{ InputObject = $result; Depth = 30 }
+if ($Compact) { $json.Compress = $true }
+ConvertTo-Json @json
+if (-not $result.ok -and -not $NoExit) { exit 2 }
