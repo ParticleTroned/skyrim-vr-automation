@@ -4,6 +4,12 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Synthesize schema-valid, non-mutating registry envelopes when a versioned
+  DevBench `serviceReady` wait omits arguments; preserve explicit arguments.
+- Disable SteamVR dashboard input in the null-HMD transaction, report the
+  deliberately unavailable controller/controlled-pose contract, detect a
+  surviving dashboard process, and reject Windows PowerShell with an explicit
+  PowerShell 7 migration result.
 - Persist DevBench invocation journals before dispatch, preserve failed-call
   evidence across target exit, guard the known-crashing Skyrim VR `tfc 1`
   command, and enforce workspace save policy for direct and scenario game

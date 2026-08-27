@@ -35,12 +35,12 @@
     },
     {
       "name": "steamvr-null-control",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "entryPoint": "tools/steamvr-null-control/Invoke-SteamVRNullControl.ps1"
     },
     {
       "name": "devbench-control",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "entryPoint": "tools/devbench-control/Invoke-DevBenchControl.ps1"
     },
     {

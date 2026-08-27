@@ -42,6 +42,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$argumentsJsonSupplied = $PSBoundParameters.ContainsKey('ArgumentsJson')
 $endpoint = $null
 $runtimeIdentity = $null
 $transportRetries = [Collections.Generic.List[object]]::new()
@@ -548,6 +549,8 @@ try {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
         $requiredTool = if ($Condition -eq 'noBlockingMenu') { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
         $waitArguments = @{}
+        $waitArgumentsResolved = $Condition -ne 'serviceReady' -or $argumentsJsonSupplied
+        $serviceProbe = $null
         if ($Condition -eq 'serviceReady') {
             try { $waitArguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
         }
@@ -648,6 +651,12 @@ try {
                 $service = $null
                 if ($Condition -eq 'serviceReady' -and $toolPresent) {
                     try {
+                        if (-not $waitArgumentsResolved) {
+                            $targetDefinition = @($currentTools | Where-Object name -eq $Tool | Select-Object -First 1)[0]
+                            $serviceProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $targetDefinition -Arguments $waitArguments -ArgumentsSupplied:$false -ToolName $Tool
+                            $waitArguments = $serviceProbe.arguments
+                            $waitArgumentsResolved = $true
+                        }
                         $toolResult = Invoke-ToolRpc -Name $Tool -Arguments $waitArguments -Headers $headers
                         $service = Test-DevBenchServiceReady -Content @($toolResult.content) -AcceptedStates $AcceptedState -RetryableStates $RetryableState
                     }
@@ -696,6 +705,7 @@ try {
                     tool = $Tool
                     toolPresent = $toolPresent
                     service = $service
+                    serviceProbe = $serviceProbe
                     classification = $classification
                     cpuDeltaSeconds = $cpuDelta
                     authoritativeToolCount = $currentTools.Count

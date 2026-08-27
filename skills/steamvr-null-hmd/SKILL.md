@@ -34,7 +34,13 @@ particular drive letter for the plugin itself.
 5. Parse the JSON postcondition. After `apply`, require `state` to be
    `null-applied` and the effective profile checks to match. After `restore`,
    require the restored settings hash to match the exact backup.
-6. Run `inspect -Compact` again and preserve the before/after results, exact
+6. Treat `null-runtime-started-unqualified` and
+   `null-runtime-active-unqualified` as rendering availability only. The
+   `inputContract` deliberately declares controlled HMD pose and controllers
+   unavailable; do not replay controller input or collect render measurements
+   until a separate application-observed pose qualification exists. Stop on
+   `dashboard-input-conflict`.
+7. Run `inspect -Compact` again and preserve the before/after results, exact
    backup, receipt, hashes, and evidence-directory identity.
 
 ## Safety and recovery
@@ -49,6 +55,8 @@ particular drive letter for the plugin itself.
   must verify the receipt and backup hash. Retain both afterward.
 - Use `-SettingsPath` and `-SteamVRRoot` for nonstandard installations. Never
   silently fall back to the default installation paths.
+- Invoke the controller with PowerShell 7 `pwsh.exe`. Do not work around its
+  explicit Windows PowerShell compatibility rejection.
 - A launch failure or CTD is evidence. Record the runtime state and analyze the
   result before another attempt.
 

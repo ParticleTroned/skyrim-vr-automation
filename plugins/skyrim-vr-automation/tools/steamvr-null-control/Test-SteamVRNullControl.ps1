@@ -19,6 +19,12 @@ function Assert-Test([bool]$Condition, [string]$Name) {
     if ($Condition) { $passes.Add($Name) } else { $failures.Add($Name) }
 }
 
+$windowsPowerShell = Get-Command powershell.exe -ErrorAction SilentlyContinue
+if ($windowsPowerShell) {
+    $legacyResult = & $windowsPowerShell.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $entry inspect -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $legacyResult.ok -and $legacyResult.state -eq 'unsupported-powershell-version' -and $legacyResult.errors[0] -match 'pwsh\.exe') 'Windows PowerShell receives an explicit PowerShell 7 compatibility failure'
+}
+
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
     $settingsPath = Join-Path $fixture 'steamvr.vrsettings'
@@ -38,7 +44,9 @@ try {
     [IO.File]::WriteAllText($settingsPath, $originalText, [Text.UTF8Encoding]::new($false))
     [ordered]@{
         steamvr = [ordered]@{ forcedDriver = 'null'; requireHmd = $false; activateMultipleDrivers = $false; enableHomeApp = $false }
+        dashboard = [ordered]@{ enableDashboard = $false }
         driver_null = [ordered]@{ enable = $true; serialNumber = 'Fixture'; modelNumber = 'Fixture'; windowWidth = 2160; windowHeight = 1200; renderWidth = 1512; renderHeight = 1680; displayFrequency = 90.0 }
+        automationInputContract = [ordered]@{ hmdPoseProvider = 'valve-null-fixed'; hmdPoseControl = 'unavailable'; controllerInput = 'unavailable'; dashboardInput = 'disabled'; replayReady = $false; measurementReady = $false; qualificationRequired = 'fixture qualification' }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $profilePath -Encoding utf8
 
     $inspectBefore = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
@@ -55,10 +63,12 @@ try {
     Assert-Test ($applied.ok -and $applied.state -eq 'null-applied') 'apply writes effective null profile'
     $appliedJson = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-Test ($appliedJson['unrelated']['value'] -eq 7) 'apply preserves unrelated settings'
+    Assert-Test ($appliedJson['dashboard']['enableDashboard'] -eq $false) 'apply disables the dashboard generic-HMD input route'
     Assert-Test (Test-Path -LiteralPath (Join-Path $evidence 'steamvr-null-receipt.json')) 'apply writes hash receipt'
 
     $inspectConfigured = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
     Assert-Test ($inspectConfigured.ok -and $inspectConfigured.state -eq 'null-configured-runtime-stopped' -and -not $inspectConfigured.data.runtime.active) 'inspect distinguishes configured settings from a proven runtime'
+    Assert-Test (-not $inspectConfigured.data.inputContract.replayReady -and $inspectConfigured.data.inputContract.controllerInput -eq 'unavailable') 'inspect states that controller replay and controlled HMD pose are unavailable'
 
     $startDry = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $evidence -WhatIf -Compact | ConvertFrom-Json
     Assert-Test ($startDry.ok -and $startDry.state -eq 'dry-run' -and $startDry.data.startupPath -eq $startupPath) 'start dry-run validates the configured transaction and exact startup path'

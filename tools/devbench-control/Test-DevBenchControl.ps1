@@ -53,6 +53,26 @@ Assert-Test ($expectations.buildId -eq 'build-1' -and $expectations.artifactPath
 $legacy = Get-DevBenchRuntimeExpectations -Runtime ([pscustomobject]@{ port = 8921 })
 Assert-Test ($null -eq $legacy.pid -and $null -eq $legacy.exe) 'legacy port-only runtime metadata remains supported'
 
+$versionedTool = [pscustomobject]@{
+    name = 'communityshaders.profiler'
+    inputSchema = [pscustomobject]@{
+        type = 'object'
+        required = @('contractMajor', 'clientId', 'commandId', 'action')
+        properties = [pscustomobject]@{
+            contractMajor = [pscustomobject]@{ type = 'integer'; const = 1 }
+            action = [pscustomobject]@{ type = 'string'; enum = @('registry', 'status', 'start') }
+        }
+    }
+}
+$autoProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $versionedTool -Arguments @{} -ArgumentsSupplied:$false -ToolName $versionedTool.name
+Assert-Test ($autoProbe.source -eq 'schema-registry-envelope' -and $autoProbe.arguments.action -eq 'registry' -and $autoProbe.arguments.contractMajor -eq 1) 'serviceReady synthesizes a non-mutating registry envelope for versioned tools'
+Assert-Test ($autoProbe.arguments.clientId -eq 'devbench-control-service-ready' -and $autoProbe.arguments.commandId -like 'service-ready-*') 'synthesized service probes carry stable client and unique command identities'
+$explicitProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $versionedTool -Arguments @{ action = 'status' } -ArgumentsSupplied:$true -ToolName $versionedTool.name
+Assert-Test ($explicitProbe.source -eq 'explicit' -and $explicitProbe.arguments.action -eq 'status') 'explicit serviceReady arguments are never rewritten'
+$simpleTool = [pscustomobject]@{ name = 'simple'; inputSchema = [pscustomobject]@{ type = 'object'; properties = [pscustomobject]@{} } }
+$simpleProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $simpleTool -Arguments @{} -ArgumentsSupplied:$false -ToolName $simpleTool.name
+Assert-Test ($simpleProbe.source -eq 'schema-empty-valid' -and $simpleProbe.arguments.Count -eq 0) 'schema-valid empty probes remain empty'
+
 $entryPointText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Invoke-DevBenchControl.ps1') -Raw
 Assert-Test ($entryPointText -notmatch '(?im)^\s*\$pid\s*=') 'entry point never assigns PowerShell reserved PID variable'
 Assert-Test ($entryPointText -match '\$expectations\.buildId\s+-and\s+\$actualBuildId\s+-and') 'deferred build identity never compares a missing runtime build ID'

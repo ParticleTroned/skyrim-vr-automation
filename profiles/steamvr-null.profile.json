@@ -11,6 +11,9 @@
     "activateMultipleDrivers": false,
     "enableHomeApp": false
   },
+  "dashboard": {
+    "enableDashboard": false
+  },
   "driver_null": {
     "enable": true,
     "loadPriority": -999,
@@ -24,5 +27,14 @@
     "renderHeight": 1680,
     "secondsFromVsyncToPhotons": 0.01111111,
     "displayFrequency": 90.0
+  },
+  "automationInputContract": {
+    "hmdPoseProvider": "valve-null-fixed",
+    "hmdPoseControl": "unavailable",
+    "controllerInput": "unavailable",
+    "dashboardInput": "disabled",
+    "replayReady": false,
+    "measurementReady": false,
+    "qualificationRequired": "application-observed standing HMD pose and stereo eye transforms"
   }
 }

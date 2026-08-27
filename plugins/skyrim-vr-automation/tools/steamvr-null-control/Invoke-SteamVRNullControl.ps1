@@ -30,6 +30,23 @@ param(
     [switch]$Compact
 )
 
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $versionFailure = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        command = $Command
+        ok = $false
+        state = 'unsupported-powershell-version'
+        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        errors = @("steamvr-null-control requires PowerShell 7.0 or newer; current host is $($PSVersionTable.PSVersion). Invoke the script with pwsh.exe, not Windows PowerShell powershell.exe.")
+        data = @{ requiredPowerShellVersion = '7.0'; actualPowerShellVersion = [string]$PSVersionTable.PSVersion; requiredExecutable = 'pwsh.exe' }
+    }
+    $versionJsonParameters = @{ InputObject = $versionFailure; Depth = 8 }
+    if ($Compact) { $versionJsonParameters['Compress'] = $true }
+    ConvertTo-Json @versionJsonParameters
+    if (-not $NoExit) { exit 2 }
+    return
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -172,8 +189,10 @@ function Get-EffectiveState {
         [Parameter(Mandatory)]$Profile
     )
     $steamvr = if ($Settings.ContainsKey('steamvr')) { $Settings['steamvr'] } else { @{} }
+    $dashboard = if ($Settings.ContainsKey('dashboard')) { $Settings['dashboard'] } else { @{} }
     $driver = if ($Settings.ContainsKey('driver_null')) { $Settings['driver_null'] } else { @{} }
     $expectedSteamVR = $Profile['steamvr']
+    $expectedDashboard = $Profile['dashboard']
     $expectedDriver = $Profile['driver_null']
 
     $checks = [ordered]@{}
@@ -182,6 +201,13 @@ function Get-EffectiveState {
             actual = if ($steamvr.ContainsKey($key)) { $steamvr[$key] } else { $null }
             expected = $expectedSteamVR[$key]
             matches = $steamvr.ContainsKey($key) -and $steamvr[$key] -eq $expectedSteamVR[$key]
+        }
+    }
+    foreach ($key in $expectedDashboard.Keys) {
+        $checks["dashboard.$key"] = [ordered]@{
+            actual = if ($dashboard.ContainsKey($key)) { $dashboard[$key] } else { $null }
+            expected = $expectedDashboard[$key]
+            matches = $dashboard.ContainsKey($key) -and $dashboard[$key] -eq $expectedDashboard[$key]
         }
     }
     foreach ($key in @('enable', 'serialNumber', 'modelNumber', 'windowWidth', 'windowHeight', 'renderWidth', 'renderHeight', 'displayFrequency')) {
@@ -251,6 +277,8 @@ function Get-NullRuntimeEvidence {
         serverLogSha256 = Get-HashOrNull $ServerLogPath
         driverLoaded = $loaded
         activeHmd = $active
+        dashboardProcesses = @($owned | Where-Object name -eq 'vrdashboard')
+        dashboardSuppressed = @($owned | Where-Object name -eq 'vrdashboard').Count -eq 0
     }
 }
 
@@ -276,7 +304,7 @@ try {
     }
     $settings = Read-JsonHashtable -Path $SettingsPath
     $profile = Read-JsonHashtable -Path $NullProfilePath
-    foreach ($section in @('steamvr', 'driver_null')) {
+    foreach ($section in @('steamvr', 'dashboard', 'driver_null', 'automationInputContract')) {
         if (-not $profile.ContainsKey($section)) { throw "Null-HMD profile is missing '$section'." }
     }
     $processes = @(Get-SteamVRProcesses)
@@ -345,7 +373,7 @@ try {
         }
     }
     elseif ($Command -eq 'inspect') {
-        $state = if ($externalDrivers.errors.Count -gt 0) { 'external-driver-inventory-failed' } elseif ($externalDrivers.conflicts.Count -gt 0) { 'external-driver-conflict' } elseif ($runtime.active -and $effective.active) { 'null-runtime-active' } elseif ($effective.active) { 'null-configured-runtime-stopped' } else { 'null-inactive' }
+        $state = if ($externalDrivers.errors.Count -gt 0) { 'external-driver-inventory-failed' } elseif ($externalDrivers.conflicts.Count -gt 0) { 'external-driver-conflict' } elseif ($runtime.active -and -not $runtime.dashboardSuppressed) { 'dashboard-input-conflict' } elseif ($runtime.active -and $effective.active) { 'null-runtime-active-unqualified' } elseif ($effective.active) { 'null-configured-runtime-stopped' } else { 'null-inactive' }
         $result = New-Result -Ok $true -State $state -Data @{
             settingsPath = $SettingsPath
             settingsSha256 = Get-HashOrNull $SettingsPath
@@ -355,6 +383,7 @@ try {
             effective = $effective
             runtime = $runtime
             externalDrivers = $externalDrivers
+            inputContract = $profile['automationInputContract']
         }
     }
     elseif ($Command -eq 'start') {
@@ -368,8 +397,11 @@ try {
         elseif (-not $effective.active) {
             $result = New-Result -Ok $false -State 'null-not-configured' -Data @{ effective = $effective; runtime = $runtime } -Errors @('Apply the null-HMD settings transaction before starting SteamVR.')
         }
+        elseif ($runtime.active -and -not $runtime.dashboardSuppressed) {
+            $result = New-Result -Ok $false -State 'dashboard-input-conflict' -Data @{ effective = $effective; runtime = $runtime; inputContract = $profile['automationInputContract'] } -Errors @('vrdashboard.exe is active even though dashboard.enableDashboard=false. The generic-HMD pointer route is not isolated; do not replay input or collect measurements.')
+        }
         elseif ($runtime.active) {
-            $result = New-Result -Ok $true -State 'already-running' -Data @{ effective = $effective; runtime = $runtime }
+            $result = New-Result -Ok $true -State 'already-running-unqualified' -Data @{ effective = $effective; runtime = $runtime; inputContract = $profile['automationInputContract'] }
         }
         elseif ($ownedProcesses.Count -gt 0) {
             $result = New-Result -Ok $false -State 'ambiguous-runtime' -Data @{ effective = $effective; runtime = $runtime; processes = $ownedProcesses; unprovenProcesses = $unprovenProcesses } -Errors @('SteamVR processes are running from the configured root, but current-session null-driver activation is not proven. Stop and inspect them before retrying.')
@@ -394,6 +426,11 @@ try {
                     $processes = @(Get-SteamVRProcesses)
                     $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile
                 } while (-not $runtime.active -and [DateTime]::UtcNow -lt $deadline)
+                if ($runtime.active) {
+                    Start-Sleep -Seconds 2
+                    $processes = @(Get-SteamVRProcesses)
+                    $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile
+                }
                 $runtimeReceiptPath = Join-Path $EvidenceDirectory 'steamvr-null-runtime.receipt.json'
                 $runtimeReceipt = [ordered]@{
                     schemaVersion = 1
@@ -404,8 +441,11 @@ try {
                     runtime = $runtime
                 }
                 Write-JsonAtomic -Path $runtimeReceiptPath -Value $runtimeReceipt
-                if ($runtime.active) {
-                    $result = New-Result -Ok $true -State 'null-runtime-started' -Data @{ effective = $effective; runtime = $runtime; runtimeReceiptPath = $runtimeReceiptPath }
+                if ($runtime.active -and -not $runtime.dashboardSuppressed) {
+                    $result = New-Result -Ok $false -State 'dashboard-input-conflict' -Data @{ effective = $effective; runtime = $runtime; runtimeReceiptPath = $runtimeReceiptPath; inputContract = $profile['automationInputContract'] } -Errors @('SteamVR activated the null HMD, but vrdashboard.exe is active. The generic-HMD pointer route is not isolated; do not replay input or collect measurements.')
+                }
+                elseif ($runtime.active) {
+                    $result = New-Result -Ok $true -State 'null-runtime-started-unqualified' -Data @{ effective = $effective; runtime = $runtime; runtimeReceiptPath = $runtimeReceiptPath; inputContract = $profile['automationInputContract'] }
                 }
                 else {
                     $result = New-Result -Ok $false -State 'startup-incomplete' -Data @{ effective = $effective; runtime = $runtime; processes = $processes; runtimeReceiptPath = $runtimeReceiptPath } -Errors @('SteamVR started, but current-session Valve null-driver and active-HMD log proof was not observed before the timeout.')
@@ -442,10 +482,10 @@ try {
                 Copy-Item -LiteralPath $SettingsPath -Destination $backupPath
                 $beforeHash = Get-HashOrNull $backupPath
                 try {
-                    if (-not $settings.ContainsKey('steamvr')) { $settings['steamvr'] = [ordered]@{} }
-                    if (-not $settings.ContainsKey('driver_null')) { $settings['driver_null'] = [ordered]@{} }
-                    foreach ($key in $profile['steamvr'].Keys) { $settings['steamvr'][$key] = $profile['steamvr'][$key] }
-                    foreach ($key in $profile['driver_null'].Keys) { $settings['driver_null'][$key] = $profile['driver_null'][$key] }
+                    foreach ($section in @('steamvr', 'dashboard', 'driver_null')) {
+                        if (-not $settings.ContainsKey($section)) { $settings[$section] = [ordered]@{} }
+                        foreach ($key in $profile[$section].Keys) { $settings[$section][$key] = $profile[$section][$key] }
+                    }
                     Write-JsonAtomic -Path $SettingsPath -Value $settings
                     $afterSettings = Read-JsonHashtable -Path $SettingsPath
                     $afterEffective = Get-EffectiveState -Settings $afterSettings -Profile $profile

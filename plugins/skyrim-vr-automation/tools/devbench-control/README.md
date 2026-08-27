@@ -76,7 +76,13 @@ condition being held open forever by Skyrim's permanent HUD menu.
 `toolAvailable` repeatedly refreshes the authoritative tool inventory rather
 than freezing the initial list. `serviceReady` additionally calls the supplied
 read-only action and understands accepted and retryable service states, including
-structured errors that explicitly declare `retryable: true`. Both
+structured errors that explicitly declare `retryable: true`. When
+`-ArgumentsJson` is omitted, the controller inspects the authoritative
+`inputSchema`: an empty object is used only when the schema permits it, while a
+versioned service requiring `contractMajor`, `clientId`, `commandId`, and
+`action` receives a generated `registry` (or `capabilities`) envelope. Unknown
+required fields fail with an instruction to supply explicit arguments instead
+of dispatching a malformed probe. Explicit arguments are never rewritten. Both
 waits back off to `-MaxPollMilliseconds` and collect bounded PID/CPU/memory and
 optional explicit-log samples. A missing target with increasing CPU is reported
 as `api-waiting-behind-initialization`; a quiet missing target is

@@ -29,6 +29,8 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
    `wait -Condition toolAvailable -Tool <exact-name>` with an explicit bounded
    timeout and optional explicit `-ProgressLogPath`. Use `serviceReady` plus a
    read-only `-ArgumentsJson` action when registration alone is insufficient.
+   If arguments are omitted, accept only the controller's schema-derived empty
+   or registry/capabilities probe; never substitute guessed required fields.
 9. Use `-ExpectedErrorCode` for deliberate guard tests such as
    `producer_mismatch`; do not reinterpret an unrequested API failure as a pass.
 10. Treat replay scheduler completion as execution evidence only. Require

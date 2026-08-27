@@ -7,7 +7,23 @@ and restore requires its hash receipt.
 Applying settings is not runtime proof. `start` launches SteamVR and succeeds
 only after the current `vrserver` session logs both the Valve null driver load
 and `Active HMD set to null.<configured serial>`. `inspect` therefore reports
-`null-configured-runtime-stopped` separately from `null-runtime-active`.
+`null-configured-runtime-stopped` separately from
+`null-runtime-active-unqualified`.
+
+The profile sets `dashboard.enableDashboard=false` so the generic-HMD
+laser-mouse/dashboard route is not invited into a headless run. Startup waits
+through a short stabilization window and fails with `dashboard-input-conflict`
+if `vrdashboard.exe` nevertheless appears. The controller never edits Valve's
+bindings and does not invent controller devices.
+
+Valve's null driver supplies a fixed HMD pose but exposes neither a controlled
+head-pose input nor controller inputs. The returned `inputContract` therefore
+marks `hmdPoseControl` and `controllerInput` unavailable and keeps
+`replayReady` and `measurementReady` false. Driver activation is sufficient
+for rendering and screenshots, but is not proof that Skyrim received a sane
+standing eye height or coherent stereo transforms. Replay and render
+measurement must remain fail-closed until an application-observed pose
+qualification receipt exists.
 
 Before `start`, the controller reads the OpenVR registration file (normally
 `%LOCALAPPDATA%\openvr\openvrpaths.vrpath`) and inventories every external
@@ -21,9 +37,9 @@ it does not mutate or unregister third-party drivers.
 The default null-HMD profile is resolved from
 `../../profiles/steamvr-null.profile.json`. Pass `-SettingsPath` and
 `-SteamVRRoot` for nonstandard Steam installations.
-The default is resolved after script parameter binding so Windows PowerShell
-child-process invocation cannot observe an empty `$PSScriptRoot` while
-evaluating the parameter default.
+The controller requires PowerShell 7 or newer. Windows PowerShell 5.1 returns
+the structured state `unsupported-powershell-version` with an exact `pwsh.exe`
+migration instruction before reaching unsupported JSON parameters.
 
 `stop` first requests SteamVR's normal shutdown and waits for a closed-state
 postcondition. If the null-driver runtime does not accept that request, inspect
@@ -43,7 +59,8 @@ are never used as stop, start, apply, or restore blockers.
 ```
 
 Launch Skyrim only after `start` or `inspect` returns current-session runtime
-proof. Also use an MO2 profile that disables OpenComposite; a running null
+proof, and do not interpret the `-unqualified` state as replay or measurement
+readiness. Also use an MO2 profile that disables OpenComposite; a running null
 SteamVR instance does not prove an application bypassing SteamVR is attached to
 it.
 
