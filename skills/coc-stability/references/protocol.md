@@ -11,9 +11,11 @@ the live start window.
    call `start`; it reuses the persistent project and saved paths. Only a first
    setup may supply the GitHub `ghidra_*_PUBLIC` installation, Java home, and
    exact analysis program for the intended build.
-2. Inspect the current Codex tool registry and require the DevBench and Ghidra
-   MCP tools to be present. A server shown as enabled in settings is not proof
-   that its tools were attached to this window.
+2. Inspect the current Codex tool registry and require the Ghidra MCP tools to
+   be present. Confirm `devbench_vr` remains registered at
+   `http://127.0.0.1:8921/mcp` and the installed `devbench-control` entrypoint
+   is present. DevBench is game-owned, so its endpoint and direct MCP tools are
+   not required to be live before Skyrim starts.
 3. Make one harmless Ghidra MCP health, version, or project-list call. The
    installed GitHub files and a ready controller receipt are not substitutes
    for a successful call through the current Codex window.
@@ -31,15 +33,16 @@ and can capture both an unhandled exception and a Windows hang. It uses full
 dumps, a two-dump limit, and no normal-exit or first-chance trigger. CDB/WinDbg
 and Ghidra MCP are the post-capture analyzers.
 
-If either MCP tool is absent, the Ghidra MCP call fails, or local evidence
-readiness fails, stop before the game is loaded. Start the managed Ghidra MCP
-server through the repository controller as needed, restart Codex so MCP tools
-are attached, and repeat this phase. Do not diagnose a missing installation
-merely from a missing tool.
+If the Ghidra MCP tool is absent, its call fails, DevBench registration or its
+local controller is missing, or local evidence readiness fails, stop before the
+game is loaded. Start the managed Ghidra MCP server through the repository
+controller as needed, restart Codex so Ghidra tools are attached, and repeat
+this phase. Do not diagnose a missing installation merely from a missing tool.
 
 A readiness receipt is reusable only while all of these remain true:
 
-- the same Codex window still exposes both MCP tool families;
+- the same Codex window still exposes Ghidra MCP and the DevBench controller;
+- the exact DevBench loopback registration is unchanged;
 - the Ghidra receipt still proves the same managed process and owned listener;
 - the owned ProcDump PID and start time still match the state receipt;
 - `coc-evidence-control status` reports a live monitor;
@@ -50,18 +53,22 @@ the corresponding recheck or re-arm before another live trigger.
 
 ## Fast start-cell establishment
 
-At the moment the user confirms Skyrim VR is in-game, immediately queue one
-async server scenario whose only steps are a 10,000 ms wait followed by exactly:
+Before the live signal, select the direct DevBench MCP route if it is attached;
+otherwise select the installed `devbench-control` loopback route. At the moment
+the user confirms Skyrim VR is in-game, immediately queue one async server
+scenario whose only steps are a 10,000 ms wait followed by exactly:
 
 ```text
 coc WindhelmExterior01
 ```
 
-Queue that deadline before identity, status, capability, schema, or capture
-calls. While the server owns the 10-second clock, concurrently read runtime
-identity and the exact CSX producer Build ID. Do not await one read before
-starting the other, and do not add work after both finish. These reads may
-complete early or late, but never postpone the scheduled COC.
+Queue that deadline before live endpoint discovery, identity, status,
+capability, schema, or capture calls. The selected loopback controller may make
+the minimum connection needed to submit that known scenario; it must not run a
+discovery/status chain first. While the server owns the 10-second clock,
+concurrently read runtime identity and the exact CSX producer Build ID. Do not
+await one read before starting the other, and do not add work after both finish.
+These reads may complete early or late, but never postpone the scheduled COC.
 
 If the server does not accept the timed scenario, stop without substituting a
 client sleep. After the COC step returns, wait for the load event and take one

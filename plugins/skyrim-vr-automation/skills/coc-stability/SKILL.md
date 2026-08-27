@@ -13,19 +13,22 @@ window.
 Before asking the user to load Skyrim, use Community Shaders'
 `tools/ghidra-mcp-control.ps1` to require a managed, ready, session-owned
 Ghidra MCP endpoint from the GitHub installation. Confirm the current Codex
-window exposes DevBench and Ghidra MCP tools, then make one harmless Ghidra MCP
-health/list call; an enabled UI toggle is not proof. Run
-`coc-evidence-control inspect` and `arm` so CDB/WinDbg, ProcDump, dump storage,
-and an owned crash/hang collector are ready. If a tool is absent or the Ghidra
-call fails, stop before the game is loaded and tell the user to start the
-managed Ghidra server and restart Codex. Retain both readiness receipts and the
-ProcDump state path.
+window exposes Ghidra MCP tools, then make one harmless Ghidra MCP health/list
+call; an enabled UI toggle is not proof. Confirm `devbench_vr` remains
+registered at its exact loopback URL and the installed `devbench-control`
+entrypoint is present. Do not require the game-owned DevBench endpoint to be
+live before Skyrim starts. Run `coc-evidence-control inspect` and `arm` so
+CDB/WinDbg, ProcDump, dump storage, and an owned crash/hang collector are ready.
+If a pre-game tool is absent or the Ghidra call fails, stop before the game is
+loaded and tell the user to start the managed Ghidra server and restart Codex.
+Retain both readiness receipts and the ProcDump state path.
 
-When the user confirms Skyrim VR is in-game, make the first live operation an
-async server scenario that waits exactly 10 seconds and dispatches one isolated
-`coc WindhelmExterior01`. During that server wait, read runtime identity and
-the exact CSX Build ID concurrently. Do not put discovery or sequential status
-calls ahead of this COC.
+When the user confirms Skyrim VR is in-game, use the already-selected direct
+DevBench MCP route when attached, otherwise the installed loopback controller.
+Make the first live operation an async server scenario that waits exactly 10
+seconds and dispatches one isolated `coc WindhelmExterior01`. During that
+server wait, read runtime identity and the exact CSX Build ID concurrently. Do
+not put discovery or sequential status calls ahead of this COC.
 
 After Windhelm loads, call `communityshaders.menu` once with
 `{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}`. Require
