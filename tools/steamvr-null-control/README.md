@@ -9,6 +9,15 @@ only after the current `vrserver` session logs both the Valve null driver load
 and `Active HMD set to null.<configured serial>`. `inspect` therefore reports
 `null-configured-runtime-stopped` separately from `null-runtime-active`.
 
+Before `start`, the controller reads the OpenVR registration file (normally
+`%LOCALAPPDATA%\openvr\openvrpaths.vrpath`) and inventories every external
+driver manifest with exact paths and hashes. An external driver declaring
+`redirectsDisplay=true` conflicts with the forced null display path: `inspect`
+returns `external-driver-conflict`, and `start` refuses with the exact driver
+inventory. Use `-OpenVRPathsPath` for a nonstandard registration file. This
+preflight also refuses startup when a registered driver cannot be classified;
+it does not mutate or unregister third-party drivers.
+
 The default null-HMD profile is resolved from
 `../../profiles/steamvr-null.profile.json`. Pass `-SettingsPath` and
 `-SteamVRRoot` for nonstandard Steam installations.

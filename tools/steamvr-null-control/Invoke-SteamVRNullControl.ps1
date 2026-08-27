@@ -14,6 +14,8 @@ param(
 
     [string]$ServerLogPath = 'C:\Program Files (x86)\Steam\logs\vrserver.txt',
 
+    [string]$OpenVRPathsPath = $(if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { Join-Path $env:LOCALAPPDATA 'openvr\openvrpaths.vrpath' } else { $null }),
+
     [string]$EvidenceDirectory,
 
     [switch]$WhatIf,
@@ -87,6 +89,62 @@ function Get-SharedTextTail([string]$Path, [int]$Count) {
 function Read-JsonHashtable {
     param([Parameter(Mandatory)][string]$Path)
     return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+}
+
+function Get-ExternalDriverInventory {
+    param([string]$Path)
+    $drivers = [Collections.Generic.List[object]]::new()
+    $errors = [Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return [pscustomobject][ordered]@{ path = $null; exists = $false; sha256 = $null; drivers = @(); conflicts = @(); errors = @('The OpenVR paths file could not be resolved because LOCALAPPDATA is unavailable.') }
+    }
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        return [pscustomobject][ordered]@{ path = $resolvedPath; exists = $false; sha256 = $null; drivers = @(); conflicts = @(); errors = @() }
+    }
+    try {
+        $paths = Read-JsonHashtable -Path $resolvedPath
+        foreach ($rootValue in @($paths['external_drivers'])) {
+            if ([string]::IsNullOrWhiteSpace([string]$rootValue)) { continue }
+            $root = [IO.Path]::GetFullPath([string]$rootValue)
+            $manifestPath = Join-Path $root 'driver.vrdrivermanifest'
+            $record = [ordered]@{
+                root = $root
+                manifestPath = $manifestPath
+                manifestExists = Test-Path -LiteralPath $manifestPath -PathType Leaf
+                manifestSha256 = $null
+                name = $null
+                alwaysActivate = $false
+                redirectsDisplay = $false
+                conflictsWithNullDisplay = $false
+                error = $null
+            }
+            if ($record.manifestExists) {
+                try {
+                    $manifest = Read-JsonHashtable -Path $manifestPath
+                    $record.manifestSha256 = Get-HashOrNull $manifestPath
+                    $record.name = if ($manifest.ContainsKey('name')) { [string]$manifest['name'] } else { [IO.Path]::GetFileName($root) }
+                    $record.alwaysActivate = $manifest.ContainsKey('alwaysActivate') -and [bool]$manifest['alwaysActivate']
+                    $record.redirectsDisplay = $manifest.ContainsKey('redirectsDisplay') -and [bool]$manifest['redirectsDisplay']
+                    $record.conflictsWithNullDisplay = [bool]$record.redirectsDisplay
+                }
+                catch { $record.error = $_.Exception.Message }
+            }
+            else { $record.error = 'External driver registration has no driver.vrdrivermanifest.' }
+            $drivers.Add([pscustomobject]$record)
+            if (-not [string]::IsNullOrWhiteSpace([string]$record.error)) { $errors.Add("External driver '$root' could not be classified: $($record.error)") }
+        }
+    }
+    catch { $errors.Add($_.Exception.Message) }
+    $conflicts = @($drivers | Where-Object conflictsWithNullDisplay)
+    return [pscustomobject][ordered]@{
+        path = $resolvedPath
+        exists = $true
+        sha256 = Get-HashOrNull $resolvedPath
+        drivers = @($drivers)
+        conflicts = $conflicts
+        errors = @($errors)
+    }
 }
 
 function Write-JsonAtomic {
@@ -230,6 +288,7 @@ try {
     $unprovenProcesses = @($processes | Where-Object { $_ -notin $ownedProcesses })
     $effective = Get-EffectiveState -Settings $settings -Profile $profile
     $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile
+    $externalDrivers = Get-ExternalDriverInventory -Path $OpenVRPathsPath
 
     if ($Command -eq 'stop') {
         if ($ownedProcesses.Count -eq 0) {
@@ -286,7 +345,7 @@ try {
         }
     }
     elseif ($Command -eq 'inspect') {
-        $state = if ($runtime.active -and $effective.active) { 'null-runtime-active' } elseif ($effective.active) { 'null-configured-runtime-stopped' } else { 'null-inactive' }
+        $state = if ($externalDrivers.errors.Count -gt 0) { 'external-driver-inventory-failed' } elseif ($externalDrivers.conflicts.Count -gt 0) { 'external-driver-conflict' } elseif ($runtime.active -and $effective.active) { 'null-runtime-active' } elseif ($effective.active) { 'null-configured-runtime-stopped' } else { 'null-inactive' }
         $result = New-Result -Ok $true -State $state -Data @{
             settingsPath = $SettingsPath
             settingsSha256 = Get-HashOrNull $SettingsPath
@@ -295,10 +354,18 @@ try {
             processes = $processes
             effective = $effective
             runtime = $runtime
+            externalDrivers = $externalDrivers
         }
     }
     elseif ($Command -eq 'start') {
-        if (-not $effective.active) {
+        if ($externalDrivers.errors.Count -gt 0) {
+            $result = New-Result -Ok $false -State 'external-driver-inventory-failed' -Data @{ effective = $effective; runtime = $runtime; externalDrivers = $externalDrivers } -Errors @('The external OpenVR driver inventory could not be read reliably; refusing null-HMD startup.')
+        }
+        elseif ($externalDrivers.conflicts.Count -gt 0) {
+            $names = @($externalDrivers.conflicts | ForEach-Object { if ([string]::IsNullOrWhiteSpace([string]$_.name)) { $_.root } else { $_.name } })
+            $result = New-Result -Ok $false -State 'external-driver-conflict' -Data @{ effective = $effective; runtime = $runtime; externalDrivers = $externalDrivers } -Errors @("Refusing null-HMD startup because external OpenVR display driver(s) redirect the display path: $($names -join ', '). Disable or unregister the exact driver registration, then inspect again.")
+        }
+        elseif (-not $effective.active) {
             $result = New-Result -Ok $false -State 'null-not-configured' -Data @{ effective = $effective; runtime = $runtime } -Errors @('Apply the null-HMD settings transaction before starting SteamVR.')
         }
         elseif ($runtime.active) {

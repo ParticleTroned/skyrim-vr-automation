@@ -35,6 +35,11 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
     explicit postconditions, outcome checks, assertions, or equivalent semantic
     evidence before reporting that an interaction succeeded. Use
     `-RequireSuccess` so a scheduler-only receipt is rejected by orchestration.
+11. Preserve `invocationEvidencePath` for failed calls. Never run `tfc 1`
+    unless the user explicitly authorizes a crash-risk experiment.
+12. For direct or nested scenario `game` mutations, pass the exact managed
+    `-WorkspaceManifestPath`. Do not use `-AllowUnprovenGameMutation` unless the
+    user has explicitly authorized bypassing workspace save policy.
 
 The entry point is:
 

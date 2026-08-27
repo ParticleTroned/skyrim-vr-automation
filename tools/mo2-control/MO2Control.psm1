@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 Set-StrictMode -Version Latest
-$script:MO2ControlContractVersion = '0.8.0'
+$script:MO2ControlContractVersion = '0.9.0'
 
 function Resolve-MO2ControlPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -2530,6 +2530,52 @@ function Invoke-MO2RecoverClose {
     return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $close.closed -State $status -Data @{ sessionId = $sessionId; accessId = $AccessId; explicitAccess = $explicitAccess; lockPath = $lockPath; sessionPath = $sessionPath; controller = $controller; controllerPath = [string]$controller.controllerPath; close = $close; releaseRequired = $close.closed } -Errors $(if ($close.closed) { @() } else { @('MO2 remains after cooperative recovery close. The recovery lock and evidence were retained; no force termination was attempted.') })
 }
 
+function Wait-MO2RetainedProcessStability {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Owned,
+        [Parameter(Mandatory)]$InitialInspection,
+        [ValidateRange(250, 10000)][int]$StabilityMilliseconds = 2000,
+        [ValidateRange(50, 1000)][int]$PollMilliseconds = 250,
+        [scriptblock]$InspectionFactory
+    )
+
+    $samples = [Collections.Generic.List[object]]::new()
+    $current = $InitialInspection
+    $ownerPid = if ($Owned.data.PSObject.Properties['ownerPid']) { [int]$Owned.data.ownerPid } else { 0 }
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($StabilityMilliseconds)
+    do {
+        $mo2 = @($current.processes.mo2)
+        $ownerPresent = $ownerPid -gt 0 -and @($mo2 | Where-Object { [int]$_.id -eq $ownerPid }).Count -eq 1
+        $samples.Add([pscustomobject][ordered]@{
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            mo2ProcessIds = @($mo2 | ForEach-Object { [int]$_.id })
+            ownerPid = $ownerPid
+            ownerPresent = $ownerPresent
+        })
+        if (-not $ownerPresent) { break }
+        if ([DateTime]::UtcNow -ge $deadline) { break }
+        Start-Sleep -Milliseconds $PollMilliseconds
+        $current = if ($InspectionFactory) {
+            & $InspectionFactory
+        }
+        else {
+            Get-MO2InspectionData -Config $Config -RequestedProfile ([string]$Owned.data.profile) -RequestedExecutable ([string]$Owned.data.executable)
+        }
+    } while ($true)
+
+    $last = $samples[$samples.Count - 1]
+    return [pscustomobject][ordered]@{
+        stable = [bool]$last.ownerPresent -and [DateTime]::UtcNow -ge $deadline
+        ownerPid = $ownerPid
+        stabilityMilliseconds = $StabilityMilliseconds
+        pollMilliseconds = $PollMilliseconds
+        samples = @($samples)
+        finalInspection = $current
+    }
+}
+
 function Invoke-MO2StopGame {
     [CmdletBinding()]
     param(
@@ -2575,7 +2621,14 @@ function Invoke-MO2StopGame {
         }
         Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-retained-dialog-cleanup.json') -Value $dialogCleanup
     }
-    $owned.data.status = if (-not $closed) { 'game-stop-incomplete' } elseif ($dialogNeedsAttention) { 'game-stopped-needs-attention' } else { 'game-stopped' }
+    $retention = $null
+    if ($closed) {
+        $retention = Wait-MO2RetainedProcessStability -Config $Config -Owned $owned -InitialInspection $after
+        $after = $retention.finalInspection
+        Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-retention-stability.json') -Value $retention
+    }
+    $mo2Retained = $closed -and $retention -and $retention.stable
+    $owned.data.status = if (-not $closed) { 'game-stop-incomplete' } elseif (-not $mo2Retained) { 'mo2-exited-after-game-stop' } elseif ($dialogNeedsAttention) { 'game-stopped-needs-attention' } else { 'game-stopped' }
     Write-MO2JsonAtomic -Path $owned.path -Value $owned.data
     $manifestPath = Join-Path ([string]$owned.data.sessionPath) 'session.json'
     $manifest = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $manifestPath -Raw)
@@ -2583,9 +2636,10 @@ function Invoke-MO2StopGame {
     $manifest.stoppedUtc = [DateTime]::UtcNow.ToString('o')
     Write-MO2JsonAtomic -Path $manifestPath -Value $manifest
 
-    $ok = $closed -and -not $dialogNeedsAttention
-    return New-MO2ActionResult -Config $Config -Command 'stop-game' -Ok $ok -State $owned.data.status -Data @{ before = $before.processes; after = $after.processes; mo2Retained = $after.processes.mo2.Count -gt 0; retainedDialogCleanup = $dialogCleanup; forceTermination = $false; sessionPath = $owned.data.sessionPath } -Errors $(
+    $ok = $closed -and $mo2Retained -and -not $dialogNeedsAttention
+    return New-MO2ActionResult -Config $Config -Command 'stop-game' -Ok $ok -State $owned.data.status -Data @{ before = $before.processes; after = $after.processes; mo2Retained = $mo2Retained; retention = $retention; releaseRequired = $closed -and -not $mo2Retained; retainedDialogCleanup = $dialogCleanup; forceTermination = $false; sessionPath = $owned.data.sessionPath } -Errors $(
         if (-not $closed) { @('The game did not accept a graceful close request; no force termination was attempted.') }
+        elseif (-not $mo2Retained) { @('The game stopped, but the exact session-owned MO2 process exited during the retention stability window. Release this session before requesting another; controlled relaunch is unavailable.') }
         elseif ($dialogNeedsAttention) { @('The game stopped, but an unclassified or uncleared retained MO2 dialog needs attention; no unrelated window was touched.') }
         else { @() }
     )

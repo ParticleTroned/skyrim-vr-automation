@@ -22,6 +22,9 @@ particular drive letter for the plugin itself.
 
 1. State in commentary that this skill is governing the null-HMD operation.
 2. Run `inspect -Compact` first and retain the JSON result as the before-state.
+   If it reports `external-driver-conflict`, do not start SteamVR; report the
+   exact redirecting driver inventory. This controller does not unregister
+   third-party drivers.
 3. Before `apply` or `restore`, prove SteamVR is closed. Use `stop -Compact`
    first; if it does not close, review the returned exact process inventory
    before using `stop -Force -Compact`.

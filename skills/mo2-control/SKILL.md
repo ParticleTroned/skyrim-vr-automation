@@ -84,6 +84,8 @@ are:
    retiring the workspace.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
+   If `stop-game` returns `mo2-exited-after-game-stop` or `releaseRequired`, do
+   not relaunch from that session; release it and request access normally.
 6. Use `-StartOnly` when the outer host cannot safely wait for UI/game
    readiness; retain the immediate receipt and poll the exact session with
    `status`.

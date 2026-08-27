@@ -11,6 +11,7 @@ exact command-specific `approval.reusablePrefix`. `inspect` is read-only; every
 profile mutation remains a one-shot approval because it overwrites
 `modlist.txt` under an exact backup transaction. Do not invoke it through a
 path variable, `-Command`, pipeline, or constructed command string.
+Use `-Compact` for a single-line JSON result in orchestration logs.
 
 `-ProfilePath` accepts either the profile directory or its exact `modlist.txt`
 leaf (`-ModListPath` is an alias). Results and receipts preserve the legacy

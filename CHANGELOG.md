@@ -4,6 +4,15 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Persist DevBench invocation journals before dispatch, preserve failed-call
+  evidence across target exit, guard the known-crashing Skyrim VR `tfc 1`
+  command, and enforce workspace save policy for direct and scenario game
+  mutations.
+- Inventory external OpenVR driver manifests before null-HMD startup and refuse
+  display redirectors such as Virtual Desktop with exact path and hash evidence.
+- Revalidate the exact MO2 owner through a bounded post-game stability window,
+  returning an explicit release-required state if MO2 exits, and add compact
+  JSON output to profile control.
 - Decouple scarce MO2 access leases from durable task workspaces: tasks can
   list and resume an exact retained profile under a new lease, while explicit
   destructive `retire` replaces the ambiguous workspace-release lifecycle.

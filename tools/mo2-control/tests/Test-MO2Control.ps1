@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 
 $packageRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $packageRoot 'MO2Control.psm1') -Force
+$mo2Module = Get-Module MO2Control
 
 $failures = [System.Collections.Generic.List[string]]::new()
 $passes = [System.Collections.Generic.List[string]]::new()
@@ -27,6 +28,17 @@ function Assert-MO2Test {
         $failures.Add($Name)
     }
 }
+
+$retentionFixture = & $mo2Module {
+    $samples = [Collections.Generic.Queue[object]]::new()
+    $samples.Enqueue([pscustomobject]@{ processes = [pscustomobject]@{ mo2 = @([pscustomobject]@{ id = 4123 }) } })
+    $samples.Enqueue([pscustomobject]@{ processes = [pscustomobject]@{ mo2 = @() } })
+    $owned = [pscustomobject]@{ data = [pscustomobject]@{ ownerPid = 4123; profile = 'Fixture'; executable = 'Fixture' } }
+    $initial = $samples.Dequeue()
+    $inspectionFactory = { $samples.Dequeue() }.GetNewClosure()
+    Wait-MO2RetainedProcessStability -Config ([pscustomobject]@{}) -Owned $owned -InitialInspection $initial -StabilityMilliseconds 250 -PollMilliseconds 50 -InspectionFactory $inspectionFactory
+}
+Assert-MO2Test (-not $retentionFixture.stable -and $retentionFixture.samples.Count -eq 2 -and -not $retentionFixture.samples[-1].ownerPresent) 'MO2 retention stability detects an owner that exits immediately after game shutdown'
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('mo2-control-test-' + [guid]::NewGuid().ToString('N'))
 try {

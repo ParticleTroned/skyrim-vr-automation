@@ -26,6 +26,12 @@ expectations. Pass `-EvidenceDirectory` to preserve this binding with the run.
 Each invocation writes a uniquely named binding receipt, so parallel calls do
 not overwrite one another. Use `-EvidenceLabel` to give that receipt a stable
 human-readable label within the unique filename.
+The controller also persists an invocation journal before dispatch. It records
+the requested tool and arguments, dispatch boundary, last verified runtime
+identity, transport retries, and terminal result. If the target exits during a
+synchronous call, the failed result returns `invocationEvidencePath` instead of
+discarding the last known request boundary. Without an explicit evidence
+directory these journals use the local Skyrim VR automation evidence root.
 When available, add `buildId`, `artifactPath`/`dllPath`, and
 `artifactSha256` to runtime metadata (or pass their explicit parameter
 equivalents). The controller queries the CSX registry bridge and hashes the
@@ -45,6 +51,22 @@ Nested `error.code`, `status`, and `result.state` values are classified. Use
 `-ExpectedErrorCode producer_mismatch` when a guarded rejection is the intended
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
 exponential retry and are preserved under `transportRetries`.
+
+The exact Skyrim VR console command `tfc 1` is denied wherever it appears in a
+tool argument tree because it has a confirmed player-camera null-write crash
+path under null-HMD automation. Prefer a naturally stationary scene for
+benchmarks. `-AllowUnsafeTfc1` exists only for an explicitly accepted crash-risk
+experiment and is never implied by a normal scenario call.
+
+State-changing `game` calls are also default-deny. Direct calls and nested
+scenario steps for `load`, `loadLast`, or `save` require
+`-WorkspaceManifestPath`. `MainMenuOnly` and `FreshGame` deny all three;
+`VerifiedFixture` permits only `load` with the manifest's exact
+`saveFixture.loadName`; `dir` is required and must be the workspace profile's
+exact `saves` directory. The same rule covers console `load`/`save` commands,
+which DevBench reroutes internally to the game tool. `-AllowUnprovenGameMutation` is an explicit policy
+bypass for work outside a managed workspace; it is never inferred from copied
+save availability.
 
 `wait -Condition noBlockingMenu` polls the menu tool client-side, ignores only
 the explicitly listed `-IgnoredMenus` (HUD by default), and always reports the

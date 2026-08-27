@@ -189,7 +189,11 @@ path, argument, and timestamp evidence for exact-process adoption.
 owned game/loader while preserving the exact owner MO2 PID, allowing controlled
 relaunches. After the game exits it acknowledges only a structurally classified
 retained `Failed to run` dialog; an unknown modal returns
-`game-stopped-needs-attention` without touching it. `close` refuses while a game/loader exists and cooperatively resolves
+`game-stopped-needs-attention` without touching it. It then observes the exact
+session-owned MO2 PID for a bounded stability window. If MO2 exits immediately
+after the game, `stop-game` returns `mo2-exited-after-game-stop`, sets
+`releaseRequired`, and refuses to represent the session as relaunchable. `close`
+refuses while a game/loader exists and cooperatively resolves
 MO2's structured `File` → `Exit` path and visible modal chain, including the VFS
 `Unlock` prompt. `stop` first closes the game and then uses the same MO2
 resolver. `release` ends only the exactly owned session after proving MO2 and

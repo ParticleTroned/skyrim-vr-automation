@@ -31,7 +31,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
 
-    [switch]$NoExit
+    [switch]$NoExit,
+
+    [switch]$Compact
 )
 
 Set-StrictMode -Version Latest
@@ -246,7 +248,9 @@ if ($Command -eq 'inspect') {
         processes = $processes
         approval = New-ProfileApprovalMetadata -Subcommand $Command
     }
-    $inspectResult | ConvertTo-Json -Depth 7
+    $jsonParameters = @{ InputObject = $inspectResult; Depth = 7 }
+    if ($Compact) { $jsonParameters['Compress'] = $true }
+    ConvertTo-Json @jsonParameters
     return
 }
 
@@ -427,4 +431,6 @@ $finalResult = [pscustomobject][ordered]@{
     receiptPath = $receiptPath
     approval = New-ProfileApprovalMetadata -Subcommand $Command
 }
-$finalResult | ConvertTo-Json -Depth 7
+$jsonParameters = @{ InputObject = $finalResult; Depth = 7 }
+if ($Compact) { $jsonParameters['Compress'] = $true }
+ConvertTo-Json @jsonParameters
