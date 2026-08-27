@@ -16,11 +16,12 @@ immediate start receipts, and attributable RootBuilder recovery. A successful va
 authorizes no mutation by itself. Changes still require the user's task to put
 the relevant MO2 state, mod files, game files, or captured artifacts in scope.
 
-Each independent test task creates its own profile from the explicit
+Each independent test task owns a durable profile from the explicit
 `defaults.testProfileSource` through `../mo2-workspace-control`. The stable
 source is distinct from the ordinary session default and from experimental
 alternate profiles. Workspaces inherit a verified copy of the stable source's
-complete saves tree and never own mods that predate their creation.
+complete saves tree, survive access-lease yields, and never own mods that
+predate their creation.
 
 ## Machine configuration
 
@@ -113,6 +114,9 @@ analysis, report writing, or any other phase that does not require MO2:
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
+This yields only the scarce access lease. It deliberately preserves the task's
+workspace profile, saves, options, and task-owned mods for a later `resume`.
+
 The task remains responsible for its lease even when the estimate is overdue.
 Use `renew-access` to update coordination metadata. Use `recover-access` only
 after the owner is positively classified as abandoned, and only with the exact
@@ -121,20 +125,27 @@ active RootBuilder deployment.
 
 ## Automated preparation
 
-Prepare the configured stable source while holding access, create a task
-workspace from it, then pass the returned task profile explicitly to `prepare`.
+Discover the stable task identity's retained workspaces, then explicitly create
+or resume one while holding access. On the first request, prepare the configured
+stable source and create a task workspace. On later requests, select an exact
+retained WorkspaceId or explicitly request a fresh clone. Pass the returned
+task profile explicitly to `prepare`.
 Source preparation moves every legacy `ShaderCache*` directory out of overwrite
 into a newly enabled stable-source mod; creation refuses to continue if any
 remain:
 
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> list-task -TaskId <stable-task-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -TaskId <stable-task-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> resume -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <exact-retained-workspace-id> -Confirm:$false -Compact
 ```
 
-At the end, release the evidence session, release the exact task workspace and
-its explicitly owned artifacts, then release access. A task must never replace
-or delete a pre-existing shared mod.
+After each live use, release the evidence session and access lease but retain
+the workspace. Use workspace `retire` only when its profile is no longer
+wanted. A task must never edit, replace, or delete a pre-existing shared mod;
+it may change existing mod markers only in its own cloned profile. Primary-list
+updates install a new mod name and change primary-profile markers additively.
 
 Preview first, then bind a session to the owned access lease:
 

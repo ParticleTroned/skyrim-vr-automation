@@ -4,6 +4,12 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Decouple scarce MO2 access leases from durable task workspaces: tasks can
+  list and resume an exact retained profile under a new lease, while explicit
+  destructive `retire` replaces the ambiguous workspace-release lifecycle.
+- Select fresh and resumed task profiles transactionally, bind them to a stable
+  task identity, preserve saves and profile-local state across lease yields,
+  and enforce additive shared-mod update guidance.
 - Copy and hash-verify the maintained source profile's complete save tree into
   every task profile while retaining `SavePolicy` as an authorization marker
   and verified fixtures as the only deterministic baseline contract.

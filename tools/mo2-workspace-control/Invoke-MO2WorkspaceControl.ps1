@@ -3,12 +3,13 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'prepare-source', 'register-mod', 'ensure-mod-wins', 'release')]
+    [ValidateSet('create', 'resume', 'list-task', 'inspect', 'fixture-status', 'refresh-fixture', 'prepare-source', 'register-mod', 'ensure-mod-wins', 'retire', 'release')]
     [string]$Command,
 
     [string]$ConfigPath,
     [string]$AccessId,
     [string]$WorkspaceId,
+    [string]$TaskId,
     [string]$Label = 'task',
     [string]$SourceProfile,
     [ValidateSet('MainMenuOnly', 'FreshGame', 'VerifiedFixture')]
@@ -37,13 +38,13 @@ function New-WorkspaceApprovalMetadata([string]$Subcommand) {
     $hostExecutable = [string][Environment]::ProcessPath
     if ([string]::IsNullOrWhiteSpace($hostExecutable)) { $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path }
     $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
-    $oneShotCommands = @('refresh-fixture', 'prepare-source', 'release')
+    $oneShotCommands = @('refresh-fixture', 'prepare-source', 'retire', 'release')
     return [pscustomobject][ordered]@{
         hostExecutable = $hostExecutable; entryPoint = $entryPoint; subcommand = $Subcommand
         reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
         reusableApprovalEligible = $Subcommand -notin $oneShotCommands
-        escalationUsuallyRequired = $Subcommand -notin @('inspect', 'fixture-status')
-        oneShotReason = if ($Subcommand -eq 'refresh-fixture') { 'Shared fixture replacement must remain a one-shot approval.' } elseif ($Subcommand -eq 'prepare-source') { 'Moving overwrite cache trees into a shared stable-profile mod must remain a one-shot approval.' } elseif ($Subcommand -eq 'release') { 'Recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
+        escalationUsuallyRequired = $Subcommand -notin @('inspect', 'fixture-status', 'list-task')
+        oneShotReason = if ($Subcommand -eq 'refresh-fixture') { 'Shared fixture replacement must remain a one-shot approval.' } elseif ($Subcommand -eq 'prepare-source') { 'Moving overwrite cache trees into a shared stable-profile mod must remain a one-shot approval.' } elseif ($Subcommand -in @('retire', 'release')) { 'Recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
         invocationRule = 'Use this literal prefix directly. Put changing access, workspace, mod, and evidence arguments afterward; do not hide the prefix in variables, -Command, pipelines, or a command string.'
     }
 }
@@ -112,7 +113,7 @@ function Write-WorkspaceBytesAtomic([string]$Path, [byte[]]$Bytes) {
     finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
-function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string]$StableProfile, [string]$EvidenceRoot, [switch]$WhatIf) {
+function Set-MO2SelectedProfile($Config, [string]$TargetProfile, [string]$Operation, [string]$EvidenceRoot, [switch]$WhatIf) {
     $iniPath = [IO.Path]::GetFullPath([string]$Config.mo2.ini)
     if (-not (Test-Path -LiteralPath $iniPath -PathType Leaf)) { throw "MO2 INI does not exist: $iniPath" }
     $beforeBytes = [IO.File]::ReadAllBytes($iniPath)
@@ -122,29 +123,29 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
     $rawBeforeValue = $selectionMatches[0].Groups['value'].Value.Trim()
     $byteArrayMatch = [regex]::Match($rawBeforeValue, '^@ByteArray\((.*)\)$')
     $beforeValue = if ($byteArrayMatch.Success) { $byteArrayMatch.Groups[1].Value } else { $rawBeforeValue }
-    $replacement = $selectionMatches[0].Groups['prefix'].Value + '@ByteArray(' + $StableProfile + ')'
+    $replacement = $selectionMatches[0].Groups['prefix'].Value + '@ByteArray(' + $TargetProfile + ')'
     $afterText = $beforeText.Remove($selectionMatches[0].Index, $selectionMatches[0].Length).Insert($selectionMatches[0].Index, $replacement)
     $backupPath = Join-Path $EvidenceRoot 'ModOrganizer.before.ini'
-    $receiptPath = Join-Path $EvidenceRoot 'selected-profile-release.receipt.json'
+    $receiptPath = Join-Path $EvidenceRoot ('selected-profile-' + (Get-SafeName $Operation) + '.receipt.json')
     $record = [pscustomobject][ordered]@{
-        iniPath = $iniPath; selectedProfileBefore = $beforeValue; selectedProfileAfter = $StableProfile
-        backupPath = $backupPath; receiptPath = $receiptPath; changed = $beforeValue -cne $StableProfile
+        iniPath = $iniPath; selectedProfileBefore = $beforeValue; selectedProfileAfter = $TargetProfile
+        backupPath = $backupPath; receiptPath = $receiptPath; changed = $beforeValue -cne $TargetProfile
     }
     if ($WhatIf) { return $record }
     if (-not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null }
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite the exact MO2 INI backup: $backupPath" }
     [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
     try {
-        if ($beforeValue -cne $StableProfile) {
+        if ($beforeValue -cne $TargetProfile) {
             Write-WorkspaceBytesAtomic -Path $iniPath -Bytes ([Text.Encoding]::UTF8.GetBytes($afterText))
         }
         $verifiedText = [IO.File]::ReadAllText($iniPath, [Text.Encoding]::UTF8)
         $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*\r?$')
         $verified = if ($verifiedMatches.Count -eq 1) { $verifiedMatches[0].Groups['value'].Value } else { $null }
-        if ($verified -cne $StableProfile) { throw 'MO2 selected profile postcondition did not match the stable source.' }
+        if ($verified -cne $TargetProfile) { throw "MO2 selected profile postcondition did not match '$TargetProfile'." }
         $receipt = [pscustomobject][ordered]@{
-            contractVersion = '1.0.0'; operation = 'select-stable-before-workspace-release'; iniPath = $iniPath
-            taskProfile = $TaskProfile; stableProfile = $StableProfile; selectedProfileBefore = $beforeValue
+            contractVersion = '1.1.0'; operation = $Operation; iniPath = $iniPath
+            targetProfile = $TargetProfile; selectedProfileBefore = $beforeValue
             selectedProfileAfter = $verified; backupPath = $backupPath
             beforeSha256 = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
             resultSha256 = (Get-FileHash -LiteralPath $iniPath -Algorithm SHA256).Hash
@@ -154,7 +155,7 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
     }
     catch {
         Write-WorkspaceBytesAtomic -Path $iniPath -Bytes $beforeBytes
-        throw "MO2 selected profile release transaction failed; the exact INI bytes were restored. $($_.Exception.Message)"
+        throw "MO2 selected profile transaction '$Operation' failed; the exact INI bytes were restored. $($_.Exception.Message)"
     }
     return $record
 }
@@ -284,13 +285,63 @@ function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$So
     }
 }
 
-function Read-OwnedWorkspace($Config, [string]$Id, [string]$OwnedAccessId) {
+function Resolve-TaskId([string]$RequestedTaskId, [switch]$Required) {
+    $resolved = $RequestedTaskId
+    if ([string]::IsNullOrWhiteSpace($resolved)) { $resolved = [Environment]::GetEnvironmentVariable('CODEX_THREAD_ID') }
+    if ([string]::IsNullOrWhiteSpace($resolved)) { $resolved = [Environment]::GetEnvironmentVariable('CODEX_TASK_ID') }
+    if ([string]::IsNullOrWhiteSpace($resolved)) {
+        if ($Required) { throw 'A stable task identity is required. Pass -TaskId or set CODEX_THREAD_ID/CODEX_TASK_ID.' }
+        return $null
+    }
+    $resolved = $resolved.Trim()
+    if ($resolved.Length -gt 256 -or $resolved -match '[\r\n]') { throw 'TaskId is malformed.' }
+    return $resolved
+}
+
+function Read-Workspace($Config, [string]$Id) {
     $path = Get-WorkspaceManifestPath -Config $Config -Id $Id
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Workspace does not exist: $Id" }
     $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     if ([string]$manifest.workspaceId -cne $Id) { throw 'Workspace manifest identity does not match its filename.' }
-    if ([string]$manifest.accessId -cne $OwnedAccessId) { throw 'Workspace is owned by a different MO2 access lease.' }
     return [pscustomobject]@{ path = $path; data = $manifest }
+}
+
+function Assert-WorkspaceTaskOwner($Workspace, [string]$ResolvedTaskId) {
+    if (-not $Workspace.data.PSObject.Properties['ownerTaskId']) { throw 'Workspace predates durable task ownership and cannot be resumed. Create a fresh task workspace.' }
+    if ([string]$Workspace.data.ownerTaskId -cne $ResolvedTaskId) { throw 'Workspace belongs to a different task identity.' }
+}
+
+function Read-OwnedWorkspace($Config, [string]$Id, [string]$OwnedAccessId, [string]$ResolvedTaskId) {
+    $workspace = Read-Workspace -Config $Config -Id $Id
+    Assert-WorkspaceTaskOwner -Workspace $workspace -ResolvedTaskId $ResolvedTaskId
+    $manifest = $workspace.data
+    if ([string]$manifest.accessId -cne $OwnedAccessId) { throw 'Workspace is owned by a different MO2 access lease.' }
+    return $workspace
+}
+
+function Get-TaskWorkspaces($Config, [string]$ResolvedTaskId) {
+    $root = Join-Path ([string]$Config.storage.sessionStaging) 'workspaces'
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
+    $items = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -Filter '*.json' -File -Force | Sort-Object LastWriteTimeUtc -Descending)) {
+        try {
+            $manifest = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            if ($manifest.PSObject.Properties['ownerTaskId'] -and [string]$manifest.ownerTaskId -ceq $ResolvedTaskId) {
+                $profilePath = [IO.Path]::GetFullPath([string]$manifest.profilePath)
+                $items += [pscustomobject][ordered]@{
+                    workspaceId = [string]$manifest.workspaceId; status = [string]$manifest.status
+                    profileName = [string]$manifest.profileName; profileDirectory = $profilePath
+                    profileExists = Test-Path -LiteralPath $profilePath -PathType Container
+                    resumable = ([string]$manifest.status -in @('ready', 'retained')) -and (Test-Path -LiteralPath $profilePath -PathType Container)
+                    sourceProfile = [string]$manifest.sourceProfile; accessId = [string]$manifest.accessId
+                    createdUtc = [string]$manifest.createdUtc; lastResumedUtc = if ($manifest.PSObject.Properties['lastResumedUtc']) { [string]$manifest.lastResumedUtc } else { $null }
+                    manifestPath = $file.FullName
+                }
+            }
+        }
+        catch { }
+    }
+    return @($items)
 }
 
 function Assert-AccessAndClosed($Config, [string]$OwnedAccessId, [string]$Profile, [switch]$AllowOverwriteShaderCaches) {
@@ -425,7 +476,20 @@ try {
     $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
     $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
 
-    if ($Command -in @('fixture-status', 'refresh-fixture')) {
+    if ($Command -eq 'list-task') {
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
+        $allWorkspaces = @(Get-TaskWorkspaces -Config $config -ResolvedTaskId $resolvedTaskId)
+        $workspaces = @($allWorkspaces | Where-Object resumable)
+        $result = [pscustomobject][ordered]@{
+            ok = $true; command = $Command; state = $(if ($workspaces.Count -eq 0) { 'no-retained-workspaces' } else { 'retained-workspaces-found' })
+            data = [pscustomobject][ordered]@{
+                ownerTaskId = $resolvedTaskId; count = $workspaces.Count; workspaces = $workspaces
+                unavailableWorkspaces = @($allWorkspaces | Where-Object { -not $_.resumable })
+                guidance = if ($workspaces.Count -eq 0) { 'This task has no retained workspace. After acquiring MO2 access, explicitly create a fresh workspace.' } else { 'After acquiring MO2 access, explicitly resume one listed WorkspaceId or explicitly create a fresh workspace.' }
+            }
+        }
+    }
+    elseif ($Command -in @('fixture-status', 'refresh-fixture')) {
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for fixture control.' }
         $sourcePath = [IO.Path]::GetFullPath((Join-Path $profilesRoot $sourceName))
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
@@ -492,6 +556,7 @@ try {
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = [string]$preparation.state; data = $preparation }
     }
     elseif ($Command -eq 'create') {
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required; test workspaces never infer a stable source from the ordinary session default.' }
         $validation = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName
         $sourcePath = Join-Path $profilesRoot $sourceName
@@ -512,14 +577,15 @@ try {
             $fixture = Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '1.3.0'; workspaceId = $workspaceId; accessId = $AccessId; status = 'creating'
+            contractVersion = '1.4.0'; workspaceId = $workspaceId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
+            leaseHistory = @([pscustomobject][ordered]@{ accessId = $AccessId; acquiredForWorkspaceUtc = [DateTime]::UtcNow.ToString('o'); disposition = 'created' })
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
             sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
             profile = $profileName; profilePath = $profilePath; profileName = $profileName; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             savePolicy = $SavePolicy; fixtureManifestPath = if ($fixture) { [string]$fixture.manifestPath } else { $null }
-            saveFixture = $fixture; sourceSaveSnapshot = $sourceSaveSnapshot; initialModNames = $initialMods; registeredMods = @(); inheritedSaves = $true
+            saveFixture = $fixture; sourceSaveSnapshot = $sourceSaveSnapshot; initialModNames = $initialMods; protectedSharedModNames = $initialMods; registeredMods = @(); inheritedSaves = $true
             saveGuidance = 'Every source-profile save is copied. MainMenuOnly and FreshGame still describe test authorization; use VerifiedFixture for an exact declared load target. See docs/BREEZEHOME-SAVE.md.'
-            ownershipRule = 'The workspace may mutate only its cloned profile and mod directories absent from initialModNames and registered by this workspace.'
+            ownershipRule = 'The workspace may change only its cloned profile and mods it created and registered. Existing shared mod directories are immutable; profile-local enable/disable markers are allowed.'
         }
         if ($PSCmdlet.ShouldProcess($profilePath, "clone stable MO2 profile '$sourceName' including its complete saves tree")) {
             New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
@@ -552,18 +618,66 @@ try {
             $manifest.status = 'ready'
             $manifest | Add-Member -NotePropertyName profileSnapshot -NotePropertyValue (Get-ProfileSnapshot -Path $profilePath)
             Write-WorkspaceJsonAtomic -Path $manifestPath -Value $manifest
+            $selectionEvidence = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-create-select')
+            $selection = Set-MO2SelectedProfile -Config $config -TargetProfile $profileName -Operation 'select-created-task-workspace' -EvidenceRoot $selectionEvidence
+            $manifest | Add-Member -NotePropertyName selectedProfileTransaction -NotePropertyValue $selection
+            Write-WorkspaceJsonAtomic -Path $manifestPath -Value $manifest
+        }
+        elseif ($WhatIfPreference) {
+            $selectionEvidence = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-create-select')
+            $manifest | Add-Member -NotePropertyName selectedProfileTransaction -NotePropertyValue (Set-MO2SelectedProfile -Config $config -TargetProfile $profileName -Operation 'select-created-task-workspace' -EvidenceRoot $selectionEvidence -WhatIf)
         }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-ready' }); data = $manifest }
     }
+    elseif ($Command -eq 'resume') {
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
+        if ([string]::IsNullOrWhiteSpace($WorkspaceId)) {
+            $available = @(Get-TaskWorkspaces -Config $config -ResolvedTaskId $resolvedTaskId)
+            throw "resume requires an exact -WorkspaceId. Available retained workspaces for this task: $((@($available.workspaceId) -join ', ') ?? '<none>')."
+        }
+        $workspace = Read-Workspace -Config $config -Id $WorkspaceId
+        Assert-WorkspaceTaskOwner -Workspace $workspace -ResolvedTaskId $resolvedTaskId
+        if ([string]$workspace.data.status -notin @('ready', 'retained')) { throw "Workspace '$WorkspaceId' is not resumable; status is '$($workspace.data.status)'." }
+        $profilePath = [IO.Path]::GetFullPath([string]$workspace.data.profilePath)
+        if (-not (Test-Path -LiteralPath $profilePath -PathType Container)) {
+            $available = @(Get-TaskWorkspaces -Config $config -ResolvedTaskId $resolvedTaskId | Where-Object profileExists)
+            throw "Retained workspace '$WorkspaceId' has no profile directory at '$profilePath'. Valid retained workspaces: $((@($available.workspaceId) -join ', ') ?? '<none>'). Request a fresh workspace if none remain."
+        }
+        $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile ([string]$workspace.data.profile)
+        $resumeEvidence = Join-Path (Split-Path -Parent $workspace.path) ($WorkspaceId + '-resume-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
+        $approved = $PSCmdlet.ShouldProcess($profilePath, "bind retained workspace to access '$AccessId' and select profile '$($workspace.data.profile)'")
+        $selection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$workspace.data.profile) -Operation 'resume-retained-task-workspace' -EvidenceRoot $resumeEvidence -WhatIf:(-not $approved)
+        if ($approved) {
+            $priorAccessId = [string]$workspace.data.accessId
+            $registeredNames = @($workspace.data.registeredMods | ForEach-Object { [string]$_.name })
+            $protectedNames = if ($workspace.data.PSObject.Properties['protectedSharedModNames']) { @($workspace.data.protectedSharedModNames) } else { @($workspace.data.initialModNames) }
+            $currentSharedNames = @(Get-ChildItem -LiteralPath $modsRoot -Directory -Force | Select-Object -ExpandProperty Name | Where-Object { $_ -notin $registeredNames })
+            $protectedNames = @($protectedNames + $currentSharedNames | Sort-Object -Unique)
+            $workspace.data.accessId = $AccessId
+            $workspace.data.status = 'ready'
+            $workspace.data | Add-Member -NotePropertyName acquisitionDisposition -NotePropertyValue 'retained-resume' -Force
+            $workspace.data | Add-Member -NotePropertyName protectedSharedModNames -NotePropertyValue $protectedNames -Force
+            $workspace.data | Add-Member -NotePropertyName lastResumedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+            $history = if ($workspace.data.PSObject.Properties['leaseHistory']) { @($workspace.data.leaseHistory) } else { @() }
+            $updatedHistory = @($history) + ,([pscustomobject][ordered]@{ accessId = $AccessId; priorAccessId = $priorAccessId; acquiredForWorkspaceUtc = [DateTime]::UtcNow.ToString('o'); disposition = 'resumed' })
+            $workspace.data | Add-Member -NotePropertyName leaseHistory -NotePropertyValue $updatedHistory -Force
+            $workspace.data | Add-Member -NotePropertyName selectedProfileTransaction -NotePropertyValue $selection -Force
+            Write-WorkspaceJsonAtomic -Path $workspace.path -Value $workspace.data
+        }
+        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-resumed' }); data = $workspace.data }
+    }
     elseif ($Command -eq 'inspect') {
-        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
+        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId -ResolvedTaskId $resolvedTaskId
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = [string]$owned.data.status; data = $owned.data }
     }
     elseif ($Command -eq 'register-mod') {
-        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
+        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId -ResolvedTaskId $resolvedTaskId
         $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile ([string]$owned.data.profile)
         if ([string]::IsNullOrWhiteSpace($ModName) -or [string]::IsNullOrWhiteSpace($ModDirectory)) { throw 'register-mod requires ModName and ModDirectory.' }
-        if (@($owned.data.initialModNames | Where-Object { $_ -ceq $ModName }).Count -gt 0) { throw "Refusing to register or claim the pre-existing shared mod '$ModName'." }
+        $protectedNames = if ($owned.data.PSObject.Properties['protectedSharedModNames']) { @($owned.data.protectedSharedModNames) } else { @($owned.data.initialModNames) }
+        if (@($protectedNames | Where-Object { $_ -ceq $ModName }).Count -gt 0) { throw "Refusing to register, edit, or claim the protected shared mod '$ModName'." }
         if (@($owned.data.registeredMods | Where-Object { $_.name -ceq $ModName }).Count -gt 0) { throw "Workspace already registered '$ModName'." }
         $resolvedMod = [IO.Path]::GetFullPath($ModDirectory)
         $expectedMod = [IO.Path]::GetFullPath((Join-Path $modsRoot $ModName))
@@ -589,7 +703,8 @@ try {
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'mod-registered' }); data = @{ workspaceId = $WorkspaceId; registration = $registration } }
     }
     elseif ($Command -eq 'ensure-mod-wins') {
-        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
+        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId -ResolvedTaskId $resolvedTaskId
         $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile ([string]$owned.data.profile)
         if ([string]::IsNullOrWhiteSpace($ModName)) { throw 'ensure-mod-wins requires ModName.' }
         $matches = @($owned.data.registeredMods | Where-Object { [string]$_.name -ceq $ModName })
@@ -611,10 +726,9 @@ try {
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'winner-verified' }); data = @{ workspaceId = $WorkspaceId; winner = $winner; evidenceDirectory = $evidence } }
     }
     else {
-        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId
+        $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
+        $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId -ResolvedTaskId $resolvedTaskId
         $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile ([string]$owned.data.sourceProfile)
-        $currentSource = Get-ProfileSnapshot -Path ([string]$owned.data.sourceProfilePath)
-        if ([string]$currentSource.sha256 -cne [string]$owned.data.sourceSnapshot.sha256) { throw 'Stable source profile changed during the workspace; refusing cleanup until the difference is classified.' }
         $profilePath = [IO.Path]::GetFullPath([string]$owned.data.profilePath)
         if (-not $profilePath.StartsWith($profilesRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or $profilePath -eq [IO.Path]::GetFullPath([string]$owned.data.sourceProfilePath)) { throw 'Workspace profile cleanup target escaped the configured profiles directory or matched the stable source.' }
         $cleanupMods = @()
@@ -624,9 +738,9 @@ try {
             if ($modPath -cne $expected -or -not $modPath.StartsWith($modsRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Owned mod cleanup target is unsafe: $modPath" }
             $cleanupMods += $modPath
         }
-        $releaseEvidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-release')
+        $releaseEvidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-retire')
         $releaseApproved = $PSCmdlet.ShouldProcess($profilePath, "select stable profile '$($owned.data.sourceProfile)' and remove exact task-owned profile")
-        $profileSelection = Set-MO2SelectedProfileForRelease -Config $config -TaskProfile ([string]$owned.data.profile) -StableProfile ([string]$owned.data.sourceProfile) -EvidenceRoot $releaseEvidence -WhatIf:(-not $releaseApproved)
+        $profileSelection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$owned.data.sourceProfile) -Operation 'select-stable-before-workspace-retirement' -EvidenceRoot $releaseEvidence -WhatIf:(-not $releaseApproved)
         if ($releaseApproved) {
             try {
                 if (Test-Path -LiteralPath $profilePath -PathType Container) { Remove-Item -LiteralPath $profilePath -Recurse -Force }
@@ -638,18 +752,19 @@ try {
             if ($CleanupOwnedMods) {
                 foreach ($modPath in $cleanupMods) { if (Test-Path -LiteralPath $modPath -PathType Container) { Remove-Item -LiteralPath $modPath -Recurse -Force } }
             }
-            $owned.data.status = 'released'
-            $owned.data | Add-Member -NotePropertyName releasedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+            $owned.data.status = 'retired'
+            $owned.data | Add-Member -NotePropertyName retiredUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
             $owned.data | Add-Member -NotePropertyName profileRemoved -NotePropertyValue $true -Force
             $owned.data | Add-Member -NotePropertyName ownedModsRemoved -NotePropertyValue ([bool]$CleanupOwnedMods) -Force
             $owned.data | Add-Member -NotePropertyName selectedProfileRelease -NotePropertyValue $profileSelection -Force
             Write-WorkspaceJsonAtomic -Path $owned.path -Value $owned.data
         }
-        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-released' }); data = @{
+        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-retired' }); data = @{
             workspaceId = $WorkspaceId; profile = [string]$owned.data.profile; profilePath = $profilePath
             profileName = [string]$owned.data.profile; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             selectedProfileRelease = $profileSelection; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods
             releaseAccessRequired = $true; manifestPath = $owned.path
+            deprecatedCommand = if ($Command -eq 'release') { 'release is a compatibility alias for destructive retire; use retire. To yield scarce MO2 access while retaining this profile, call MO2 release-access only.' } else { $null }
         } }
     }
 }
