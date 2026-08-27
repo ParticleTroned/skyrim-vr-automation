@@ -9,8 +9,9 @@ features and return structured JSON suitable for another automation layer.
 
 `devbench-control` is a client, not the in-game server. It expects a running CSX
 build to publish `runtime.json` and implement MCP protocol `2025-03-26` on the
-loopback interface. The runtime metadata path must be supplied explicitly or by
-`CSX_DEVBENCH_RUNTIME_PATH`.
+loopback interface. The runtime metadata path may be supplied explicitly, by
+`CSX_DEVBENCH_RUNTIME_PATH`, or by `devBenchRuntimePath` in
+`%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`.
 
 `profiler-control` uses that same runtime contract to collect and compare the
 resolved CSX GPU/CPU timer block. Its totals are not whole-frame GPU time.
@@ -20,17 +21,27 @@ dispatch-mark, and wait actions. It stops when the exact waiter contract is
 unavailable instead of substituting loading-menu checks, client polling, or
 fixed delays.
 
-`render-scale-qualification` requires exact CSX runtime/build binding, verifies
-any supplied artifact binding, and depends on the server-side render-scale
-qualification waiter, the upscaling and feature APIs, and HMD-submission
-screenshot sequences. Its frozen protocol includes all five DLSS trace actions
-introduced by
-`b46edeaed14c41ad41225641c3a4943f1db25db6`: status, reset, start, stop, and
-read. A server that does not advertise the full contract fails preflight.
-The render-scale status must also expose the live D3D adapter vendor, device,
-and driver identity. The runner binds those values to the selected vendor
-matrix and fixture manifest, and it never retries an uncertain mutating MCP
-call.
+`render-scale-qualification` requires the intended DLL and Skyrim VR session to
+be running already; its entrypoint does not build, deploy, launch, restart, or
+reload them. It binds the exact live runtime/build identity, verifies any
+supplied artifact binding, and depends on the server-side render-scale
+qualification waiter, upscaling and feature APIs, HMD-submission screenshot
+sequences, stress diagnostics, and CPU telemetry. Its frozen protocol includes
+all five DLSS trace actions introduced by
+`b46edeaed14c41ad41225641c3a4943f1db25db6`: `dlss_trace_status`,
+`dlss_trace_reset`, `dlss_trace_start`, `dlss_trace_stop`, and
+`dlss_trace_read`. A server that does not advertise the full contract fails
+preflight. Render-scale status must expose the live D3D adapter vendor, device,
+and driver identity; those values must agree with the selected vendor matrix
+and fixture manifest.
+
+Protocol revision 4 also requires a Codex CLI installation that can provide
+original image inputs and schema-constrained output with `gpt-5.6-sol`. The
+same invocation runs three batches for each of two blinded, swapped
+presentation passes. Model access, schema, timeout, confidence, disagreement,
+and evidence-integrity checks fail closed. Render-scale latch is evaluated only
+from owner-bound telemetry. Accepted local and PR results exit 0, quality
+failure exits 2, and infrastructure failure exits 4.
 
 ## MO2
 

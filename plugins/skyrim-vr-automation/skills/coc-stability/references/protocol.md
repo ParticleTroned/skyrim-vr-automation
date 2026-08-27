@@ -20,20 +20,24 @@ proves only admission; it does not prove that the load completed.
 
 For each measured transition:
 
-1. Preserve the source scene and take the dispatch timestamp on the DevBench
-   server clock.
-2. Mark the dispatch QPC/frame with the caller-owned qualification transition,
-   then immediately submit the exact `coc <target>` command and one bounded
-   server-side stability waiter. The waiter continuously observes live state
-   without returning each intermediate snapshot to the client.
+1. Call `qualification_begin` with a unique transition ID and owner ID to
+   preserve the source scene and diagnostic baselines.
+2. Call `qualification_dispatch` with the same ownership pair to mark the
+   server QPC/frame. Require its accepted receipt before submitting the exact
+   `coc <target>` command, then call one bounded `qualification_wait` with that
+   pair. The waiter continuously observes live state without returning each
+   intermediate snapshot to the client. The dispatch acknowledgement is part
+   of the measured absolute latency.
 3. Require `playerLoaded` and the exact destination cell before testing CSX
    stability. This prevents the source world's still-loaded state from passing
    before the queued COC executes.
 4. Stop the timer at the first coherent stable observation. Return that
    observation with one final upscaling snapshot and one render-scale health
    record.
-5. When and only when the waiter reports `satisfied: true`, preserve its
-   evidence and immediately dispatch the next transition.
+5. Validate every top-level MCP response. When and only when the waiter reports
+   `satisfied: true` and `outcome: stable`, preserve its evidence and dispatch
+   the next transition. A monolithic scenario whose tool steps ignore semantic
+   JSON failures is not an acceptable substitute.
 
 Do not wait for loading-menu open/close events, query or manipulate menus, add
 a fixed recovery delay, or transfer repeated full status responses. These are
@@ -99,9 +103,14 @@ Before transition 1:
 
 1. Verify the exact producer build ID and runtime identity.
 2. Verify the render-scale stress session and CPU telemetry are inactive. Fail
-   instead of taking over an existing capture.
-3. Reset and start the render-scale stress session.
-4. Reset and start `cpu_performance_*` telemetry when exposed.
+   instead of taking over an existing capture, and preserve their retained
+   stopped-session records before reset.
+3. Reset and start the render-scale stress session, retaining its returned
+   session identity for guarded stop/cleanup.
+4. Reset and start `cpu_performance_*` telemetry when exposed. Retain its
+   nonzero `cpuPerformance.sessionId`; status and stop must return that same
+   identity, and stop must send it as `expectedSessionId`. A reset clears the
+   inactive retained ID to zero.
 
 These sessions measure continuously. Do not restart them between transitions.
 The per-transition waiter observes their live state; it does not initiate a new
@@ -133,3 +142,15 @@ Compare builds only when fixture, target sequence, transition count, settings,
 method, viewport, stability thresholds, and diagnostics match exactly. Exclude
 any run that times out, overlaps transitions, changes settings, or lacks the
 final stable barrier.
+
+When this protocol feeds revision 4 of the render-scale qualification, require
+the complete `dlss_trace_status`, `dlss_trace_reset`, `dlss_trace_start`,
+`dlss_trace_stop`, and `dlss_trace_read` lifecycle introduced by
+`b46edeaed14c41ad41225641c3a4943f1db25db6`. Publish every immutable producer
+JSON/CSV file, all 144 visual PNGs, and all six blinded image-model batch
+records through the closed, hash-bound `automation-artifacts.json` inventory.
+The same invocation must reopen that set, replay its identities and ordered
+receipt bindings, derive render-scale latch from owner-bound telemetry, and
+reject unlisted or altered artifacts. Baseline publication copies the selected
+closed set and final review while flattening an earlier comparison to one
+generation instead of recursively copying historical baselines.

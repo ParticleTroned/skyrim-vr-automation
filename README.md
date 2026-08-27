@@ -28,7 +28,8 @@ optional integration rather than the identity or boundary of the toolkit.
   and normalized semantic results.
 - `tools/render-scale-qualification` — the bounded
   `csx-render-scale-pr-v1` COC, menu-transition, and stereo visual suite for
-  render-scale pull requests, with deterministic evidence and PR summaries.
+  local and PR render-scale qualification, with unattended image evaluation,
+  deterministic evidence, and generated summaries.
 - `tools/profiler-control` — repeatable DevBench profiler capture and
   multi-state comparison reports.
 - `tools/shader-cache-control` — provider discovery, physical cache
@@ -43,7 +44,7 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its seven skills connect a
+The repository publishes a Codex marketplace plugin. Its nine skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
@@ -55,6 +56,10 @@ new task to the bundled implementations and their operational contracts:
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
 - `$coc-stability` runs load-synchronized COC transitions through the
   server-side stability waiter and refuses fixed-delay substitutes.
+- `$fidelstab` runs the preserved paced Breezehome fidelity and stability
+  protocol.
+- `$render-scale-qualification` attaches to the intended DLL that is already
+  running in game and completes the bounded qualification in one invocation.
 - `$profiler-control` captures bounded GPU/CPU timer evidence and compares runs.
 - `$shader-cache-control` prepares tasks from compatible known-working compiled
   caches, restores prior state, promotes verified results, and compares trees
@@ -97,69 +102,90 @@ An explicit `-ConfigPath`, `SKYRIM_VR_AUTOMATION_CONFIG`, or
 `SKYRIM_VR_AUTOMATION_MODLIST` can override the persisted selection. The
 resolver never chooses an arbitrary named config.
 
-DevBench runtime discovery is supplied either explicitly or through an
-environment variable:
+DevBench runtime discovery is supplied explicitly, through an environment
+variable, or by `devBenchRuntimePath` in the stable per-user
+`%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`:
 
 ```powershell
 $env:CSX_DEVBENCH_RUNTIME_PATH = 'C:\Path\To\overwrite\SKSE\Plugins\devbench\runtime.json'
 .\tools\devbench-control\Invoke-DevBenchControl.ps1 list
 ```
 
-Run the render-scale qualification against an exact running build and preserve
-its evidence outside the repository. Copy `fixture.example.json`, replace every
-placeholder with the controlled save/camera/stabilizer/GPU/HMD identity, and
-record the real SHA-256 values. The runner verifies GPU vendor, device ID, and
-driver against the live D3D adapter; the save, camera, stabilizer, and HMD
-manifest fields are operator-attested and are labeled that way in evidence.
-Copy `status.adapter.deviceId` and `status.adapter.driverVersion` exactly into
-the GPU block, then record the operator and UTC time in the attestation block.
-Use a new or empty evidence directory for each run.
+Run the render-scale qualification only after the intended DLL is loaded,
+Skyrim VR is in game, and the controlled start scene is stable. Prepare one
+non-example `fixture.example.json` copy with the controlled
+save/camera/stabilizer/GPU/HMD identities and exact SHA-256 values. Its live
+adapter vendor, device ID, and driver must agree with DevBench. Select the
+fixture explicitly, with `CSX_RENDER_SCALE_FIXTURE_PATH`, or place it at the
+stable default:
 
-A local qualification omits `-PrMode`. After visual finalization its verdict is
-`LOCAL_PASS` and its summary is `qualification-summary.md`, so it cannot be
-mistaken for PR evidence:
-
-```powershell
-$buildId = '<64-character CSX build ID>'
-.\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
-    -EvidenceDirectory C:\Evidence\render-scale-local `
-    -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
-    -ExpectedBuildId $buildId -GpuVendor NVIDIA `
-    -FixtureManifestPath C:\Evidence\render-scale-fixture.json
+```text
+%LOCALAPPDATA%\SkyrimVRAutomation\render-scale-qualification\fixture.json
 ```
 
-PR mode additionally requires an accepted baseline with a different Build ID:
+With the stable runtime and fixture configured, local qualification is one
+command. The wrapper discovers and binds the exact running Build ID, verifies
+the live GPU identity, creates a unique evidence directory, and never builds,
+deploys, or launches the game:
 
 ```powershell
-$buildId = '<64-character CSX build ID>'
-$baselineBuildId = '<64-character baseline CSX build ID>'
-.\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
-    -EvidenceDirectory C:\Evidence\render-scale-candidate `
-    -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
-    -ExpectedBuildId $buildId -GpuVendor NVIDIA `
+.\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1
+```
+
+The same operation is available conversationally through
+`$render-scale-qualification`: launch the intended DLL and game yourself, enter
+the controlled start scene, then say `start render-scale qualification`. A
+contextual `start` is also sufficient after those conditions have already been
+established in the conversation.
+
+Explicit runtime, fixture, and output locations remain available:
+
+```powershell
+.\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1 `
+    -RuntimePath C:\Runtime\devbench\runtime.json `
     -FixtureManifestPath C:\Evidence\render-scale-fixture.json `
+    -EvidenceDirectory C:\Evidence\render-scale-local
+```
+
+A local run returns `LOCAL_PASS` and `qualification-summary.md`; it is not PR
+evidence. PR mode additionally requires an accepted baseline from the same
+protocol and fixture with a different exact Build ID:
+
+```powershell
+$baselineBuildId = '<64-character baseline CSX build ID>'
+.\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1 `
     -PrMode -BaselinePath C:\Evidence\render-scale-baseline `
     -ExpectedBaselineBuildId $baselineBuildId
 ```
 
-The automated phase is capped at ten minutes after exact runtime binding and
-includes two 30-second recovery barriers. A successful capture phase returns
-`REVIEW_PENDING` with exit code 3. Copy `visual-review.template.json` to
-`visual-review.json` without changing its artifact bindings. Fill in a reviewer
-ID, set `reviewer.kind` to `human` or `image_model`, and record an ISO-8601
-`reviewedUtc`. Set every sample's seven verdicts to `pass` for local mode or
-`no_regression` for PR mode, set `overallVerdict` to `pass`, then finalize:
+Protocol revision 4 has a hard 600-second end-to-end pass limit. It runs the
+20-transition load-synchronized COC assay, a 30-second recovery, the ordered
+25-transition menu assay, a second 30-second recovery, and three one-minute
+HMD-submission capture sequences. Dispatch-to-stability time starts at the
+owner-bound server QPC mark, and each top-level MCP result is checked before
+the next mutation.
 
-```powershell
-.\tools\render-scale-qualification\Invoke-CSXRenderScaleQualification.ps1 `
-    -EvidenceDirectory C:\Evidence\render-scale-local `
-    -FinalizeReview
-```
+Visual evaluation is part of the same invocation. The Codex CLI runs
+`gpt-5.6-sol` for three replicates in each of two blinded, independently
+swapped presentation passes: six batches in total. It assesses sharpness,
+blur, shimmer, stereo alignment, equal eye scale, and corresponding geometry.
+Render-scale latch is decided from owner-bound stress and CPU telemetry, not
+from image appearance. Low confidence, indeterminate output, swapped-pass
+disagreement, model failure, or evidence-integrity failure fails closed.
 
-Final `PASS` or `LOCAL_PASS` returns 0, qualification `FAIL` returns 2,
-`REVIEW_PENDING` returns 3, and `INFRASTRUCTURE_ERROR` returns 4. Infrastructure
-errors include transport, exact runtime/tool/capability/fixture/baseline
-binding, and evidence-finalization setup failures.
+The evidence directory hash-binds every immutable producer artifact, all 144
+PNG captures, model requests and responses, execution receipts, the generated
+visual review, and the final report. PR evidence also bundles the validated
+comparison baseline without recursively copying older comparisons. The
+required DLSS trace lifecycle remains fixed to commit
+`b46edeaed14c41ad41225641c3a4943f1db25db6` and includes
+`dlss_trace_status`, `dlss_trace_reset`, `dlss_trace_start`,
+`dlss_trace_stop`, and `dlss_trace_read`.
+
+`PASS` and `LOCAL_PASS` return exit code 0. A valid negative or inconclusive
+quality result returns `FAIL` with exit code 2. Runtime, fixture, baseline,
+model, schema, timeout, or evidence-integrity failures return
+`INFRASTRUCTURE_ERROR` with exit code 4.
 
 For SteamVR, pass nonstandard paths with `-SettingsPath` and `-SteamVRRoot`.
 The bundled null-HMD profile is resolved relative to the controller script.

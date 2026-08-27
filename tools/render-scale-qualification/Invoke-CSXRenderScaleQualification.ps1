@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-[CmdletBinding(DefaultParameterSetName = 'Run')]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$EvidenceDirectory,
-    [Parameter(Mandatory, ParameterSetName = 'Run')][string]$RuntimePath,
-    [Parameter(Mandatory, ParameterSetName = 'Run')][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedBuildId,
-    [Parameter(Mandatory, ParameterSetName = 'Run')][ValidateSet('NVIDIA', 'AMD')][string]$GpuVendor,
-    [Parameter(Mandatory, ParameterSetName = 'Run')][string]$FixtureManifestPath,
-    [Parameter(ParameterSetName = 'Run')][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedArtifactSha256,
-    [Parameter(ParameterSetName = 'Run')][switch]$PrMode,
-    [Parameter(ParameterSetName = 'Run')][string]$BaselinePath,
-    [Parameter(ParameterSetName = 'Run')][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedBaselineBuildId,
-    [Parameter(Mandatory, ParameterSetName = 'Finalize')][switch]$FinalizeReview,
+    [Parameter(Mandatory)][string]$RuntimePath,
+    [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedBuildId,
+    [Parameter(Mandatory)][ValidateSet('NVIDIA', 'AMD')][string]$GpuVendor,
+    [Parameter(Mandatory)][string]$FixtureManifestPath,
+    [ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedArtifactSha256,
+    [switch]$PrMode,
+    [string]$BaselinePath,
+    [ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedBaselineBuildId,
+    [string]$CodexExecutable = 'codex',
     [string]$ProtocolPath = (Join-Path $PSScriptRoot 'protocol.v1.json'),
     [switch]$NoExit,
     [switch]$Compact
@@ -20,6 +20,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'RenderScaleQualification.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'AutomatedVisualReviewProvider.psm1') -Force
 
 function Get-NamedValue($Value) {
     if ($null -eq $Value) { return $null }
@@ -38,6 +39,14 @@ function Assert-ToolActions($ToolDescriptor, [string[]]$Actions) {
     $available = @((Get-CSXPathValue $ToolDescriptor 'inputSchema.properties.action.enum'))
     foreach ($action in $Actions) {
         if ($action -notin $available) { throw "Tool '$($ToolDescriptor.name)' does not advertise required action '$action'." }
+    }
+}
+
+function Assert-ToolProperties($ToolDescriptor, [string[]]$Properties) {
+    $schemaProperties = Get-CSXPathValue $ToolDescriptor 'inputSchema.properties'
+    $available = @($schemaProperties.PSObject.Properties.Name)
+    foreach ($property in $Properties) {
+        if ($property -notin $available) { throw "Tool '$($ToolDescriptor.name)' does not advertise required property '$property'." }
     }
 }
 
@@ -82,6 +91,93 @@ function Invoke-BoundTool {
     )
     $timeout = Get-CSXBoundedTimeoutSeconds -Stopwatch $script:orchestrationWatch -BudgetMs ([int]$script:protocol.timeBudget.orchestrationMs) -OperationCapMs $OperationCapMs
     return Invoke-CSXMcpTool -Connection $script:connection -Tool $Tool -Arguments $Arguments -TimeoutSeconds $timeout -AllowSemanticFailure:$AllowSemanticFailure
+}
+
+function Invoke-FailFastScenarioPlan {
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)][ValidateRange(1000, 600000)][int]$AllocationMs
+    )
+    $results = [Collections.Generic.List[object]]::new()
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        foreach ($step in @($Plan.steps)) {
+            $remaining = $AllocationMs - [int][Math]::Ceiling($watch.Elapsed.TotalMilliseconds)
+            if ($remaining -lt 1000) { throw "Fail-fast plan '$($step.label)' exhausted its assay allocation." }
+            $arguments = ConvertTo-CSXHashtable (Get-CSXPropertyValue $step 'args')
+            $action = [string](Get-CSXPropertyValue $arguments 'action')
+            $operationCapMs = [Math]::Min($remaining, $(if ($action -eq 'qualification_wait') { [int](Get-CSXPropertyValue $arguments 'timeoutMs' 15000) + 5000 } else { 10000 }))
+
+            if ($action -eq 'qualification_begin') {
+                [void]$script:ownedTransitionIds.Add([uint64]$arguments.transitionId)
+            }
+            elseif ($action -eq 'dlss_trace_start') {
+                $script:traceStartUncertain = $true
+            }
+            elseif ($action -eq 'dlss_trace_stop') {
+                if ($script:ownedTraceSessionId -eq 0) { throw 'DLSS trace stop has no proven task-owned session.' }
+                $arguments['expectedSessionId'] = [uint64]$script:ownedTraceSessionId
+            }
+
+            $value = Invoke-BoundTool -Tool ([string]$step.tool) -Arguments $arguments -OperationCapMs $operationCapMs
+            $results.Add([pscustomobject][ordered]@{ label = [string]$step.label; ok = $true; result = $value })
+            if ([string]$step.tool -eq 'communityshaders.renderscale') { Assert-CSXProducer $value ([string]$step.label) }
+
+            if ($action -eq 'qualification_begin') {
+                if (-not [bool](Get-CSXPropertyValue $value 'accepted' $false)) {
+                    throw "Qualification begin '$($step.label)' was not accepted."
+                }
+                if ($script:ownedStressSessionId -eq 0 -or
+                    [uint64](Get-CSXPathValue $value 'baseline.stressSessionId' 0) -ne [uint64]$script:ownedStressSessionId) {
+                    throw "Qualification begin '$($step.label)' is bound to a different stress session."
+                }
+            }
+            if ($action -eq 'qualification_dispatch' -and -not [bool](Get-CSXPropertyValue $value 'accepted' $false)) {
+                throw "Qualification dispatch '$($step.label)' was not accepted."
+            }
+            if ([string]$step.tool -eq 'console' -and $action -eq 'exec' -and
+                -not [bool](Get-CSXPropertyValue $value 'queued' $false)) {
+                throw "Console mutation '$($step.label)' was not queued."
+            }
+            if ($action -eq 'apply') {
+                $disposition = [string](Get-CSXPropertyValue $value 'disposition')
+                if (-not [bool](Get-CSXPropertyValue $value 'accepted' $false) -or
+                    $disposition -in @('rejected', 'no_change', 'coalesced')) {
+                    throw "Render-scale apply '$($step.label)' was not accepted as a unique transition."
+                }
+            }
+            if ($action -eq 'qualification_wait') {
+                if (-not [bool](Get-CSXPropertyValue $value 'satisfied' $false) -or [string](Get-CSXPropertyValue $value 'outcome') -ne 'stable') {
+                    throw "Qualification wait '$($step.label)' was not stable."
+                }
+                [void]$script:ownedTransitionIds.Remove([uint64]$arguments.transitionId)
+            }
+            elseif ($action -eq 'dlss_trace_start') {
+                $sessionId = [uint64](Get-CSXPathValue $value 'capture.sessionID' 0)
+                if ($sessionId -eq 0 -or -not [bool](Get-CSXPathValue $value 'capture.active' $false)) {
+                    throw "DLSS trace start '$($step.label)' omitted an active session identity."
+                }
+                $script:ownedTraceSessionId = $sessionId
+                $script:traceStartUncertain = $false
+            }
+            elseif ($action -eq 'dlss_trace_stop') {
+                if ([uint64](Get-CSXPathValue $value 'capture.sessionID' 0) -ne [uint64]$script:ownedTraceSessionId -or
+                    [bool](Get-CSXPathValue $value 'capture.active' $true)) {
+                    throw "DLSS trace stop '$($step.label)' did not stop the task-owned session."
+                }
+                $script:ownedTraceSessionId = 0
+            }
+        }
+        return [pscustomobject][ordered]@{ ok = $true; aborted = $false; results = @($results); wallClockMs = [Math]::Round($watch.Elapsed.TotalMilliseconds, 3) }
+    }
+    catch {
+        $_.Exception.Data['CSXPartialScenario'] = [pscustomobject][ordered]@{
+            ok = $false; aborted = $true; results = @($results)
+            wallClockMs = [Math]::Round($watch.Elapsed.TotalMilliseconds, 3); error = $_.Exception.Message
+        }
+        throw
+    }
+    finally { $watch.Stop() }
 }
 
 function Assert-CSXProducer($Value, [string]$Label) {
@@ -173,125 +269,247 @@ function Invoke-DiagnosticStart([string]$Label) {
         $result = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = $action; expectedBuildId = $script:expectedBuildId })
         Assert-CSXProducer $result "$Label $action"
     }
-    $script:ownsStressCapture = $true
+    $script:stressStartUncertain = $true
     $stress = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'start'; expectedBuildId = $script:expectedBuildId })
     Assert-CSXProducer $stress "$Label start"
-    $script:ownsCpuCapture = $true
+    $stressSessionId = [uint64](Get-CSXPathValue $stress 'status.session.id' 0)
+    if ($stressSessionId -eq 0 -or -not [bool](Get-CSXPathValue $stress 'status.session.active' $false)) { throw "$Label stress start omitted an active session identity." }
+    $script:ownedStressSessionId = $stressSessionId
+    $script:stressStartUncertain = $false
+    $script:cpuStartUncertain = $true
     $cpu = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'cpu_performance_start'; expectedBuildId = $script:expectedBuildId })
     Assert-CSXProducer $cpu "$Label cpu_performance_start"
+    $cpuSessionId = [uint64](Get-CSXPathValue $cpu 'cpuPerformance.sessionId' 0)
+    if ($cpuSessionId -eq 0 -or -not [bool](Get-CSXPathValue $cpu 'cpuPerformance.active' $false)) { throw "$Label CPU start omitted an active session identity." }
+    $script:ownedCpuSessionId = $cpuSessionId
+    $script:cpuStartUncertain = $false
 }
 
 function Invoke-DiagnosticStop([string]$Label) {
-    $cpu = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'cpu_performance_stop'; expectedBuildId = $script:expectedBuildId })
+    if ($script:ownedCpuSessionId -eq 0 -or $script:ownedStressSessionId -eq 0) { throw "$Label diagnostic ownership identity is incomplete." }
+    $cpu = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+        action = 'cpu_performance_stop'; expectedSessionId = [uint64]$script:ownedCpuSessionId; expectedBuildId = $script:expectedBuildId
+    })
     Assert-CSXProducer $cpu "$Label CPU stop"
-    $script:ownsCpuCapture = $false
-    $stress = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'stop'; expectedBuildId = $script:expectedBuildId })
+    if ([uint64](Get-CSXPathValue $cpu 'cpuPerformance.sessionId' 0) -ne [uint64]$script:ownedCpuSessionId -or
+        [bool](Get-CSXPathValue $cpu 'cpuPerformance.active' $true)) { throw "$Label CPU stop did not stop the task-owned window." }
+    $script:ownedCpuSessionId = 0
+    $stress = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+        action = 'stop'; expectedSessionId = [uint64]$script:ownedStressSessionId; expectedBuildId = $script:expectedBuildId
+    })
     Assert-CSXProducer $stress "$Label stress stop"
-    $script:ownsStressCapture = $false
+    if ([uint64](Get-CSXPathValue $stress 'status.session.id' 0) -ne [uint64]$script:ownedStressSessionId -or
+        [bool](Get-CSXPathValue $stress 'status.session.active' $true)) { throw "$Label stress stop did not stop the task-owned session." }
+    $script:ownedStressSessionId = 0
     return [pscustomobject][ordered]@{ cpu = $cpu; stress = $stress }
+}
+
+function Write-CleanupEvidenceSafely {
+    param([string]$RelativePath, $Value, [Collections.Generic.List[string]]$Warnings)
+    try { Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot $RelativePath) -Value $Value | Out-Null }
+    catch { $Warnings.Add("Cleanup evidence '$RelativePath' could not be written: $($_.Exception.Message)") }
+}
+
+function Assert-CleanupReceipt {
+    param($Value, [string]$Label, [switch]$RequireCSXProducer)
+    if ($null -eq $Value -or $null -ne (Get-CSXPropertyValue $Value 'error') -or
+        (Get-CSXPropertyValue $Value 'ok' $true) -eq $false) {
+        throw "$Label returned a semantic failure."
+    }
+    if ($RequireCSXProducer) { Assert-CSXProducer $Value $Label }
+}
+
+function Open-EvidenceDirectoryLease {
+    if (Test-Path -LiteralPath $script:evidenceRoot) {
+        if (-not (Test-Path -LiteralPath $script:evidenceRoot -PathType Container)) { throw 'EvidenceDirectory is not a directory.' }
+        if (@(Get-ChildItem -LiteralPath $script:evidenceRoot -Force).Count -ne 0) { throw 'EvidenceDirectory must be new or empty; existing evidence is never overwritten.' }
+    }
+    else { New-Item -ItemType Directory -Path $script:evidenceRoot | Out-Null }
+
+    $leasePath = Join-Path $script:evidenceRoot '.csx-render-scale-qualification.lock'
+    try {
+        $lease = [IO.File]::Open($leasePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    }
+    catch { throw 'EvidenceDirectory is already claimed by another qualification runner.' }
+    try {
+        $unexpected = @(Get-ChildItem -LiteralPath $script:evidenceRoot -Force | Where-Object FullName -ne $leasePath)
+        if ($unexpected.Count -ne 0) { throw 'EvidenceDirectory changed while its exclusive lease was being acquired.' }
+        $bytes = [Text.Encoding]::UTF8.GetBytes("$($script:runId)`n")
+        $lease.Write($bytes, 0, $bytes.Length)
+        $lease.Flush($true)
+        $script:evidenceLease = $lease
+        $script:evidenceLeasePath = $leasePath
+        $script:evidenceWritable = $true
+    }
+    catch {
+        $lease.Dispose()
+        Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Close-EvidenceDirectoryLease {
+    if ($script:evidenceLease) {
+        try { $script:evidenceLease.Dispose() } catch {}
+        $script:evidenceLease = $null
+    }
+    if ($script:evidenceLeasePath -and (Test-Path -LiteralPath $script:evidenceLeasePath -PathType Leaf)) {
+        try { Remove-Item -LiteralPath $script:evidenceLeasePath -Force -ErrorAction Stop }
+        catch { return "Evidence-directory lease could not be removed: $($_.Exception.Message)" }
+    }
+    return $null
 }
 
 function Invoke-EmergencyCleanup {
     param([Collections.Generic.List[string]]$Warnings)
+    if ($script:cleanupAttempted) { return }
+    $script:cleanupAttempted = $true
+    $cleanupConnection = $null
     try {
         $cleanupConnection = New-CSXMcpConnection -Runtime $script:runtime -ClientName 'CSXRenderScaleQualificationCleanup'
         $cleanupHealth = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'inspect' -Arguments ([ordered]@{
             kind = 'health'
         }) -TimeoutSeconds 5
         $cleanupIdentity = Assert-AuthoritativeRuntimeBinding -BindingIdentity $script:bindingIdentity -Health $cleanupHealth
-        Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'cleanup\runtime-identity.json') -Value $cleanupIdentity | Out-Null
-        if ($script:visualStartMayBeOwned -and -not $script:activeVisualRequestId) {
-            $uncertainScreenshot = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
-                contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-uncertain-screenshot-status"; action = 'status'
-            }) -TimeoutSeconds 5 -AllowSemanticFailure
-            $uncertainRequestId = [string](Get-CSXPathValue $uncertainScreenshot 'result.dispatcher.activeAcquisitionRequestId')
-            if ($uncertainRequestId -match '\S') { $script:activeVisualRequestId = $uncertainRequestId }
-            elseif ([int](Get-CSXPathValue $uncertainScreenshot 'result.dispatcher.activeSequences' 0) -ne 0) {
-                throw 'An uncertain screenshot start left active work without a cancellable request ID.'
-            }
+        Write-CleanupEvidenceSafely 'cleanup\runtime-identity.json' $cleanupIdentity $Warnings
+        if ($script:visualStartUncertain -and -not $script:activeVisualRequestId) {
+            $Warnings.Add('Screenshot sequence start outcome is uncertain; cleanup did not adopt or cancel an unowned child/sequence request.')
         }
         if ($script:activeVisualRequestId) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
-                contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-cancel"
-                action = 'request_cancel'; requestId = [string]$script:activeVisualRequestId
-            }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
-            $terminalStates = @('completed', 'completed_with_warnings', 'failed', 'failed_partial', 'cancelled', 'cancelled_partial', 'stopped')
-            $cleanupReceipt = $null
-            for ($attempt = 1; $attempt -le 10; $attempt++) {
-                $cleanupReceipt = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
-                    contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-get-$attempt"
-                    action = 'request_get'; requestId = [string]$script:activeVisualRequestId
-                }) -TimeoutSeconds 2 -AllowSemanticFailure
-                if ([string](Get-CSXPathValue $cleanupReceipt 'result.state') -in $terminalStates) { break }
-                Start-Sleep -Milliseconds 250
+            try {
+                $cancelReceipt = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
+                    contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-cancel"
+                    action = 'request_cancel'; requestId = [string]$script:activeVisualRequestId
+                }) -TimeoutSeconds 5 -AllowSemanticFailure
+                Assert-CleanupReceipt $cancelReceipt 'Screenshot cancellation'
+                $terminalStates = @('completed', 'completed_with_warnings', 'failed', 'failed_partial', 'cancelled', 'cancelled_partial', 'stopped')
+                $cleanupReceipt = $null
+                for ($attempt = 1; $attempt -le 10; $attempt++) {
+                    $cleanupReceipt = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
+                        contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-get-$attempt"
+                        action = 'request_get'; requestId = [string]$script:activeVisualRequestId
+                    }) -TimeoutSeconds 2 -AllowSemanticFailure
+                    Assert-CleanupReceipt $cleanupReceipt 'Screenshot terminal query'
+                    if ([string](Get-CSXPathValue $cleanupReceipt 'result.state') -in $terminalStates) { break }
+                    Start-Sleep -Milliseconds 250
+                }
+                if ([string](Get-CSXPathValue $cleanupReceipt 'result.state') -notin $terminalStates) { throw 'Screenshot cancellation did not reach a terminal state within the cleanup bound.' }
+                Write-CleanupEvidenceSafely 'cleanup\visual-terminal.json' $cleanupReceipt $Warnings
+                $script:activeVisualRequestId = $null
             }
-            if ([string](Get-CSXPathValue $cleanupReceipt 'result.state') -notin $terminalStates) { throw 'Screenshot cancellation did not reach a terminal state within the cleanup bound.' }
-            Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'cleanup\visual-terminal.json') -Value $cleanupReceipt | Out-Null
-            $script:activeVisualRequestId = $null
+            catch { $Warnings.Add("Task-owned screenshot cleanup failed: $($_.Exception.Message)") }
         }
-        $status = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'qualification_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        $transitionId = Get-CSXPathValue $status 'qualification.transitionId' (Get-CSXPropertyValue $status 'transitionId')
-        $transitionOwnerId = [string](Get-CSXPathValue $status 'qualification.ownerId')
-        if ($transitionId -and $transitionOwnerId -eq $script:runId -and
-            [uint64]$transitionId -in @($script:ownedTransitionIds)) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
-                action = 'qualification_cancel'; transitionId = [uint64]$transitionId
-                ownerId = $script:runId; expectedBuildId = $script:expectedBuildId
-            }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
-        }
-        $trace = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        if ($script:traceMayBeOwned -and [bool](Get-CSXPathValue $trace 'capture.active' $false)) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_stop'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
-        }
-        $traceRead = if ($script:traceMayBeOwned) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_read'; afterSequence = 0; limit = 16; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        }
-        else { $null }
-        $render = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        if ($script:ownsCpuCapture -and [bool](Get-CSXPathValue $render 'status.cpuPerformance.active' $false)) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'cpu_performance_stop'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
-        }
-        if ($script:ownsStressCapture -and [bool](Get-CSXPathValue $render 'status.session.active' $false)) {
-            Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'stop'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure | Out-Null
-        }
-        $postQualification = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'qualification_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        $postTrace = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        $postRender = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
-        $postScreenshot = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
-            contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-final-screenshot-status"; action = 'status'
-        }) -TimeoutSeconds 5 -AllowSemanticFailure
-        foreach ($receipt in @($postQualification, $postTrace, $postRender, $postScreenshot) + $(if ($traceRead) { @($traceRead) } else { @() })) {
-            if ($null -ne (Get-CSXPropertyValue $receipt 'error') -or (Get-CSXPropertyValue $receipt 'ok' $true) -eq $false) {
-                throw 'Emergency cleanup returned a semantic failure.'
+        try {
+            $status = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'qualification_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            Assert-CleanupReceipt $status 'Qualification cleanup status' -RequireCSXProducer
+            $transitionId = Get-CSXPathValue $status 'qualification.transitionId' (Get-CSXPropertyValue $status 'transitionId')
+            $transitionOwnerId = [string](Get-CSXPathValue $status 'qualification.ownerId')
+            if ($transitionId -and $transitionOwnerId -eq $script:runId -and [uint64]$transitionId -in @($script:ownedTransitionIds)) {
+                $cancelReceipt = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+                    action = 'qualification_cancel'; transitionId = [uint64]$transitionId
+                    ownerId = $script:runId; expectedBuildId = $script:expectedBuildId
+                }) -TimeoutSeconds 5 -AllowSemanticFailure
+                Assert-CleanupReceipt $cancelReceipt 'Qualification cancellation' -RequireCSXProducer
             }
         }
-        $ownedQualificationStillActive = [bool](Get-CSXPathValue $postQualification 'qualification.active' $false) -and
-            [string](Get-CSXPathValue $postQualification 'qualification.ownerId') -eq $script:runId -and
-            [uint64](Get-CSXPathValue $postQualification 'qualification.transitionId' 0) -in @($script:ownedTransitionIds)
-        if ($ownedQualificationStillActive -or
-            ($script:traceMayBeOwned -and ([bool](Get-CSXPathValue $postTrace 'capture.active' $true) -or [bool](Get-CSXPathValue $traceRead 'capture.summary.active' $true))) -or
-            ($script:ownsStressCapture -and [bool](Get-CSXPathValue $postRender 'status.session.active' $true)) -or
-            ($script:ownsCpuCapture -and [bool](Get-CSXPathValue $postRender 'status.cpuPerformance.active' $true)) -or
-            ($script:visualStartMayBeOwned -and ([int](Get-CSXPathValue $postScreenshot 'result.dispatcher.activeSequences' 1) -ne 0 -or
-                [string](Get-CSXPathValue $postScreenshot 'result.dispatcher.activeAcquisitionRequestId') -match '\S'))) {
-            throw 'Emergency cleanup postconditions were not idle.'
+        catch { $Warnings.Add("Task-owned qualification cleanup failed: $($_.Exception.Message)") }
+
+        try {
+            $trace = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            Assert-CleanupReceipt $trace 'DLSS trace cleanup status' -RequireCSXProducer
+            if ($script:ownedTraceSessionId -ne 0 -and [bool](Get-CSXPathValue $trace 'capture.active' $false) -and
+                [uint64](Get-CSXPathValue $trace 'capture.sessionID' 0) -eq [uint64]$script:ownedTraceSessionId) {
+                $traceStop = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+                    action = 'dlss_trace_stop'; expectedSessionId = [uint64]$script:ownedTraceSessionId; expectedBuildId = $script:expectedBuildId
+                }) -TimeoutSeconds 5 -AllowSemanticFailure
+                Assert-CleanupReceipt $traceStop 'DLSS trace cleanup stop' -RequireCSXProducer
+            }
+            elseif ($script:traceStartUncertain) { $Warnings.Add('DLSS trace start outcome is uncertain; cleanup did not stop an unproven global trace session.') }
         }
-        $script:ownsStressCapture = $false
-        $script:ownsCpuCapture = $false
-        $script:traceMayBeOwned = $false
-        $script:visualStartMayBeOwned = $false
-        $script:ownedTransitionIds.Clear()
-        Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'cleanup\postconditions.json') -Value ([pscustomobject][ordered]@{
-            qualification = $postQualification; trace = $postTrace; traceRead = $traceRead; renderScale = $postRender; screenshot = $postScreenshot
-        }) | Out-Null
-        if ($script:connection) { foreach ($row in @($cleanupConnection.transcript)) { $script:connection.transcript.Add($row) } }
+        catch { $Warnings.Add("Task-owned DLSS trace cleanup failed: $($_.Exception.Message)") }
+
+        try {
+            $cpuStatus = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            Assert-CleanupReceipt $cpuStatus 'CPU cleanup status' -RequireCSXProducer
+            if ($script:ownedCpuSessionId -ne 0 -and [bool](Get-CSXPathValue $cpuStatus 'status.cpuPerformance.active' $false) -and
+                [uint64](Get-CSXPathValue $cpuStatus 'status.cpuPerformance.sessionId' 0) -eq [uint64]$script:ownedCpuSessionId) {
+                $cpuStop = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+                    action = 'cpu_performance_stop'; expectedSessionId = [uint64]$script:ownedCpuSessionId; expectedBuildId = $script:expectedBuildId
+                }) -TimeoutSeconds 5 -AllowSemanticFailure
+                Assert-CleanupReceipt $cpuStop 'CPU cleanup stop' -RequireCSXProducer
+                if ([uint64](Get-CSXPathValue $cpuStop 'cpuPerformance.sessionId' 0) -ne [uint64]$script:ownedCpuSessionId -or
+                    [bool](Get-CSXPathValue $cpuStop 'cpuPerformance.active' $true)) {
+                    throw 'CPU cleanup stop did not stop the exactly identified task-owned session.'
+                }
+            }
+            elseif ($script:cpuStartUncertain) { $Warnings.Add('CPU capture start outcome is uncertain; cleanup did not stop an unproven global CPU session.') }
+        }
+        catch { $Warnings.Add("Task-owned CPU cleanup failed: $($_.Exception.Message)") }
+
+        try {
+            $stressStatus = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            Assert-CleanupReceipt $stressStatus 'Stress cleanup status' -RequireCSXProducer
+            if ($script:ownedStressSessionId -ne 0 -and [bool](Get-CSXPathValue $stressStatus 'status.session.active' $false) -and
+                [uint64](Get-CSXPathValue $stressStatus 'status.session.id' 0) -eq [uint64]$script:ownedStressSessionId) {
+                $stressStop = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{
+                    action = 'stop'; expectedSessionId = [uint64]$script:ownedStressSessionId; expectedBuildId = $script:expectedBuildId
+                }) -TimeoutSeconds 5 -AllowSemanticFailure
+                Assert-CleanupReceipt $stressStop 'Stress cleanup stop' -RequireCSXProducer
+                if ([uint64](Get-CSXPathValue $stressStop 'status.session.id' 0) -ne [uint64]$script:ownedStressSessionId -or
+                    [bool](Get-CSXPathValue $stressStop 'status.session.active' $true)) {
+                    throw 'Stress cleanup stop did not stop the exactly identified task-owned session.'
+                }
+            }
+            elseif ($script:stressStartUncertain) { $Warnings.Add('Stress capture start outcome is uncertain; cleanup did not stop an unproven global stress session.') }
+        }
+        catch { $Warnings.Add("Task-owned stress cleanup failed: $($_.Exception.Message)") }
+
+        try {
+            $postQualification = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'qualification_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            $postTrace = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            $postRender = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'status'; expectedBuildId = $script:expectedBuildId }) -TimeoutSeconds 5 -AllowSemanticFailure
+            $postScreenshot = Invoke-CSXMcpTool -Connection $cleanupConnection -Tool 'communityshaders.screenshot' -Arguments ([ordered]@{
+                contractMajor = 1; clientId = 'csx-render-scale-qualification-cleanup'; commandId = "$($script:runId)-cleanup-final-screenshot-status"; action = 'status'
+            }) -TimeoutSeconds 5 -AllowSemanticFailure
+            Assert-CleanupReceipt $postQualification 'Qualification cleanup postcondition' -RequireCSXProducer
+            Assert-CleanupReceipt $postTrace 'DLSS trace cleanup postcondition' -RequireCSXProducer
+            Assert-CleanupReceipt $postRender 'Diagnostic cleanup postcondition' -RequireCSXProducer
+            Assert-CleanupReceipt $postScreenshot 'Screenshot cleanup postcondition'
+            $ownedQualificationStillActive = [bool](Get-CSXPathValue $postQualification 'qualification.active' $false) -and
+                [string](Get-CSXPathValue $postQualification 'qualification.ownerId') -eq $script:runId -and
+                [uint64](Get-CSXPathValue $postQualification 'qualification.transitionId' 0) -in @($script:ownedTransitionIds)
+            $ownedTraceStillActive = $script:ownedTraceSessionId -ne 0 -and [bool](Get-CSXPathValue $postTrace 'capture.active' $false) -and
+                [uint64](Get-CSXPathValue $postTrace 'capture.sessionID' 0) -eq [uint64]$script:ownedTraceSessionId
+            $ownedStressStillActive = $script:ownedStressSessionId -ne 0 -and [bool](Get-CSXPathValue $postRender 'status.session.active' $false) -and
+                [uint64](Get-CSXPathValue $postRender 'status.session.id' 0) -eq [uint64]$script:ownedStressSessionId
+            $ownedCpuStillActive = $script:ownedCpuSessionId -ne 0 -and [bool](Get-CSXPathValue $postRender 'status.cpuPerformance.active' $false) -and
+                [uint64](Get-CSXPathValue $postRender 'status.cpuPerformance.sessionId' 0) -eq [uint64]$script:ownedCpuSessionId
+            if ($ownedQualificationStillActive -or $ownedTraceStillActive -or $ownedStressStillActive -or $ownedCpuStillActive -or
+                $null -ne $script:activeVisualRequestId) {
+                throw 'One or more exactly identified task-owned runtime operations remain active.'
+            }
+            Write-CleanupEvidenceSafely 'cleanup\postconditions.json' ([pscustomobject][ordered]@{
+                qualification = $postQualification; trace = $postTrace; renderScale = $postRender; screenshot = $postScreenshot
+                unknownOutcomes = [pscustomobject][ordered]@{
+                    screenshot = [bool]$script:visualStartUncertain; trace = [bool]$script:traceStartUncertain
+                    stress = [bool]$script:stressStartUncertain; cpu = [bool]$script:cpuStartUncertain
+                }
+            }) $Warnings
+        }
+        catch { $Warnings.Add("Emergency cleanup postconditions could not be proved: $($_.Exception.Message)") }
     }
     catch { $Warnings.Add("Emergency cleanup could not be proved complete: $($_.Exception.Message)") }
+    finally {
+        if ($cleanupConnection -and $script:connection) {
+            foreach ($row in @($cleanupConnection.transcript)) { $script:connection.transcript.Add($row) }
+        }
+    }
 }
 
 function Test-RunnerOwnsRuntimeState {
-    return $script:ownsStressCapture -or $script:ownsCpuCapture -or $script:traceMayBeOwned -or
-        $script:visualStartMayBeOwned -or $null -ne $script:activeVisualRequestId -or $script:ownedTransitionIds.Count -gt 0
+    return $script:ownedStressSessionId -ne 0 -or $script:ownedCpuSessionId -ne 0 -or $script:ownedTraceSessionId -ne 0 -or
+        $script:stressStartUncertain -or $script:cpuStartUncertain -or $script:traceStartUncertain -or $script:visualStartUncertain -or
+        $null -ne $script:activeVisualRequestId -or $script:ownedTransitionIds.Count -gt 0
 }
 
 function Get-StretchSummary($StressStop) {
@@ -329,7 +547,7 @@ function Get-StretchSummary($StressStop) {
         qpcFrequency = [uint64](Get-CSXPropertyValue $presentation 'qpcFrequency' 0)
         activeAtStop = $activeAtStop; incompleteStereoCycleAtStop = $incompleteStereoAtStop; incompleteStereoCycleEyeMaskAtStop = $incompleteStereoEyeMaskAtStop
         timingComplete = $timingComplete; timingStatus = $timingStatus
-        recordAccepted = [bool](Get-CSXPathValue $record 'verdict.accepted' $false)
+        recordAccepted = [bool](Get-CSXPathValue $record 'acceptance.accepted' $false)
     }
 }
 
@@ -339,7 +557,7 @@ function Get-StressTransitionEvidence($StressStop, $Scenario, $WaitRecords, $Mat
     $metrics = @($record.metrics | Sort-Object transitionEpoch)
     $requestEpochs = @($requests | ForEach-Object { [uint64]$_.transitionEpoch })
     $metricEpochs = @($metrics | ForEach-Object { [uint64]$_.transitionEpoch })
-    $terminalGate = @($record.verdict.gates | Where-Object name -eq 'terminal_state')
+    $terminalGate = @($record.acceptance.gates | Where-Object name -eq 'terminal_state')
     $evidence = [pscustomobject][ordered]@{
         requestEvents = $requests.Count; uniqueRequestEpochs = @($requestEpochs | Sort-Object -Unique).Count
         metrics = $metrics.Count; uniqueMetricEpochs = @($metricEpochs | Sort-Object -Unique).Count
@@ -439,6 +657,22 @@ function Assert-WaitRecords($Records, [int]$ExpectedCount, [string]$Assay, $Expe
         $isCoc = $Assay -like 'COC*'
         $expectedId = if ($isCoc) { [uint64]$ordinal } else { [uint64](100 + $ordinal) }
         if ([int]$record.ordinal -ne $ordinal -or [uint64]$record.transitionId -ne $expectedId) { throw "$Assay label/ordinal/transitionId mapping failed at ordinal $ordinal." }
+        $beginTick = [uint64](Get-CSXPathValue $record 'raw.timing.beginTick' 0)
+        $dispatchTick = [uint64](Get-CSXPathValue $record 'raw.timing.dispatchTick' 0)
+        $stableTick = [uint64](Get-CSXPathValue $record 'raw.timing.stableTick' 0)
+        $tickFrequency = [uint64](Get-CSXPathValue $record 'raw.timing.tickFrequency' 0)
+        $dispatchFrame = [uint64](Get-CSXPathValue $record 'raw.frames.dispatch' 0)
+        $stableFrame = [uint64](Get-CSXPathValue $record 'raw.frames.stable' 0)
+        if ([string](Get-CSXPropertyValue $record.raw 'ownerId') -ne $script:runId -or
+            [string](Get-CSXPathValue $record 'raw.timing.elapsedOrigin') -ne 'qualification_dispatch' -or
+            $beginTick -eq 0 -or $dispatchTick -lt $beginTick -or $stableTick -lt $dispatchTick -or
+            $tickFrequency -eq 0 -or $dispatchFrame -eq 0 -or $stableFrame -le $dispatchFrame) {
+            throw "$Assay transition $ordinal did not prove owner-bound dispatch timing."
+        }
+        $expectedElapsedMs = [double]($stableTick - $dispatchTick) * 1000.0 / [double]$tickFrequency
+        if ([Math]::Abs([double]$record.elapsedMs - $expectedElapsedMs) -gt 0.001) {
+            throw "$Assay transition $ordinal elapsed time is not dispatch-to-stable QPC time."
+        }
         $expectedCell = if ($isCoc -and $ordinal % 2 -eq 1) { [string]$script:protocol.fixture.interiorCellEditorId } else { [string]$script:protocol.fixture.startCellEditorId }
         if (-not [string]::Equals([string](Get-CSXPathValue $record 'raw.currentCell.editorId'), $expectedCell, [StringComparison]::OrdinalIgnoreCase)) { throw "$Assay transition $ordinal observed the wrong exact cell." }
         $profileSource = if ($isCoc) {
@@ -552,6 +786,7 @@ function Wait-VisualSequence($StartResponse, [int]$Replicate) {
     $requestId = [string](Get-CSXPathValue $StartResponse 'result.requestId')
     if ([string]::IsNullOrWhiteSpace($requestId)) { throw "Visual replicate $Replicate did not return a requestId." }
     $script:activeVisualRequestId = $requestId
+    $script:visualStartUncertain = $false
     $terminal = @('completed', 'completed_with_warnings', 'failed', 'failed_partial', 'cancelled', 'cancelled_partial', 'stopped')
     do {
         $remaining = Get-CSXRemainingMilliseconds -Stopwatch $script:orchestrationWatch -BudgetMs ([int]$script:protocol.timeBudget.orchestrationMs)
@@ -566,7 +801,6 @@ function Wait-VisualSequence($StartResponse, [int]$Replicate) {
         Start-Sleep -Milliseconds ([Math]::Min([int]$script:protocol.timeBudget.screenshotPollMs, $remaining))
     } while ($true)
     $script:activeVisualRequestId = $null
-    $script:visualStartMayBeOwned = $false
     if ($state -ne 'completed') { throw "Visual replicate $Replicate ended in '$state', not completed." }
     $effective = Get-CSXPathValue $receipt 'result.effective'
     if ([int](Get-CSXPropertyValue $effective 'frameCount' 0) -ne 16 -or
@@ -663,7 +897,7 @@ function Test-VisualChildReceipt($ChildReceipt, $Run, [int]$Ordinal) {
         if ([string]$artifact.sha256 -ne $hash) { throw "Screenshot receipt hash differs for $path" }
         $dimensions = Get-PngDimensions $path
         $artifacts.Add([pscustomobject][ordered]@{
-            view = [string]$output.view; path = [IO.Path]::GetRelativePath($script:evidenceRoot, $path)
+            view = [string]$output.view; path = [IO.Path]::GetRelativePath($script:evidenceRoot, $path).Replace('\', '/')
             sha256 = $hash; width = $dimensions.width; height = $dimensions.height
         })
     }
@@ -721,6 +955,293 @@ function Get-VisualFixtureObservation([string]$Label, [string]$FsrRuntime) {
     return [pscustomobject][ordered]@{ label = $Label; request = $scenarioRequest; result = $scenario; evidence = $evidence }
 }
 
+function Get-AutomationArtifactRelativePath([string]$Root, [string]$Path) {
+    $relative = [IO.Path]::GetRelativePath([IO.Path]::GetFullPath($Root), [IO.Path]::GetFullPath($Path)).Replace('\', '/')
+    if ([IO.Path]::IsPathRooted($relative) -or $relative -eq '..' -or $relative.StartsWith('../', [StringComparison]::Ordinal)) {
+        throw "Automation artifact escapes the evidence directory: $Path"
+    }
+    return $relative
+}
+
+function Get-CompactJsonSha256($Value) {
+    $json = $Value | ConvertTo-Json -Depth 100 -Compress
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Get-VisualReviewSourceSample($Index, [int]$Replicate, [int]$Ordinal, [string]$Label) {
+    $matches = @($Index.samples | Where-Object {
+        [int](Get-CSXPropertyValue $_ 'replicate' 0) -eq $Replicate -and
+        [int](Get-CSXPropertyValue $_ 'ordinal' 0) -eq $Ordinal
+    })
+    if ($matches.Count -ne 1) { throw "$Label visual index does not contain exactly one replicate $Replicate ordinal $Ordinal sample." }
+    $artifacts = @(Get-CSXPropertyValue $matches[0] 'artifacts' @() | Sort-Object view)
+    if ($artifacts.Count -ne 3 -or (@($artifacts.view) -join ',') -ne 'left_eye,right_eye,side_by_side') {
+        throw "$Label visual sample replicate $Replicate ordinal $Ordinal does not contain the exact three-view set."
+    }
+    return $matches[0]
+}
+
+function New-VisualReviewAlias([string]$SourcePath, [string]$AliasPath) {
+    $parent = Split-Path -Parent $AliasPath
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    if (Test-Path -LiteralPath $AliasPath) { throw "Visual-review alias already exists: $AliasPath" }
+    try { New-Item -ItemType HardLink -Path $AliasPath -Target $SourcePath -ErrorAction Stop | Out-Null }
+    catch { Copy-Item -LiteralPath $SourcePath -Destination $AliasPath }
+    if ((Get-CSXFileSha256 $AliasPath) -ne (Get-CSXFileSha256 $SourcePath)) { throw 'Visual-review alias hash differs from its source image.' }
+}
+
+function Invoke-AutomatedVisualEvaluation($CandidateIndex, $BaselineIndex, $ProviderPreflight, [int]$DeadlineSeconds) {
+    $evaluation = $script:protocol.visualAssay.evaluation
+    $reviewRoot = Join-Path $script:evidenceRoot 'visual-review'
+    $promptRelative = 'visual-review/prompt.v1.md'
+    $schemaRelative = 'visual-review/output-schema.v1.json'
+    $preflightRelative = 'visual-review/preflight.json'
+    $executionRelative = 'visual-review/execution.json'
+    $promptPath = Join-Path $script:evidenceRoot $promptRelative
+    $schemaPath = Join-Path $script:evidenceRoot $schemaRelative
+    $preflightPath = Join-Path $script:evidenceRoot $preflightRelative
+    if (-not (Test-Path -LiteralPath $reviewRoot -PathType Container)) { New-Item -ItemType Directory -Path $reviewRoot -Force | Out-Null }
+    foreach ($binding in @(
+        [pscustomobject]@{ source = Join-Path $PSScriptRoot ([string]$evaluation.promptFile); destination = $promptPath; sha256 = [string]$evaluation.promptSha256; label = 'prompt' },
+        [pscustomobject]@{ source = Join-Path $PSScriptRoot ([string]$evaluation.outputSchemaFile); destination = $schemaPath; sha256 = [string]$evaluation.outputSchemaSha256; label = 'output schema' }
+    )) {
+        if (-not (Test-Path -LiteralPath $binding.source -PathType Leaf) -or (Get-CSXFileSha256 $binding.source) -ne $binding.sha256) {
+            throw "The automated visual-review $($binding.label) does not match the protocol hash."
+        }
+        if (-not (Test-Path -LiteralPath $binding.destination -PathType Leaf)) {
+            Copy-Item -LiteralPath $binding.source -Destination $binding.destination
+        }
+        if ((Get-CSXFileSha256 $binding.destination) -ne $binding.sha256) { throw "The copied automated visual-review $($binding.label) hash changed." }
+    }
+    Write-CSXJsonFile -Path $preflightPath -Value $ProviderPreflight | Out-Null
+
+    $promptText = [IO.File]::ReadAllText($promptPath, [Text.Encoding]::UTF8)
+    $aliasRoot = Join-Path $reviewRoot ".aliases-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $aliasRoot | Out-Null
+    $passes = [Collections.Generic.List[object]]::new()
+    $batchContexts = @{}
+    try {
+        foreach ($presentationPass in 1..2) {
+            $providerBatches = [Collections.Generic.List[object]]::new()
+            foreach ($replicate in 1..3) {
+                $batchRelative = "visual-review/pass-$($presentationPass.ToString('D2'))/rep-$($replicate.ToString('D2'))"
+                $batchDirectory = Join-Path $script:evidenceRoot $batchRelative
+                New-Item -ItemType Directory -Path $batchDirectory -Force | Out-Null
+                $candidatePosition = if ($PrMode) { if ($presentationPass -eq 1) { 'first' } else { 'second' } } else { 'only' }
+                $mode = if ($PrMode) { 'pr_baseline' } else { 'standalone' }
+                $attachments = [Collections.Generic.List[object]]::new()
+                $receiptBindings = [Collections.Generic.List[object]]::new()
+                $imagePaths = [Collections.Generic.List[string]]::new()
+                $attachmentIndex = 0
+                $ordinalSequence = if (-not $PrMode -and $presentationPass -eq 2) { @(16, 8, 1) } else { @(1, 8, 16) }
+                foreach ($ordinal in $ordinalSequence) {
+                    $setDefinitions = if ($PrMode) {
+                        @(
+                            [pscustomobject]@{ neutralSet = 'first'; sourceRole = $(if ($candidatePosition -eq 'first') { 'candidate' } else { 'baseline' }) },
+                            [pscustomobject]@{ neutralSet = 'second'; sourceRole = $(if ($candidatePosition -eq 'second') { 'candidate' } else { 'baseline' }) }
+                        )
+                    }
+                    else { @([pscustomobject]@{ neutralSet = 'only'; sourceRole = 'candidate' }) }
+                    foreach ($set in $setDefinitions) {
+                        $sourceIndex = if ($set.sourceRole -eq 'candidate') { $CandidateIndex } else { $BaselineIndex }
+                        $sourceSample = Get-VisualReviewSourceSample -Index $sourceIndex -Replicate $replicate -Ordinal $ordinal -Label $set.sourceRole
+                        $artifactSequence = if (-not $PrMode -and $presentationPass -eq 2) {
+                            @($sourceSample.artifacts | Sort-Object view -Descending)
+                        }
+                        else { @($sourceSample.artifacts | Sort-Object view) }
+                        foreach ($artifact in $artifactSequence) {
+                            $sourceRelative = if ($set.sourceRole -eq 'candidate') { [string]$artifact.path } else { "baseline/$([string]$artifact.path)" }
+                            $sourcePath = Resolve-CSXEvidencePath -EvidenceRoot $script:evidenceRoot -RelativePath $sourceRelative
+                            $sourceHash = Get-CSXFileSha256 $sourcePath
+                            if ($sourceHash -ne [string]$artifact.sha256) { throw "Automated visual-review source hash changed: $sourceRelative" }
+                            $sourceLength = [uint64](Get-Item -LiteralPath $sourcePath).Length
+                            $aliasName = "$([string]$set.neutralSet)/ordinal-$($ordinal.ToString('D2'))-$([string]$artifact.view).png"
+                            $aliasPath = Join-Path (Join-Path $aliasRoot "pass-$($presentationPass.ToString('D2'))-rep-$($replicate.ToString('D2'))") $aliasName
+                            New-VisualReviewAlias -SourcePath $sourcePath -AliasPath $aliasPath
+                            $attachmentIndex++
+                            $attachments.Add([pscustomobject][ordered]@{
+                                attachmentIndex = $attachmentIndex; neutralSet = [string]$set.neutralSet; ordinal = $ordinal
+                                view = [string]$artifact.view; width = [int]$artifact.width; height = [int]$artifact.height
+                                byteLength = $sourceLength; sha256 = $sourceHash; aliasName = $aliasName
+                            })
+                            $receiptBindings.Add([pscustomobject][ordered]@{
+                                attachmentIndex = $attachmentIndex; neutralSet = [string]$set.neutralSet; sourceRole = [string]$set.sourceRole
+                                sourcePath = $sourceRelative; aliasPath = [IO.Path]::GetFullPath($aliasPath)
+                                byteLength = $sourceLength; sha256 = $sourceHash
+                            })
+                            $imagePaths.Add([IO.Path]::GetFullPath($aliasPath))
+                        }
+                    }
+                }
+                $requestBody = [pscustomobject][ordered]@{
+                    runId = $script:runId; replicate = $replicate; presentationPass = $presentationPass; mode = $mode
+                    sampleOrdinals = @(1, 8, 16); attachmentOrder = @($attachments)
+                }
+                $requestBodySha256 = Get-CompactJsonSha256 $requestBody
+                $request = [pscustomobject][ordered]@{
+                    schema = 'csx-render-scale-image-model-request-v1'; requestSha256 = $requestBodySha256; body = $requestBody
+                }
+                $requestPath = Write-CSXJsonFile -Path (Join-Path $batchDirectory 'request.json') -Value $request
+                $requestRelative = "$batchRelative/request.json"
+                $responsePath = Join-Path $batchDirectory 'response.json'
+                $eventsPath = Join-Path $batchDirectory 'events.jsonl'
+                $effectivePrompt = New-CSXAutomatedVisualPromptText -PromptSourceText $promptText -RequestArtifact $request
+                $providerBatches.Add([pscustomobject][ordered]@{
+                    replicate = $replicate; promptText = $effectivePrompt; images = @($imagePaths)
+                    outputSchemaPath = $schemaPath; responsePath = $responsePath; eventsPath = $eventsPath
+                })
+                $batchContexts["$presentationPass`:$replicate"] = [pscustomobject][ordered]@{
+                    replicate = $replicate; presentationPass = $presentationPass; mode = $mode; candidatePosition = $candidatePosition
+                    requestPath = $requestPath; requestRelative = $requestRelative; requestFileSha256 = Get-CSXFileSha256 $requestPath
+                    requestSha256 = $requestBodySha256; responsePath = $responsePath; responseRelative = "$batchRelative/response.json"
+                    eventsPath = $eventsPath; eventsRelative = "$batchRelative/events.jsonl"; stderrRelative = "$batchRelative/stderr.json"
+                    receiptRelative = "$batchRelative/receipt.json"; promptEffectiveSha256 = Get-CompactJsonSha256 $effectivePrompt
+                    imageBindings = @($receiptBindings)
+                }
+            }
+            $passes.Add([pscustomobject][ordered]@{ presentationPass = $presentationPass; batches = @($providerBatches) })
+        }
+        $execution = Invoke-CSXCodexVisualReviewProvider -WorkingDirectory $reviewRoot -Passes @($passes) `
+            -CodexExecutable $CodexExecutable -Preflight $ProviderPreflight -DeadlineSeconds $DeadlineSeconds
+        $executionPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot $executionRelative) -Value $execution
+        $batchEvidence = [Collections.Generic.List[object]]::new()
+        foreach ($providerBatch in @($execution.batches | Sort-Object presentationPass, replicate)) {
+            $key = "$([int]$providerBatch.presentationPass)`:$([int]$providerBatch.replicate)"
+            $context = $batchContexts[$key]
+            if ($null -eq $context) { throw "The visual-review provider returned unexpected batch $key." }
+            $stderrPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot $context.stderrRelative) -Value ([pscustomobject][ordered]@{
+                schema = 'csx-codex-visual-review-stderr-v1'; text = [string]$providerBatch.stderr
+            })
+            $responseSha256 = if (Test-Path -LiteralPath $context.responsePath -PathType Leaf) { Get-CSXFileSha256 $context.responsePath } else { $null }
+            $eventsSha256 = if (Test-Path -LiteralPath $context.eventsPath -PathType Leaf) { Get-CSXFileSha256 $context.eventsPath } else { $null }
+            $receipt = [pscustomobject][ordered]@{
+                schema = 'csx-render-scale-image-model-receipt-v1'; runId = $script:runId
+                replicate = $context.replicate; presentationPass = $context.presentationPass; mode = $context.mode
+                provider = [string]$execution.provider; model = [string]$execution.model; candidatePosition = $context.candidatePosition
+                requestPath = $context.requestRelative; requestSha256 = $context.requestSha256
+                responsePath = $context.responseRelative; responseSha256 = $responseSha256
+                eventsPath = $context.eventsRelative; eventsSha256 = $eventsSha256
+                promptRevision = [int]$evaluation.promptRevision; promptSourceSha256 = [string]$evaluation.promptSha256
+                promptEffectiveSha256 = [string]$providerBatch.promptSha256; outputSchemaSourceSha256 = [string]$evaluation.outputSchemaSha256
+                codexVersion = [string]$ProviderPreflight.version; codexVersionSha256 = [string]$ProviderPreflight.versionSha256
+                codexRootHelpSha256 = [string]$ProviderPreflight.rootHelpSha256; codexExecHelpSha256 = [string]$ProviderPreflight.execHelpSha256
+                imageBindings = @($context.imageBindings)
+                execution = [pscustomobject][ordered]@{
+                    ok = [bool]$providerBatch.ok; status = [string]$providerBatch.status; exitCode = $providerBatch.exitCode
+                    timedOut = [bool]$providerBatch.timedOut; startedUtc = $providerBatch.startedUtc; completedUtc = $providerBatch.completedUtc
+                    durationMs = $providerBatch.durationMs
+                }
+                errors = @($providerBatch.errors)
+            }
+            $receiptPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot $context.receiptRelative) -Value $receipt
+            $batchEvidence.Add([pscustomobject][ordered]@{
+                replicate = $context.replicate; presentationPass = $context.presentationPass
+                requestPath = $context.requestRelative; requestFileSha256 = $context.requestFileSha256; requestSha256 = $context.requestSha256
+                responsePath = $context.responseRelative; responseSha256 = $responseSha256
+                eventsPath = $context.eventsRelative; eventsSha256 = $eventsSha256
+                stderrPath = $context.stderrRelative; stderrSha256 = Get-CSXFileSha256 $stderrPath
+                receiptPath = $context.receiptRelative; receiptSha256 = Get-CSXFileSha256 $receiptPath
+            })
+        }
+        $automated = [pscustomobject][ordered]@{
+            schema = 'csx-render-scale-automated-review-v1'; provider = [string]$execution.provider; model = [string]$execution.model
+            promptRevision = [int]$evaluation.promptRevision; promptPath = $promptRelative; promptSourceSha256 = [string]$evaluation.promptSha256
+            outputSchemaPath = $schemaRelative; outputSchemaSourceSha256 = [string]$evaluation.outputSchemaSha256
+            preflightPath = $preflightRelative; preflightSha256 = Get-CSXFileSha256 $preflightPath
+            executionPath = $executionRelative; executionSha256 = Get-CSXFileSha256 $executionPath
+            deadlineSeconds = $DeadlineSeconds; durationMs = $execution.durationMs; batches = @($batchEvidence)
+        }
+        if (-not [bool]$execution.ok) { throw "Codex visual-review provider failed: $(@($execution.errors) -join ' | ')" }
+        return $automated
+    }
+    finally {
+        if (Test-Path -LiteralPath $aliasRoot -PathType Container) {
+            $resolvedAliasRoot = [IO.Path]::GetFullPath($aliasRoot)
+            $reviewPrefix = [IO.Path]::GetFullPath($reviewRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            if (-not $resolvedAliasRoot.StartsWith($reviewPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing to clean a visual-review alias directory outside the owned review root.' }
+            Remove-Item -LiteralPath $resolvedAliasRoot -Recurse -Force
+        }
+    }
+}
+
+function Test-AutomationArtifactInventoryExclusion([string]$RelativePath) {
+    if ($RelativePath.StartsWith('baseline/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $RelativePath -in @(
+        '.csx-render-scale-qualification.lock', 'automation-artifacts.json', 'run.raw.json', 'run.json',
+        'visual-review.json', 'failures.json',
+        'pr-summary.md', 'qualification-summary.md'
+    )
+}
+
+function Write-AutomationArtifactInventory {
+    $entries = [Collections.Generic.List[object]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    Assert-CSXEvidencePathNoReparse -EvidenceRoot $script:evidenceRoot -ResolvedPath $script:evidenceRoot -Label 'Automation artifact inventory'
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:evidenceRoot -Directory -Recurse -Force)) {
+        Assert-CSXEvidencePathNoReparse -EvidenceRoot $script:evidenceRoot -ResolvedPath $directory.FullName -Label 'Automation artifact inventory directory'
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $script:evidenceRoot -File -Recurse -Force | Sort-Object FullName)) {
+        $relative = Get-AutomationArtifactRelativePath -Root $script:evidenceRoot -Path $file.FullName
+        if (Test-AutomationArtifactInventoryExclusion $relative) { continue }
+        $extension = [IO.Path]::GetExtension($relative).ToLowerInvariant()
+        if ($extension -notin @('.json', '.jsonl', '.csv', '.png', '.md')) {
+            throw "Unsupported file is present in the closed automation artifact envelope: $relative"
+        }
+        Assert-CSXEvidencePathNoReparse -EvidenceRoot $script:evidenceRoot -ResolvedPath $file.FullName -Label 'Automation artifact inventory file'
+        if (-not $seen.Add($relative)) { throw "Duplicate or case-colliding automation artifact path: $relative" }
+        $entries.Add([pscustomobject][ordered]@{
+            path = $relative
+            kind = $extension.Substring(1)
+            byteLength = [uint64]$file.Length
+            sha256 = Get-CSXFileSha256 $file.FullName
+        })
+    }
+    $paths = @($entries | ForEach-Object path)
+    if (@($paths | Where-Object { $_ -like '*.png' }).Count -ne 144) {
+        throw 'The automation artifact inventory must contain exactly 144 PNG captures.'
+    }
+    foreach ($required in @(
+        'protocol.json', 'fixture-manifest.json', 'binding/authoritative-list.json', 'binding/raw-session-identity.json',
+        'preflight-retained-diagnostics.json', 'transitions.json', 'transitions.csv',
+        'coc/transitions.json', 'coc/transitions.csv', 'menu/transitions.json', 'menu/transitions.csv',
+        'mcp-transcript.json', 'visual-index.json', 'visual/fixture-observations.json',
+        'coc/scenario.request.json', 'coc/scenario.result.json', 'coc/diagnostics.json', 'coc/stress-record.json', 'coc/cpu-record.json',
+        'menu/scenario.request.json', 'menu/scenario.result.json', 'menu/diagnostics.json', 'menu/stress-record.json', 'menu/cpu-record.json',
+        'menu/dlss-traces.json', 'recovery-1.json', 'recovery-2.json',
+        'visual/diagnostics.json', 'visual/stress-record.json', 'visual/cpu-record.json',
+        'visual-review/prompt.v1.md', 'visual-review/output-schema.v1.json',
+        'visual-review/preflight.json', 'visual-review/execution.json',
+        'visual/rep-01/sequence.request.json', 'visual/rep-01/sequence.terminal.json', 'visual/rep-01/children.receipts.json',
+        'visual/rep-02/sequence.request.json', 'visual/rep-02/sequence.terminal.json', 'visual/rep-02/children.receipts.json',
+        'visual/rep-03/sequence.request.json', 'visual/rep-03/sequence.terminal.json', 'visual/rep-03/children.receipts.json'
+    )) {
+        if (-not $seen.Contains($required)) { throw "Required automation artifact is missing from the inventory: $required" }
+    }
+    foreach ($presentationPass in 1..2) {
+        foreach ($replicate in 1..3) {
+            $prefix = "visual-review/pass-$($presentationPass.ToString('D2'))/rep-$($replicate.ToString('D2'))"
+            foreach ($leaf in @('request.json', 'response.json', 'events.jsonl', 'stderr.json', 'receipt.json')) {
+                if (-not $seen.Contains("$prefix/$leaf")) { throw "Required automated visual-review artifact is missing from the inventory: $prefix/$leaf" }
+            }
+        }
+    }
+    $inventory = [pscustomobject][ordered]@{
+        schema = 'csx-render-scale-automation-artifacts-v1'
+        runId = $script:runId
+        candidateBuildId = $script:expectedBuildId
+        protocolSha256 = $protocolRecord.sha256
+        entries = @($entries)
+    }
+    $path = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'automation-artifacts.json') -Value $inventory
+    return [pscustomobject][ordered]@{
+        schema = [string]$inventory.schema
+        path = 'automation-artifacts.json'
+        sha256 = Get-CSXFileSha256 $path
+        entryCount = @($entries).Count
+    }
+}
+
 function Resolve-BaselineRun([string]$Path, [string]$ExpectedBuildId, [string]$CandidateBuildId) {
     if ([string]::IsNullOrWhiteSpace($Path)) { throw 'PR mode requires -BaselinePath.' }
     if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) { throw 'PR mode requires -ExpectedBaselineBuildId.' }
@@ -728,13 +1249,43 @@ function Resolve-BaselineRun([string]$Path, [string]$ExpectedBuildId, [string]$C
     if (Test-Path -LiteralPath $resolved -PathType Container) { $resolved = Join-Path $resolved 'run.json' }
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "Baseline run does not exist: $resolved" }
     $run = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json -Depth 100
-    if ([string]$run.schema -ne 'csx-render-scale-pr-v1' -or [string]$run.status -ne 'PASS') { throw 'PR baseline must be a passing csx-render-scale-pr-v1 run.' }
+    $isPrBaseline = [string]$run.schema -eq 'csx-render-scale-pr-v1' -and [string]$run.status -eq 'PASS' -and [bool]$run.prMode
+    $isLocalBootstrap = [string]$run.schema -eq 'csx-render-scale-local-v1' -and [string]$run.status -eq 'LOCAL_PASS' -and -not [bool]$run.prMode
+    if (-not $isPrBaseline -and -not $isLocalBootstrap) {
+        throw 'Baseline must be a finalized PASS PR run or finalized LOCAL_PASS bootstrap run.'
+    }
+    if (-not [bool](Get-CSXPathValue $run 'automatedGates.passed' $false) -or
+        [string](Get-CSXPathValue $run 'visualReview.state') -ne 'PASS' -or
+        @(Get-CSXPropertyValue $run 'errors' @()).Count -ne 0 -or
+        @(Get-CSXPropertyValue $run 'infrastructureErrors' @()).Count -ne 0) {
+        throw 'Baseline does not contain complete passing automated and visual evidence.'
+    }
+    if ([string](Get-CSXPathValue $run 'protocol.sha256') -notmatch '^[a-f0-9]{64}$' -or
+        [int](Get-CSXPathValue $run 'protocol.revision' 0) -lt 1 -or
+        [string](Get-CSXPathValue $run 'fixture.fingerprint') -notmatch '^[a-f0-9]{64}$') {
+        throw 'Baseline omits protocol or fixture identity required for comparison.'
+    }
     $actualBuildId = ([string](Get-CSXPathValue $run 'runtime.buildId')).ToLowerInvariant()
     if ($actualBuildId -notmatch '^[a-f0-9]{64}$' -or $actualBuildId -ne $ExpectedBuildId.ToLowerInvariant()) {
         throw 'PR baseline Build ID does not match -ExpectedBaselineBuildId.'
     }
     if ($actualBuildId -eq $CandidateBuildId.ToLowerInvariant()) { throw 'Candidate and baseline Build IDs must differ.' }
     $root = Split-Path -Parent $resolved
+    $rawPath = Join-Path $root 'run.raw.json'
+    $reviewPath = Join-Path $root 'visual-review.json'
+    $inventoryPath = Join-Path $root 'automation-artifacts.json'
+    foreach ($required in @($rawPath, $reviewPath, $inventoryPath)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Baseline companion evidence is missing: $required" }
+    }
+    $raw = Get-Content -LiteralPath $rawPath -Raw | ConvertFrom-Json -Depth 100
+    $review = Get-Content -LiteralPath $reviewPath -Raw | ConvertFrom-Json -Depth 100
+    $envelope = Test-CSXFinalizerEnvelope -EvidenceRoot $root -Raw $raw -SkipBaselineComparison
+    if (-not $envelope.ok) { throw "Baseline raw/artifact envelope is invalid: $($envelope.errors -join ' ')" }
+    foreach ($name in @('runId', 'prMode', 'protocol', 'fixture', 'runtime', 'time', 'assays', 'recoveries', 'baseline', 'artifactInventory', 'automatedGates')) {
+        if (-not (Test-CSXJsonIdentity (Get-CSXPropertyValue $run $name) (Get-CSXPropertyValue $raw $name))) {
+            throw "Baseline final run projection '$name' differs from run.raw."
+        }
+    }
     $indexRelative = [string](Get-CSXPathValue $run 'assays.visual.indexPath')
     if ([string]::IsNullOrWhiteSpace($indexRelative)) { throw 'Baseline run omits its relative visual index path.' }
     $indexPath = Resolve-CSXEvidencePath -EvidenceRoot $root -RelativePath $indexRelative
@@ -743,52 +1294,117 @@ function Resolve-BaselineRun([string]$Path, [string]$ExpectedBuildId, [string]$C
     Assert-CSXVisualIndexSet -VisualIndex $index -Label 'Baseline' -ExpectedRunId ([string]$run.runId)
     $indexSha256 = Get-CSXFileSha256 $indexPath
     if ($indexSha256 -ne [string](Get-CSXPathValue $run 'assays.visual.indexSha256')) { throw 'Baseline run does not pin the matching visual-index SHA-256.' }
-    foreach ($sample in @($index.samples)) {
-        foreach ($artifact in @($sample.artifacts)) {
-            $artifactPath = Resolve-CSXEvidencePath -EvidenceRoot $root -RelativePath ([string]$artifact.path)
-            if ((Get-CSXFileSha256 $artifactPath) -ne [string]$artifact.sha256) { throw "Baseline artifact hash mismatch: $($artifact.path)" }
-        }
+    $visualArtifacts = Test-CSXVisualArtifactEvidence -EvidenceRoot $root -Raw $raw -VisualIndex $index
+    if (-not $visualArtifacts.ok) { throw "Baseline visual artifact envelope is invalid: $($visualArtifacts.errors -join ' ')" }
+    $reviewResult = Test-CSXFlattenedBaselineVisualReview -EvidenceDirectory $root -RunRaw $raw -VisualIndex $index -Review $review
+    if (-not $reviewResult.ok -or [string](Get-CSXPathValue $run 'visualReview.state') -ne 'PASS' -or
+        -not (Test-CSXJsonIdentity (Get-CSXPathValue $run 'visualReview.result') $reviewResult)) {
+        throw "Baseline visual review is invalid or differs from its recomputed result: $($reviewResult.errors -join ' ')"
     }
-    return [pscustomobject][ordered]@{ path = $resolved; sha256 = Get-CSXFileSha256 $resolved; run = $run; root = $root; visualIndexPath = $indexPath; visualIndexSha256 = $indexSha256; visualIndex = $index }
+    $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -Depth 100
+    return [pscustomobject][ordered]@{
+        path = $resolved; sha256 = Get-CSXFileSha256 $resolved; run = $run; root = $root
+        raw = $raw; rawPath = $rawPath; rawSha256 = Get-CSXFileSha256 $rawPath
+        review = $review; reviewPath = $reviewPath; reviewSha256 = Get-CSXFileSha256 $reviewPath
+        inventory = $inventory; inventoryPath = $inventoryPath; inventorySha256 = Get-CSXFileSha256 $inventoryPath
+        visualIndexPath = $indexPath; visualIndexSha256 = $indexSha256; visualIndex = $index
+    }
 }
 
 function Copy-BaselineBundle($Baseline) {
     $destinationRoot = Join-Path $script:evidenceRoot 'baseline'
     New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
-    $runDestination = Join-Path $destinationRoot 'run.json'
-    $indexDestination = Join-Path $destinationRoot 'visual-index.json'
-    Copy-Item -LiteralPath $Baseline.path -Destination $runDestination
-    Copy-Item -LiteralPath $Baseline.visualIndexPath -Destination $indexDestination
-    if ((Get-CSXFileSha256 $runDestination) -ne $Baseline.sha256) { throw 'Copied baseline run hash changed.' }
-    if ((Get-CSXFileSha256 $indexDestination) -ne $Baseline.visualIndexSha256) { throw 'Copied baseline visual-index hash changed.' }
-    foreach ($sample in @($Baseline.visualIndex.samples)) {
-        foreach ($artifact in @($sample.artifacts)) {
-            $source = Resolve-CSXEvidencePath -EvidenceRoot $Baseline.root -RelativePath ([string]$artifact.path)
-            $destination = Resolve-CSXEvidencePath -EvidenceRoot $destinationRoot -RelativePath ([string]$artifact.path)
-            $parent = Split-Path -Parent $destination
-            if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-            if (Test-Path -LiteralPath $destination) { throw "Baseline bundle path collision: $($artifact.path)" }
-            Copy-Item -LiteralPath $source -Destination $destination
-            if ((Get-CSXFileSha256 $destination) -ne [string]$artifact.sha256) { throw "Copied baseline artifact hash changed: $($artifact.path)" }
+    $copied = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($Baseline.inventory.entries)) {
+        $relative = [string]$entry.path
+        if (-not $copied.Add($relative)) { throw "Baseline inventory contains a duplicate or case-colliding path: $relative" }
+        $source = Resolve-CSXEvidencePath -EvidenceRoot $Baseline.root -RelativePath $relative
+        $destination = Resolve-CSXEvidencePath -EvidenceRoot $destinationRoot -RelativePath $relative
+        $parent = Split-Path -Parent $destination
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        if (Test-Path -LiteralPath $destination) { throw "Baseline bundle path collision: $relative" }
+        Copy-Item -LiteralPath $source -Destination $destination
+        if ((Get-CSXFileSha256 $destination) -ne [string]$entry.sha256 -or [uint64](Get-Item -LiteralPath $destination).Length -ne [uint64]$entry.byteLength) {
+            throw "Copied baseline artifact length/hash changed: $relative"
         }
     }
-    return [pscustomobject][ordered]@{ path = 'baseline/run.json'; visualIndexPath = 'baseline/visual-index.json'; visualIndexSha256 = $Baseline.visualIndexSha256; runSha256 = $Baseline.sha256 }
+    $companions = @(
+        [pscustomobject]@{ name = 'automation-artifacts.json'; source = $Baseline.inventoryPath; sha256 = $Baseline.inventorySha256 },
+        [pscustomobject]@{ name = 'run.raw.json'; source = $Baseline.rawPath; sha256 = $Baseline.rawSha256 },
+        [pscustomobject]@{ name = 'run.json'; source = $Baseline.path; sha256 = $Baseline.sha256 },
+        [pscustomobject]@{ name = 'visual-review.json'; source = $Baseline.reviewPath; sha256 = $Baseline.reviewSha256 }
+    )
+    foreach ($file in $companions) {
+        $destination = Join-Path $destinationRoot $file.name
+        if (Test-Path -LiteralPath $destination) { throw "Baseline bundle path collision: $($file.name)" }
+        Copy-Item -LiteralPath $file.source -Destination $destination
+        if ((Get-CSXFileSha256 $destination) -ne $file.sha256) { throw "Copied baseline companion hash changed: $($file.name)" }
+    }
+    return [pscustomobject][ordered]@{
+        path = 'baseline/run.json'; runSha256 = $Baseline.sha256
+        rawPath = 'baseline/run.raw.json'; rawSha256 = $Baseline.rawSha256
+        visualReviewPath = 'baseline/visual-review.json'; visualReviewSha256 = $Baseline.reviewSha256
+        artifactInventoryPath = 'baseline/automation-artifacts.json'; artifactInventorySha256 = $Baseline.inventorySha256
+        artifactInventoryEntryCount = @($Baseline.inventory.entries).Count
+        visualIndexPath = "baseline/$([string]$Baseline.raw.assays.visual.indexPath)"; visualIndexSha256 = $Baseline.visualIndexSha256
+    }
 }
 
-function Convert-ToTransitionRows($Records, $Matrix, [string]$Assay) {
+function Get-ExactScenarioReceipt($Scenario, [string]$Label) {
+    $steps = @($Scenario.results | Where-Object { [string]$_.label -ceq $Label })
+    if ($steps.Count -ne 1) { throw "Scenario did not return exactly one '$Label' receipt." }
+    $receipt = Get-CSXPropertyValue $steps[0] 'result'
+    if ($null -eq $receipt) { throw "Scenario receipt '$Label' omitted its result." }
+    return $receipt
+}
+
+function Convert-ToTransitionRows($Records, $Scenario, [ValidateSet('coc', 'menu')][string]$Assay) {
     $rows = [Collections.Generic.List[object]]::new()
     foreach ($record in @($Records)) {
-        $entry = if ($null -ne $Matrix) { @($Matrix | Where-Object { [int]$_.ordinal -eq [int]$record.ordinal }) | Select-Object -First 1 } else { $null }
-        $target = Get-CSXPropertyValue $record 'target'
-        $method = if ($entry) { [string]$entry.method } else { [string](Get-CSXPropertyValue $target 'method') }
-        $qualityMode = if ($entry) { [int]$entry.qualityModeValue } else { [int](Get-CSXPropertyValue $target 'qualityMode' -1) }
-        $renderScale = if ($entry) { [bool]$entry.renderScaleMode } else { [bool](Get-CSXPropertyValue $target 'renderScaleMode') }
+        $ordinal = [int]$record.ordinal
+        $prefix = "$Assay-$($ordinal.ToString('D2'))"
+        $begin = Get-ExactScenarioReceipt -Scenario $Scenario -Label "$prefix-begin"
+        $dispatch = Get-ExactScenarioReceipt -Scenario $Scenario -Label "$prefix-dispatch"
+        $mutation = Get-ExactScenarioReceipt -Scenario $Scenario -Label "$prefix-$(if ($Assay -eq 'coc') { 'command' } else { 'apply' })"
+        $wait = Get-ExactScenarioReceipt -Scenario $Scenario -Label "$prefix-wait"
+        $transitionId = [uint64](Get-CSXPropertyValue $wait 'transitionId' 0)
+        $ownerId = [string](Get-CSXPropertyValue $wait 'ownerId')
+        if ($transitionId -eq 0 -or $transitionId -ne [uint64]$record.transitionId -or
+            [uint64](Get-CSXPropertyValue $begin 'transitionId' 0) -ne $transitionId -or
+            [uint64](Get-CSXPropertyValue $dispatch 'transitionId' 0) -ne $transitionId -or
+            [string](Get-CSXPropertyValue $begin 'ownerId') -ne $ownerId -or
+            [string](Get-CSXPropertyValue $dispatch 'ownerId') -ne $ownerId -or
+            [string](Get-CSXPropertyValue $begin 'action') -ne 'qualification_begin' -or
+            [string](Get-CSXPropertyValue $dispatch 'action') -ne 'qualification_dispatch' -or
+            [string](Get-CSXPropertyValue $wait 'action') -ne 'qualification_wait') {
+            throw "Scenario transition receipt identity failed at $Assay ordinal $ordinal."
+        }
+        $target = Get-CSXPropertyValue $wait 'target'
+        $expectedCell = Get-CSXPropertyValue $wait 'expectedCell'
+        $foveationTarget = Get-CSXPropertyValue $wait 'foveationTarget'
+        $qpcTiming = Get-CSXPropertyValue $wait 'timing'
+        if ($null -eq $target -or $null -eq $expectedCell -or $null -eq $foveationTarget -or $null -eq $qpcTiming) {
+            throw "Scenario wait receipt omitted transition proof at $Assay ordinal $ordinal."
+        }
         $rows.Add([pscustomobject][ordered]@{
-            assay = $Assay; ordinal = [int]$record.ordinal; transitionId = [uint64]$record.transitionId
-            method = $method; qualityMode = $qualityMode; renderScaleMode = $renderScale
-            elapsedMs = $(if ($null -eq $record.elapsedMs) { $null } else { [double]$record.elapsedMs })
-            elapsedFrames = [uint64](Get-CSXPathValue $record 'raw.timing.elapsedFrames' 0)
-            satisfied = [bool]$record.satisfied
+            assay = $Assay; ordinal = $ordinal; transitionId = $transitionId; ownerId = $ownerId
+            outcome = [string](Get-CSXPropertyValue $wait 'outcome')
+            expectedCell = [pscustomobject][ordered]@{
+                editorId = Get-CSXPropertyValue $expectedCell 'editorId'
+                formId = Get-CSXPropertyValue $expectedCell 'formId'
+            }
+            target = $target
+            method = [string](Get-CSXPropertyValue $target 'method')
+            qualityMode = [int](Get-CSXPropertyValue $target 'qualityMode' -1)
+            renderScaleMode = [bool](Get-CSXPropertyValue $target 'renderScaleMode')
+            dlssProfile = Get-CSXPropertyValue $target 'dlssProfile'
+            fsrRuntime = Get-CSXPropertyValue $target 'fsrRuntime'
+            foveationTarget = $foveationTarget
+            qpcTiming = $qpcTiming
+            elapsedMs = $(if ($null -eq (Get-CSXPropertyValue $qpcTiming 'elapsedMs')) { $null } else { [double](Get-CSXPropertyValue $qpcTiming 'elapsedMs') })
+            elapsedFrames = [uint64](Get-CSXPropertyValue $qpcTiming 'elapsedFrames' 0)
+            satisfied = [bool](Get-CSXPropertyValue $wait 'satisfied' $false)
+            receipts = [pscustomobject][ordered]@{ begin = $begin; dispatch = $dispatch; mutation = $mutation; wait = $wait }
         })
     }
     return @($rows)
@@ -832,17 +1448,6 @@ function Get-MenuStrata($Rows) {
     return [pscustomobject][ordered]@{ byMethod = [pscustomobject]$byMethod; byRenderScaleState = [pscustomobject]$byRenderScale; combined = [pscustomobject]$combined }
 }
 
-if ($FinalizeReview) {
-    try {
-        $updated = Update-CSXQualificationReport -EvidenceDirectory $EvidenceDirectory
-        $result = [pscustomobject][ordered]@{ ok = $updated.report.status -in @('PASS', 'LOCAL_PASS'); status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; errors = @($updated.report.errors) }
-    }
-    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; errors = @($_.Exception.Message) } }
-    $result | ConvertTo-Json -Depth 80 -Compress:$Compact
-    if (-not $NoExit) { if ($result.status -in @('PASS', 'LOCAL_PASS')) { exit 0 } elseif ($result.status -eq 'REVIEW_PENDING') { exit 3 } elseif ($result.status -eq 'INFRASTRUCTURE_ERROR') { exit 4 } else { exit 2 } }
-    return
-}
-
 $script:connection = $null
 $script:orchestrationWatch = $null
 $script:protocol = $null
@@ -863,22 +1468,33 @@ $fixture = $null
 $fixtureManifestRecord = $null
 $runtimeEvidence = $null
 $baselineEvidence = $null
+$baselineComparisonEvidence = $null
 $liveGpuEvidence = $null
-$timeEvidence = [ordered]@{ deadlineStartsAfterRuntimeBinding = $true; orchestrationElapsedMs = $null; performanceElapsedMs = $null; within600Seconds = $false }
+$timeEvidence = [ordered]@{
+    deadlineStartsAfterRuntimeBinding = $true; captureAssaysElapsedMs = $null; visualEvaluationElapsedMs = $null
+    orchestrationElapsedMs = $null; performanceElapsedMs = $null; within600Seconds = $false
+}
 $performanceWatch = [Diagnostics.Stopwatch]::new()
 $script:visualWatch = [Diagnostics.Stopwatch]::new()
 $script:activeVisualRequestId = $null
-$script:visualStartMayBeOwned = $false
+$script:visualStartUncertain = $false
 $script:boundHealth = $null
 $script:bindingIdentity = $null
 $script:fixtureManifest = $null
-$script:ownsStressCapture = $false
-$script:ownsCpuCapture = $false
-$script:traceMayBeOwned = $false
+$script:ownedStressSessionId = [uint64]0
+$script:ownedCpuSessionId = [uint64]0
+$script:ownedTraceSessionId = [uint64]0
+$script:stressStartUncertain = $false
+$script:cpuStartUncertain = $false
+$script:traceStartUncertain = $false
 $script:ownedTransitionIds = [Collections.Generic.HashSet[uint64]]::new()
+$script:cleanupAttempted = $false
+$script:evidenceLease = $null
+$script:evidenceLeasePath = $null
 $script:phase = 'preflight'
 $script:evidenceWritable = $false
 $protocolRecord = $null
+$visualProviderPreflight = $null
 
 try {
     $protocolRecord = Get-CSXQualificationProtocol -Path $ProtocolPath
@@ -887,11 +1503,7 @@ try {
         ([string]::IsNullOrWhiteSpace($BaselinePath) -or [string]::IsNullOrWhiteSpace($ExpectedBaselineBuildId))) {
         throw 'PR mode requires a matching baseline artifact and explicit baseline Build ID.'
     }
-    if (Test-Path -LiteralPath $script:evidenceRoot) {
-        if (@(Get-ChildItem -LiteralPath $script:evidenceRoot -Force).Count -ne 0) { throw 'EvidenceDirectory must be new or empty; existing evidence is never overwritten.' }
-    }
-    else { New-Item -ItemType Directory -Path $script:evidenceRoot -Force | Out-Null }
-    $script:evidenceWritable = $true
+    Open-EvidenceDirectoryLease
     Copy-Item -LiteralPath $protocolRecord.path -Destination (Join-Path $script:evidenceRoot 'protocol.json')
     $runtimeFull = [IO.Path]::GetFullPath($RuntimePath)
     if (-not (Test-Path -LiteralPath $runtimeFull -PathType Leaf)) { throw "Runtime metadata does not exist: $runtimeFull" }
@@ -910,7 +1522,8 @@ try {
     $requiredTools = @('scenario', 'console', 'inspect', 'communityshaders.renderscale', 'communityshaders.upscaling_api', 'communityshaders.feature_api', 'communityshaders.screenshot')
     foreach ($name in $requiredTools) { if (@($tools | Where-Object name -eq $name).Count -ne 1) { throw "Authoritative tools/list did not expose exactly one '$name'." } }
     $renderDescriptor = @($tools | Where-Object name -eq 'communityshaders.renderscale')[0]
-    Assert-ToolActions $renderDescriptor @('qualification_status', 'qualification_begin', 'qualification_dispatch', 'qualification_wait', 'qualification_cancel', 'dlss_trace_status', 'dlss_trace_reset', 'dlss_trace_start', 'dlss_trace_stop', 'dlss_trace_read', 'reset', 'start', 'stop', 'apply', 'cpu_performance_reset', 'cpu_performance_start', 'cpu_performance_stop')
+    Assert-ToolActions $renderDescriptor @('qualification_status', 'qualification_begin', 'qualification_dispatch', 'qualification_wait', 'qualification_cancel', 'dlss_trace_status', 'dlss_trace_reset', 'dlss_trace_start', 'dlss_trace_stop', 'dlss_trace_read', 'record', 'reset', 'start', 'stop', 'apply', 'cpu_performance_status', 'cpu_performance_reset', 'cpu_performance_start', 'cpu_performance_stop')
+    Assert-ToolProperties $renderDescriptor @('ownerId', 'expectedSessionId')
     Assert-ToolActions (@($tools | Where-Object name -eq 'communityshaders.screenshot')[0]) @('capabilities', 'status', 'sequence_start', 'request_get', 'request_cancel')
 
     # The hard wall-clock deadline starts only after exact runtime/tool binding.
@@ -919,6 +1532,24 @@ try {
     $script:fixtureManifest = $fixtureManifestRecord.manifest
     Copy-Item -LiteralPath $fixtureManifestRecord.path -Destination (Join-Path $script:evidenceRoot 'fixture-manifest.json')
     if ((Get-CSXFileSha256 (Join-Path $script:evidenceRoot 'fixture-manifest.json')) -ne $fixtureManifestRecord.sha256) { throw 'Copied fixture manifest SHA-256 changed.' }
+    $reviewRoot = Join-Path $script:evidenceRoot 'visual-review'
+    New-Item -ItemType Directory -Path $reviewRoot -Force | Out-Null
+    $evaluation = $script:protocol.visualAssay.evaluation
+    foreach ($binding in @(
+        [pscustomobject]@{ source = Join-Path $PSScriptRoot ([string]$evaluation.promptFile); destination = Join-Path $reviewRoot 'prompt.v1.md'; sha256 = [string]$evaluation.promptSha256; label = 'prompt' },
+        [pscustomobject]@{ source = Join-Path $PSScriptRoot ([string]$evaluation.outputSchemaFile); destination = Join-Path $reviewRoot 'output-schema.v1.json'; sha256 = [string]$evaluation.outputSchemaSha256; label = 'output schema' }
+    )) {
+        if (-not (Test-Path -LiteralPath $binding.source -PathType Leaf) -or (Get-CSXFileSha256 $binding.source) -ne $binding.sha256) {
+            throw "The automated visual-review $($binding.label) does not match the protocol hash."
+        }
+        Copy-Item -LiteralPath $binding.source -Destination $binding.destination
+        if ((Get-CSXFileSha256 $binding.destination) -ne $binding.sha256) { throw "The copied automated visual-review $($binding.label) hash changed." }
+    }
+    $visualProviderPreflight = Get-CSXCodexVisualReviewProviderPreflight -CodexExecutable $CodexExecutable
+    Write-CSXJsonFile -Path (Join-Path $reviewRoot 'preflight.json') -Value $visualProviderPreflight | Out-Null
+    if (-not [bool]$visualProviderPreflight.ok) {
+        throw "Codex visual-review provider preflight failed: $(@($visualProviderPreflight.errors) -join ' | ')"
+    }
     $script:connection = New-CSXMcpConnection -Runtime $script:runtime
     $health = Invoke-BoundTool -Tool 'inspect' -Arguments ([ordered]@{ kind = 'health' })
     $script:boundHealth = $health
@@ -940,6 +1571,18 @@ try {
     $traceStatus = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_status'; expectedBuildId = $script:expectedBuildId })
     Assert-CSXProducer $traceStatus 'DLSS trace preflight'
     if ([bool](Get-CSXPathValue $traceStatus 'capture.active' $false)) { throw 'A DLSS trace was already active.' }
+    $priorStressRecord = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'record'; expectedBuildId = $script:expectedBuildId })
+    $priorCpuStatus = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'cpu_performance_status'; expectedBuildId = $script:expectedBuildId })
+    $priorTraceRead = Invoke-BoundTool -Tool 'communityshaders.renderscale' -Arguments ([ordered]@{ action = 'dlss_trace_read'; afterSequence = 0; limit = 256; expectedBuildId = $script:expectedBuildId })
+    foreach ($entry in @(
+        [pscustomobject]@{ value = $priorStressRecord; label = 'retained stress record' },
+        [pscustomobject]@{ value = $priorCpuStatus; label = 'retained CPU status' },
+        [pscustomobject]@{ value = $priorTraceRead; label = 'retained DLSS trace' }
+    )) { Assert-CSXProducer $entry.value $entry.label }
+    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'preflight-retained-diagnostics.json') -Value ([pscustomobject][ordered]@{
+        preservationReason = 'snapshot_before_qualification_resets'; renderScaleStatus = $renderStatus
+        stressRecord = $priorStressRecord; cpuStatus = $priorCpuStatus; traceStatus = $traceStatus; traceRead = $priorTraceRead
+    }) | Out-Null
     $capabilities = Invoke-BoundTool -Tool 'communityshaders.upscaling_api' -Arguments ([ordered]@{ action = 'capabilities'; expectedBuildId = $script:expectedBuildId; clientId = 'csx-render-scale-qualification'; commandId = "$($script:runId)-capabilities" })
     Assert-CSXProducer $capabilities 'upscaling capabilities'
     Assert-MethodAvailability $capabilities
@@ -985,18 +1628,21 @@ try {
         if ([string]$baseline.run.protocol.sha256 -ne $protocolRecord.sha256) { throw 'PR baseline protocol hash does not match the candidate.' }
     }
 
-    # Assay 1: one server-side scenario, no client polling between COCs.
+    # Assay 1: fail-fast top-level calls with one server-side wait per COC.
     $script:phase = 'qualification'
     Invoke-DiagnosticStart 'COC'
     $cocScenarioRequest = New-CSXCocScenario -Protocol $script:protocol -GpuVendor $GpuVendor -FsrRuntime $fsrRuntime -ExpectedBuildId $script:expectedBuildId -RunId $script:runId
-    foreach ($transitionId in 1..20) { [void]$script:ownedTransitionIds.Add([uint64]$transitionId) }
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\scenario.request.json') -Value $cocScenarioRequest | Out-Null
     $performanceWatch.Start()
     $cocWallWatch = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $cocScenario = Invoke-BoundTool -Tool 'scenario' -Arguments $cocScenarioRequest -OperationCapMs ([int]$script:protocol.timeBudget.cocAssayMs) -AllowSemanticFailure
+        $cocScenario = Invoke-FailFastScenarioPlan -Plan $cocScenarioRequest -AllocationMs ([int]$script:protocol.timeBudget.cocAssayMs)
     }
-    catch { Invoke-EmergencyCleanup $warnings; throw }
+    catch {
+        $partial = $_.Exception.Data['CSXPartialScenario']
+        if ($partial) { Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\scenario.result.json') -Value $partial | Out-Null }
+        throw
+    }
     $cocWallWatch.Stop()
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\scenario.result.json') -Value $cocScenario | Out-Null
     $cocDiagnostics = Invoke-DiagnosticStop 'COC'
@@ -1009,7 +1655,7 @@ try {
     $cocFailureBreakdown = Get-DiagnosticFailureBreakdown $cocRecords
     $cocFailedTransitions = Get-FailedTransitionCount $cocRecords 20
     $cocTimes = [double[]]@($cocRecords | Where-Object { $null -ne $_.elapsedMs } | ForEach-Object elapsedMs)
-    $cocRows = @(Convert-ToTransitionRows -Records $cocRecords -Matrix $null -Assay 'coc')
+    $cocRows = @(Convert-ToTransitionRows -Records $cocRecords -Scenario $cocScenario -Assay 'coc')
     $stretch = $null
     $stretchError = $null
     try { $stretch = Get-StretchSummary $cocDiagnostics.stress } catch { $stretchError = $_.Exception.Message }
@@ -1028,7 +1674,7 @@ try {
         failureCount = $cocFailureCount; diagnosticFailureLowerBound = $cocDiagnosticFailureLowerBound; failureBreakdown = $cocFailureBreakdown; failedTransitions = $cocFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $cocFailedTransitions -Trials 20
         stretch = $stretch; stressTransitions = $cocStressTransitions
         validation = [pscustomobject][ordered]@{ scenarioOk = [bool]$cocScenario.ok -and -not [bool]$cocScenario.aborted; stretchError = $stretchError; stressRecordError = $cocStressError }
-        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'coc/scenario.request.json'; scenarioResult = 'coc/scenario.result.json'; stressRecord = 'coc/stress-record.json'; cpuRecord = 'coc/cpu-record.json' }
+        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'coc/scenario.request.json'; scenarioResult = 'coc/scenario.result.json'; diagnostics = 'coc/diagnostics.json'; stressRecord = 'coc/stress-record.json'; cpuRecord = 'coc/cpu-record.json' }
     }
     Write-TransitionEvidence -CocRows $cocRows -MenuRows @()
     if (-not [bool]$cocScenario.ok -or [bool]$cocScenario.aborted) { throw 'COC scenario failed or aborted.' }
@@ -1054,14 +1700,16 @@ try {
     # Assay 2: deterministic CS-menu path with scoped trace sessions.
     Invoke-DiagnosticStart 'menu'
     $menuBuild = New-CSXMenuScenario -Protocol $script:protocol -GpuVendor $GpuVendor -FsrRuntime $fsrRuntime -ExpectedBuildId $script:expectedBuildId -ExpectedCellEditorId ([string]$script:protocol.fixture.startCellEditorId) -RunId $script:runId
-    foreach ($transitionId in 101..125) { [void]$script:ownedTransitionIds.Add([uint64]$transitionId) }
-    $script:traceMayBeOwned = $true
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\scenario.request.json') -Value $menuBuild.scenario | Out-Null
     $menuWallWatch = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $menuScenario = Invoke-BoundTool -Tool 'scenario' -Arguments $menuBuild.scenario -OperationCapMs ([int]$script:protocol.timeBudget.menuAssayMs) -AllowSemanticFailure
+        $menuScenario = Invoke-FailFastScenarioPlan -Plan $menuBuild.scenario -AllocationMs ([int]$script:protocol.timeBudget.menuAssayMs)
     }
-    catch { Invoke-EmergencyCleanup $warnings; throw }
+    catch {
+        $partial = $_.Exception.Data['CSXPartialScenario']
+        if ($partial) { Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\scenario.result.json') -Value $partial | Out-Null }
+        throw
+    }
     $menuWallWatch.Stop()
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\scenario.result.json') -Value $menuScenario | Out-Null
     $menuDiagnostics = Invoke-DiagnosticStop 'menu'
@@ -1076,7 +1724,7 @@ try {
     $traceEvidence = Test-CSXDLSSScenarioEvidence -ScenarioResult $menuScenario -GpuVendor $GpuVendor
     foreach ($warning in $traceEvidence.warnings) { $warnings.Add($warning) }
     $menuTimes = [double[]]@($menuRecords | Where-Object { $null -ne $_.elapsedMs } | ForEach-Object elapsedMs)
-    $menuRows = @(Convert-ToTransitionRows -Records $menuRecords -Matrix $menuBuild.matrix -Assay 'menu')
+    $menuRows = @(Convert-ToTransitionRows -Records $menuRecords -Scenario $menuScenario -Assay 'menu')
     $menuStretch = $null
     $menuStretchError = $null
     try { $menuStretch = Get-StretchSummary $menuDiagnostics.stress } catch { $menuStretchError = $_.Exception.Message }
@@ -1096,7 +1744,7 @@ try {
             evidence = $traceEvidence
         }
         validation = [pscustomobject][ordered]@{ scenarioOk = [bool]$menuScenario.ok -and -not [bool]$menuScenario.aborted; stretchError = $menuStretchError; stressRecordError = $menuStressError }
-        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'menu/scenario.request.json'; scenarioResult = 'menu/scenario.result.json'; stressRecord = 'menu/stress-record.json'; cpuRecord = 'menu/cpu-record.json'; dlssTraces = 'menu/dlss-traces.json' }
+        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'menu/scenario.request.json'; scenarioResult = 'menu/scenario.result.json'; diagnostics = 'menu/diagnostics.json'; stressRecord = 'menu/stress-record.json'; cpuRecord = 'menu/cpu-record.json'; dlssTraces = 'menu/dlss-traces.json' }
     }
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\dlss-traces.json') -Value ([pscustomobject][ordered]@{ readLimit = [int]$script:protocol.menuAssay.traceReadLimit; detail = 'bounded_partial_raw_records_with_authoritative_summary_and_pinned_failures'; evidence = $traceEvidence }) | Out-Null
     Write-TransitionEvidence -CocRows $cocRows -MenuRows $menuRows
@@ -1108,7 +1756,6 @@ try {
     if (-not $menuStretch.recordAccepted) { throw 'CS-menu schema-v13 stress record verdict failed.' }
     if ($menuDiagnosticFailureLowerBound -ne 0 -or $menuFailedTransitions -ne 0) { throw 'CS-menu assay recorded a render-scale or diagnostic failure.' }
     if (-not $traceEvidence.ok) { throw "DLSS trace validation failed: $($traceEvidence.errors -join ' ')" }
-    $script:traceMayBeOwned = $false
 
     $recoveryTwoRequest = New-CSXRecoveryScenario -Protocol $script:protocol -ExpectedBuildId $script:expectedBuildId -RunId $script:runId -FsrRuntime $fsrRuntime -RecoveryLabel two
     $recoveries.two.state = 'RUNNING'
@@ -1128,8 +1775,9 @@ try {
     $assays.visual = [pscustomobject][ordered]@{
         state = 'in_progress'; completedReplicates = 0; wallClockMs = 0.0
         requestedFrames = 48; validatedChildReceipts = 0; reviewOrdinals = @(1, 8, 16)
-        indexPath = $null; indexSha256 = $null; fixtureObservations = @(); runs = @()
+        indexPath = $null; indexSha256 = $null; fixtureObservations = @(); runs = @(); diagnostics = $null; evidence = $null
     }
+    Invoke-DiagnosticStart 'visual'
     $script:visualWatch.Start()
     $visualObservations.Add((Get-VisualFixtureObservation -Label 'visual-before-1' -FsrRuntime $fsrRuntime))
     $assays.visual.fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
@@ -1138,7 +1786,7 @@ try {
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
         $request = New-CSXVisualSequenceRequest -Protocol $script:protocol -RunId $script:runId -Replicate $replicate -DestinationDirectory $destination
         Write-CSXJsonFile -Path (Join-Path $destination 'sequence.request.json') -Value $request | Out-Null
-        $script:visualStartMayBeOwned = $true
+        $script:visualStartUncertain = $true
         $start = Invoke-BoundTool -Tool 'communityshaders.screenshot' -Arguments $request
         $run = Wait-VisualSequence -StartResponse $start -Replicate $replicate
         Write-CSXJsonFile -Path (Join-Path $destination 'sequence.terminal.json') -Value $run.receipt | Out-Null
@@ -1149,10 +1797,20 @@ try {
         $assays.visual.fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
         $assays.visual.runs = @($visualRuns | ForEach-Object { [pscustomobject][ordered]@{
             replicate = $_.replicate; requestId = $_.requestId
-            manifestPath = [IO.Path]::GetRelativePath($script:evidenceRoot, $_.manifestPath); manifestSha256 = $_.manifestSha256
+            manifestPath = [IO.Path]::GetRelativePath($script:evidenceRoot, $_.manifestPath).Replace('\', '/'); manifestSha256 = $_.manifestSha256
             terminalReceiptPath = "visual/rep-$($_.replicate.ToString('D2'))/sequence.terminal.json"
         } })
     }
+    $visualDiagnostics = Invoke-DiagnosticStop 'visual'
+    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\diagnostics.json') -Value $visualDiagnostics | Out-Null
+    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\stress-record.json') -Value $visualDiagnostics.stress.record | Out-Null
+    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\cpu-record.json') -Value $visualDiagnostics.cpu.cpuPerformance | Out-Null
+    $visualStress = Get-StretchSummary $visualDiagnostics.stress
+    if (-not $visualStress.recordAccepted) { throw 'Visual schema-v13 stress record verdict failed.' }
+    $visualObservationPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\fixture-observations.json') -Value ([pscustomobject][ordered]@{
+        schema = 'csx-render-scale-visual-fixture-observations-v1'; runId = $script:runId; observations = @($visualObservations)
+    })
+    $visualObservationSha256 = Get-CSXFileSha256 $visualObservationPath
     $visualIntegrity = Get-VisualIndexSamples @($visualRuns)
     foreach ($replicate in 1..3) {
         Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot "visual\rep-$($replicate.ToString('D2'))\children.receipts.json") -Value @($visualIntegrity.children | Where-Object replicate -eq $replicate) | Out-Null
@@ -1170,13 +1828,28 @@ try {
         state = 'complete'; completedReplicates = $visualRuns.Count; wallClockMs = [Math]::Round($script:visualWatch.Elapsed.TotalMilliseconds, 3)
         requestedFrames = 48; validatedChildReceipts = @($visualIntegrity.children).Count; reviewOrdinals = @(1, 8, 16)
         indexPath = 'visual-index.json'; indexSha256 = $visualIndexSha256
+        fixtureObservationsPath = 'visual/fixture-observations.json'; fixtureObservationsSha256 = $visualObservationSha256
         fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
+        diagnostics = $visualDiagnostics
+        evidence = [pscustomobject][ordered]@{
+            diagnostics = 'visual/diagnostics.json'; stressRecord = 'visual/stress-record.json'; cpuRecord = 'visual/cpu-record.json'
+        }
         runs = @($visualRuns | ForEach-Object { [pscustomobject][ordered]@{
-            replicate = $_.replicate; requestId = $_.requestId
-            manifestPath = [IO.Path]::GetRelativePath($script:evidenceRoot, $_.manifestPath); manifestSha256 = $_.manifestSha256
+            replicate = $_.replicate; requestId = $_.requestId; elapsedMs = $_.elapsedMs
+            manifestPath = [IO.Path]::GetRelativePath($script:evidenceRoot, $_.manifestPath).Replace('\', '/'); manifestSha256 = $_.manifestSha256
+            sequenceRequestPath = "visual/rep-$($_.replicate.ToString('D2'))/sequence.request.json"
+            sequenceRequestSha256 = Get-CSXFileSha256 (Join-Path $script:evidenceRoot "visual\rep-$($_.replicate.ToString('D2'))\sequence.request.json")
             terminalReceiptPath = "visual/rep-$($_.replicate.ToString('D2'))/sequence.terminal.json"
+            terminalReceiptSha256 = Get-CSXFileSha256 (Join-Path $script:evidenceRoot "visual\rep-$($_.replicate.ToString('D2'))\sequence.terminal.json")
             childReceiptsPath = "visual/rep-$($_.replicate.ToString('D2'))/children.receipts.json"
+            childReceiptsSha256 = Get-CSXFileSha256 (Join-Path $script:evidenceRoot "visual\rep-$($_.replicate.ToString('D2'))\children.receipts.json")
         } })
+    }
+
+    $timeEvidence.captureAssaysElapsedMs = [Math]::Round($performanceWatch.Elapsed.TotalMilliseconds, 3)
+    $timeEvidence.performanceElapsedMs = $timeEvidence.captureAssaysElapsedMs
+    if ($timeEvidence.captureAssaysElapsedMs -gt [int]$script:protocol.timeBudget.captureAssaysMs) {
+        throw 'The capture assays exceeded their 495 second allocation.'
     }
 
     if ($PrMode) {
@@ -1186,9 +1859,7 @@ try {
         $menuComparison = Get-CSXPairedComparison -Candidate $candidateMenu -Baseline @($baseline.run.assays.menu.records)
         $cocSpeedGate = [double]$cocComparison.aggregateDelta.median.percent -le [double]$script:protocol.thresholds.cocMedianRegressionPercent -and [double]$cocComparison.aggregateDelta.p95.percent -le [double]$script:protocol.thresholds.cocP95RegressionPercent
         $menuSpeedGate = [double]$menuComparison.aggregateDelta.median.percent -le [double]$script:protocol.thresholds.menuMedianRegressionPercent -and [double]$menuComparison.aggregateDelta.p95.percent -le [double]$script:protocol.thresholds.menuP95RegressionPercent
-        $bundle = Copy-BaselineBundle $baseline
-        $baselineEvidence = [pscustomobject][ordered]@{
-            path = $bundle.path; runSha256 = $bundle.runSha256; visualIndexPath = $bundle.visualIndexPath; visualIndexSha256 = $bundle.visualIndexSha256
+        $baselineComparisonEvidence = [pscustomobject][ordered]@{
             candidateRunId = $script:runId; baselineRunId = [string]$baseline.run.runId
             baselineBuildId = [string]$baseline.run.runtime.buildId; expectedBaselineBuildId = $ExpectedBaselineBuildId.ToLowerInvariant()
             cocPaired = $cocComparison; menuPaired = $menuComparison
@@ -1198,47 +1869,81 @@ try {
         if (-not $menuSpeedGate) { throw 'Menu aggregate median/p95 performance regression exceeded the versioned threshold.' }
     }
 
-    $script:orchestrationWatch.Stop()
-    $timeEvidence.orchestrationElapsedMs = [Math]::Round($script:orchestrationWatch.Elapsed.TotalMilliseconds, 3)
-    $timeEvidence.performanceElapsedMs = [Math]::Round($performanceWatch.Elapsed.TotalMilliseconds, 3)
-    $timeEvidence.within600Seconds = $timeEvidence.orchestrationElapsedMs -le [int]$script:protocol.timeBudget.orchestrationMs
-    if (-not $timeEvidence.within600Seconds) { throw 'The run exceeded the 600 second orchestration deadline.' }
-    $script:phase = 'evidence_finalization'
-    $raw = [pscustomobject][ordered]@{
-        schema = $(if ($PrMode) { 'csx-render-scale-pr-v1-raw' } else { 'csx-render-scale-local-v1-raw' }); runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
-        protocol = [pscustomobject][ordered]@{ schema = $script:protocol.schema; revision = $script:protocol.protocolRevision; sha256 = $protocolRecord.sha256; requiredMethodsCommit = $script:protocol.requiredMethodsCommit }
-        fixture = $fixture; runtime = $runtimeEvidence; time = $timeEvidence; assays = [pscustomobject]$assays; recoveries = [pscustomobject]$recoveries; baseline = $baselineEvidence
-        automatedGates = [pscustomobject][ordered]@{ passed = $true; failures = @(); infrastructureErrors = @() }
-        warnings = @($warnings | Select-Object -Unique)
+    if ($PrMode) {
+        $bundle = Copy-BaselineBundle $baseline
+        $baselineEvidence = [pscustomobject][ordered]@{
+            path = $bundle.path; runSha256 = $bundle.runSha256; visualIndexPath = $bundle.visualIndexPath; visualIndexSha256 = $bundle.visualIndexSha256
+            rawPath = $bundle.rawPath; rawSha256 = $bundle.rawSha256
+            visualReviewPath = $bundle.visualReviewPath; visualReviewSha256 = $bundle.visualReviewSha256
+            artifactInventoryPath = $bundle.artifactInventoryPath; artifactInventorySha256 = $bundle.artifactInventorySha256
+            artifactInventoryEntryCount = $bundle.artifactInventoryEntryCount
+            candidateRunId = $baselineComparisonEvidence.candidateRunId; baselineRunId = $baselineComparisonEvidence.baselineRunId
+            baselineBuildId = $baselineComparisonEvidence.baselineBuildId; expectedBaselineBuildId = $baselineComparisonEvidence.expectedBaselineBuildId
+            cocPaired = $baselineComparisonEvidence.cocPaired; menuPaired = $baselineComparisonEvidence.menuPaired; gates = $baselineComparisonEvidence.gates
+        }
     }
-    $rawPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'run.raw.json') -Value $raw
-    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'mcp-transcript.json') -Value @($script:connection.transcript) | Out-Null
     $baselineIndex = if ($PrMode) {
         $bundledBaselineIndexPath = Resolve-CSXEvidencePath -EvidenceRoot $script:evidenceRoot -RelativePath ([string]$baselineEvidence.visualIndexPath)
         Get-Content -LiteralPath $bundledBaselineIndexPath -Raw | ConvertFrom-Json -Depth 100
     }
     else { $null }
-    $template = New-CSXVisualReviewTemplate -EvidenceDirectory $script:evidenceRoot -RunRaw $raw -VisualIndex $visualIndex -BaselineVisualIndex $baselineIndex
-    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual-review.template.json') -Value $template | Out-Null
+
+    $script:phase = 'visual_evaluation'
+    $remainingOrchestrationMs = [int]$script:protocol.timeBudget.orchestrationMs - [int][Math]::Ceiling($script:orchestrationWatch.Elapsed.TotalMilliseconds)
+    $evaluationBudgetMs = [int]$script:protocol.timeBudget.visualEvaluationMs
+    if ($remainingOrchestrationMs -lt $evaluationBudgetMs) { throw 'The exact 90-second unattended visual-evaluation allocation no longer fits inside the orchestration deadline.' }
+    $evaluationDeadlineSeconds = [int]($evaluationBudgetMs / 1000)
+    $evaluationWatch = [Diagnostics.Stopwatch]::StartNew()
+    $automatedReview = Invoke-AutomatedVisualEvaluation -CandidateIndex $visualIndex -BaselineIndex $baselineIndex `
+        -ProviderPreflight $visualProviderPreflight -DeadlineSeconds $evaluationDeadlineSeconds
+    $evaluationWatch.Stop()
+    $timeEvidence.visualEvaluationElapsedMs = [Math]::Round($evaluationWatch.Elapsed.TotalMilliseconds, 3)
+    if ($timeEvidence.visualEvaluationElapsedMs -gt [int]$script:protocol.timeBudget.visualEvaluationMs) {
+        throw 'The unattended visual evaluation exceeded its 90 second allocation.'
+    }
+    $assays.visual | Add-Member -NotePropertyName automatedReview -NotePropertyValue $automatedReview -Force
+
+    $script:orchestrationWatch.Stop()
+    $timeEvidence.orchestrationElapsedMs = [Math]::Round($script:orchestrationWatch.Elapsed.TotalMilliseconds, 3)
+    $timeEvidence.within600Seconds = $timeEvidence.orchestrationElapsedMs -le [int]$script:protocol.timeBudget.orchestrationMs
+    if (-not $timeEvidence.within600Seconds) { throw 'The run exceeded the 585 second orchestration deadline.' }
+    $script:phase = 'evidence_finalization'
+    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'mcp-transcript.json') -Value @($script:connection.transcript) | Out-Null
+    $artifactInventory = Write-AutomationArtifactInventory
+    $raw = [pscustomobject][ordered]@{
+        schema = $(if ($PrMode) { 'csx-render-scale-pr-v1-raw' } else { 'csx-render-scale-local-v1-raw' }); runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
+        protocol = [pscustomobject][ordered]@{ schema = $script:protocol.schema; revision = $script:protocol.protocolRevision; sha256 = $protocolRecord.sha256; requiredMethodsCommit = $script:protocol.requiredMethodsCommit }
+        fixture = $fixture; runtime = $runtimeEvidence; time = $timeEvidence; assays = [pscustomobject]$assays; recoveries = [pscustomobject]$recoveries; baseline = $baselineEvidence
+        artifactInventory = $artifactInventory
+        automatedGates = [pscustomobject][ordered]@{ passed = $true; failures = @(); infrastructureErrors = @() }
+        warnings = @($warnings | Select-Object -Unique)
+    }
+    $rawPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'run.raw.json') -Value $raw
+    $review = New-CSXAutomatedVisualReview -EvidenceDirectory $script:evidenceRoot -RunRaw $raw -VisualIndex $visualIndex -BaselineVisualIndex $baselineIndex
+    Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual-review.json') -Value $review | Out-Null
     $updated = Update-CSXQualificationReport -EvidenceDirectory $script:evidenceRoot
-    $result = [pscustomobject][ordered]@{ ok = $false; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewTemplatePath = (Join-Path $script:evidenceRoot 'visual-review.template.json'); errors = @($updated.report.errors) }
+    $result = [pscustomobject][ordered]@{
+        ok = [string]$updated.report.status -in @('PASS', 'LOCAL_PASS'); status = $updated.report.status
+        runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewPath = (Join-Path $script:evidenceRoot 'visual-review.json')
+        errors = @($updated.report.errors)
+    }
 }
 catch {
     $failureClass = [string]$_.Exception.Data['CSXFailureClass']
-    $isInfrastructureFailure = $failureClass -eq 'infrastructure' -or $script:phase -in @('preflight', 'evidence_finalization')
+    $isInfrastructureFailure = $failureClass -eq 'infrastructure' -or $script:phase -in @('preflight', 'visual_evaluation', 'evidence_finalization')
     if ($isInfrastructureFailure) { $infrastructureFailures.Add($_.Exception.Message) } else { $failures.Add($_.Exception.Message) }
     if ($script:connection -and $script:runtime -and (Test-RunnerOwnsRuntimeState)) { Invoke-EmergencyCleanup $warnings }
     if ($script:orchestrationWatch -and $script:orchestrationWatch.IsRunning) { $script:orchestrationWatch.Stop() }
     if ($performanceWatch.IsRunning) { $performanceWatch.Stop() }
     if ($script:orchestrationWatch) {
         $timeEvidence.orchestrationElapsedMs = [Math]::Round($script:orchestrationWatch.Elapsed.TotalMilliseconds, 3)
-        $timeEvidence.within600Seconds = $timeEvidence.orchestrationElapsedMs -le 600000
+        $timeEvidence.within600Seconds = $timeEvidence.orchestrationElapsedMs -le $(if ($script:protocol) { [int]$script:protocol.timeBudget.orchestrationMs } else { 585000 })
     }
     $timeEvidence.performanceElapsedMs = [Math]::Round($performanceWatch.Elapsed.TotalMilliseconds, 3)
     if (-not $script:evidenceWritable) {
         $result = [pscustomobject][ordered]@{
             ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null
-            summaryPath = $null; reviewTemplatePath = $null
+            summaryPath = $null; reviewPath = $null
             errors = @($failures) + @($infrastructureFailures)
         }
     }
@@ -1252,19 +1957,21 @@ catch {
         $raw = [pscustomobject][ordered]@{
             schema = $(if ($PrMode) { 'csx-render-scale-pr-v1-raw' } else { 'csx-render-scale-local-v1-raw' }); runId = $script:runId; createdUtc = [DateTime]::UtcNow.ToString('o'); prMode = [bool]$PrMode
             protocol = $protocolSummary; fixture = $fixture; runtime = $runtimeEvidence; time = $timeEvidence; assays = [pscustomobject]$assays; recoveries = [pscustomobject]$recoveries; baseline = $baselineEvidence
+            artifactInventory = $null
             automatedGates = [pscustomobject][ordered]@{ passed = $false; failures = @($failures); infrastructureErrors = @($infrastructureFailures) }; warnings = @($warnings | Select-Object -Unique)
         }
         Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'run.raw.json') -Value $raw | Out-Null
         $updated = Update-CSXQualificationReport -EvidenceDirectory $script:evidenceRoot
-        $result = [pscustomobject][ordered]@{ ok = $false; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewTemplatePath = $null; errors = @($updated.report.errors) }
+        $result = [pscustomobject][ordered]@{ ok = $false; status = $updated.report.status; runPath = $updated.runPath; summaryPath = $updated.summaryPath; reviewPath = $null; errors = @($updated.report.errors) }
     }
-    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; reviewTemplatePath = $null; errors = @($failures) + @($infrastructureFailures) + @("Evidence finalization failed: $($_.Exception.Message)") } } }
+    catch { $result = [pscustomobject][ordered]@{ ok = $false; status = 'INFRASTRUCTURE_ERROR'; runPath = $null; summaryPath = $null; reviewPath = $null; errors = @($failures) + @($infrastructureFailures) + @("Evidence finalization failed: $($_.Exception.Message)") } } }
 }
 
+$leaseWarning = Close-EvidenceDirectoryLease
+if ($leaseWarning) { $result | Add-Member -NotePropertyName leaseWarning -NotePropertyValue $leaseWarning -Force }
 $result | ConvertTo-Json -Depth 100 -Compress:$Compact
 if (-not $NoExit) {
     if ($result.status -in @('PASS', 'LOCAL_PASS')) { exit 0 }
-    elseif ($result.status -eq 'REVIEW_PENDING') { exit 3 }
     elseif ($result.status -eq 'INFRASTRUCTURE_ERROR') { exit 4 }
     else { exit 2 }
 }

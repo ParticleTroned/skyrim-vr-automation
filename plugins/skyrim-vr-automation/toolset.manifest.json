@@ -50,8 +50,8 @@
     },
     {
       "name": "render-scale-qualification",
-      "version": "1.0.0",
-      "entryPoint": "tools/render-scale-qualification/Invoke-CSXRenderScaleQualification.ps1"
+      "version": "2.0.0",
+      "entryPoint": "tools/render-scale-qualification/Start-CSXRenderScaleQualification.ps1"
     },
     {
       "name": "profiler-control",
