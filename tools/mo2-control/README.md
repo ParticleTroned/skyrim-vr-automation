@@ -9,8 +9,9 @@ failed-to-run dialog cleanup, bounded launch
 pending state, helper-to-runtime PID adoption, structural Unlock handling, and
 exact-session `terminate-game` deadlock recovery. Recovery preserves MO2 and
 requires RootBuilder restoration before success. Test tasks should use
-`../mo2-workspace-control` to clone the configured stable source profile; the
-ordinary session default is not inferred as a safe template.
+`../mo2-workspace-control` to create or resume a durable task-owned clone of
+the configured stable source profile; the ordinary session default is not
+inferred as a safe template.
 
 Version `0.6.0` added cooperative access arbitration across independent tasks
 while retaining exact-profile `open`, MO2-only cooperative `close`, and
@@ -138,7 +139,9 @@ Every task must call `release-access` as soon as it no longer needs MO2. This
 includes compilation, source editing, result analysis, report writing, and any
 other phase that does not operate MO2 or Skyrim. Do not hold the lease merely
 because the overall task remains active. `release-access` proves MO2, Skyrim,
-and RootBuilder deployment are inactive before removing the lock.
+and RootBuilder deployment are inactive before removing the lock. It does not
+delete the task workspace: profile state and saves remain available for an
+explicit later `resume` under a newly acquired lease.
 
 If a task disappears while retaining a lease, `recover-access` requires the
 exact `accessId`, explicit `-ConfirmAbandoned`, and the same closed-state proof.

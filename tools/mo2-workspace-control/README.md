@@ -15,23 +15,31 @@ under an exact modlist backup and receipt. `create` refuses to clone while any
 such directory remains in overwrite.
 
 The task must own an MO2 access lease. MO2, Skyrim, loaders, and active
-RootBuilder deployment must be closed before `create`, `register-mod`, or
-`release`. Release any evidence session before mutating the workspace. All
+RootBuilder deployment must be closed before `create`, `resume`, `register-mod`,
+or `retire`. Release any evidence session before mutating the workspace. All
 commands accept `-Compact` for one-line JSON.
+
+Workspaces are durably owned by `-TaskId` (or `CODEX_THREAD_ID` /
+`CODEX_TASK_ID`), not by one access lease. `create` makes and selects a fresh
+profile. `list-task` reports retained profiles. `resume` rebinds one exact
+retained workspace to a newly owned lease and selects it without refreshing it
+from the primary profile. See `../../docs/MO2-TASK-WORKSPACES.md`.
 
 For elevated use, follow `../mo2-control/APPROVALS.md`. Every result reports a
 literal command-specific `data.approval.reusablePrefix`. `create`,
 `register-mod`, and `ensure-mod-wins` are eligible for narrow reusable approval;
-`refresh-fixture`, `prepare-source`, and `release` remain one-shot because they
+`refresh-fixture`, `prepare-source`, and `retire` remain one-shot because they
 replace shared metadata, move overwrite trees into a shared stable mod, or
 recursively remove exact owned paths.
 
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label weather-api -SavePolicy MainMenuOnly -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> register-mod -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -ModName "Codex Weather API Test 20260822" -ModDirectory "<exact-mod-directory>" -WinningPaths "SKSE\Plugins\CommunityShaders.dll" -Confirm:$false -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> release -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -CleanupOwnedMods -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> list-task -TaskId <stable-task-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -TaskId <stable-task-id> -Label weather-api -SavePolicy MainMenuOnly -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> resume -AccessId <new-literal-access-id> -TaskId <stable-task-id> -WorkspaceId <literal-workspace-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> register-mod -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <literal-workspace-id> -ModName "Codex Weather API Test 20260822" -ModDirectory "<exact-mod-directory>" -WinningPaths "SKSE\Plugins\CommunityShaders.dll" -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> retire -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <literal-workspace-id> -CleanupOwnedMods -Confirm:$false -Compact
 ```
 
 `SavePolicy` describes what the test is authorized or expected to do; it no
@@ -64,13 +72,21 @@ verifies the postcondition. It never invents a replacement save path.
 
 At creation the tool records every existing mod directory. A workspace may
 register only an exact mod directory absent from that snapshot. It refuses to
-claim, replace, or delete a pre-existing shared mod. Cleanup is restricted to
+claim, edit, replace, or delete a pre-existing shared mod. The task may change
+only enable/disable markers in its own cloned profile. Shared package updates
+must be installed under a new mod name and selected additively in the primary
+profile; retained task profiles are not rewritten. On every resume the tool
+adds newly observed, non-owned mod directories to the workspace's protected
+shared-mod inventory. Cleanup is restricted to
 the exact generated profile and registered task-owned mods; the stable source
-profile must remain byte-identical. Before deleting a task profile, `release`
+may have advanced since the clone. Before deleting a task profile, `retire`
 atomically selects and verifies its stable source in `ModOrganizer.ini`, keeps
 the exact prior INI bytes and receipt, and only then removes the task profile.
 Workspace manifests and results expose `profileName`, `profileDirectory`, and
 `modListPath` while retaining the legacy `profile` and `profilePath` fields.
+Calling MO2 `release-access` alone preserves the workspace for later `resume`.
+The deprecated workspace `release` alias is destructive and exists only for
+compatibility.
 
 `-WinningPaths` changes `register-mod` into an enabled winning-provider
 transaction. `ensure-mod-wins` can subsequently re-check and reposition only a
