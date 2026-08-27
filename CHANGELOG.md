@@ -4,6 +4,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Copy and hash-verify the maintained source profile's complete save tree into
+  every task profile while retaining `SavePolicy` as an authorization marker
+  and verified fixtures as the only deterministic baseline contract.
+- Exclude local `.fixture-refresh-*` evidence from generated marketplace
+  packages.
 - Treat physical-headset and Valve null-HMD SteamVR shader caches as one
   render-compatible family while optionally hard-gating reuse on an exact
   effective feature-set fingerprint.

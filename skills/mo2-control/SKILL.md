@@ -62,6 +62,10 @@ are:
    revalidated for subsequent launches in the same session.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.
+   Every task profile receives a verified copy of the stable source profile's
+   complete saves tree. This makes saves available but does not authorize their
+   use: respect `SavePolicy`, and use only a declared `VerifiedFixture` as a
+   deterministic automation baseline.
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
@@ -114,8 +118,9 @@ are:
 - Register a task DLL with its exact relative path in `-WinningPaths`. Treat
   the returned loose-file provider proof as scoped: overwrite, unmanaged game
   files, and archives still require separate VFS evidence.
-- Never treat `coc APStartCell` as a genuine New Game and never use an
-  inherited or unknown-provenance save for a baseline.
+- Never treat `coc APStartCell` as a genuine New Game. Copied ordinary saves
+  are conveniences, not deterministic baselines; use only an exact
+  hash-verified fixture when baseline provenance matters.
 - Run visible MO2/game window operations through the approved elevated route so
   they execute as the logged-on interactive user. A sandbox
   `interactive-desktop-required` result is a precondition failure, not

@@ -32,6 +32,7 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $rebuilt "skills\$skill\SKILL.md") -PathType Leaf)) { throw "Missing installed skill: $skill" }
     }
     if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Filter '*.local.json').Count -ne 0) { throw 'Distribution contains machine-local JSON.' }
+    if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -Directory -Force | Where-Object Name -Like '.fixture-refresh-*').Count -ne 0) { throw 'Distribution contains local fixture-refresh evidence.' }
 
     $simulatedCache = Join-Path $fixture "cache\skyrim-vr-automation\$($manifest.version)"
     New-Item -ItemType Directory -Path (Split-Path -Parent $simulatedCache) -Force | Out-Null

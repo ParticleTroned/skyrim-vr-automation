@@ -17,8 +17,8 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/mo2-profile-control` — transactional toggling of an exact MO2
   `modlist.txt` marker and guarded registration of a newly deployed mod.
 - `tools/mo2-workspace-control` — stable-source ShaderCache evacuation plus
-  unique task profiles cloned from that explicit source, with empty saves and
-  strict ownership of newly created mods.
+  unique task profiles cloned from that explicit source, with a verified copy
+  of its complete saves tree and strict ownership of newly created mods.
 - `tools/steamvr-null-control` — transactional null-HMD apply/restore and
   bounded SteamVR shutdown.
 - `tools/devbench-control` — a small MCP client for the DevBench endpoint

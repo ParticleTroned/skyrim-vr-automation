@@ -19,8 +19,8 @@ the relevant MO2 state, mod files, game files, or captured artifacts in scope.
 Each independent test task creates its own profile from the explicit
 `defaults.testProfileSource` through `../mo2-workspace-control`. The stable
 source is distinct from the ordinary session default and from experimental
-alternate profiles. Workspaces never inherit saves and never own mods that
-predate their creation.
+alternate profiles. Workspaces inherit a verified copy of the stable source's
+complete saves tree and never own mods that predate their creation.
 
 ## Machine configuration
 
