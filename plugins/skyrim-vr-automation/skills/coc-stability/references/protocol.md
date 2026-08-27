@@ -13,9 +13,9 @@ producer Build ID. Then invoke the direct `communityshaders.menu` tool with:
 }
 ```
 
-The action checks the startup-authoritative state displayed by the CSX
-VR → VR FPS Stabilizer UI before it changes anything. Require all of the
-following from its receipt:
+The action is a monitor-first gate. It checks the startup-authoritative state
+displayed by the CSX VR → VR FPS Stabilizer UI before it changes anything.
+Require all of the following from its receipt:
 
 - `ready` is `true`, `promptRequired` is `false`, and `persisted` is `false`;
 - `after.vr` and `after.inGame` are `true`;
@@ -26,15 +26,22 @@ following from its receipt:
 - `after.vrFpsStabilizer.activeForSession` is `true`.
 
 When VR FPS Stabilizer is active for the startup session, `prepare_coc`
-idempotently enables developer mode and corrects the FOV plus TAA values in
-memory. It does not call a settings save path. If the in-game VR context or
-startup-active Stabilizer prerequisite is absent, it applies no partial
-mutation and returns `ready: false` with `promptRequired: true`.
+idempotently enables developer debug mode when needed and corrects only the
+FOV plus TAA values in memory. It does not call a settings save path. If the
+in-game VR context or startup-active Stabilizer prerequisite is absent, it
+applies no partial mutation and returns `ready: false` with
+`promptRequired: true`.
 
 Stop before the first COC when the action is missing or does not return the
 required receipt. Prompt the user with the exact `errorCode`; in particular,
 `vr_fps_stabilizer_required` requires an external installation/configuration
-change and a Skyrim VR restart.
+change. Tell the user to activate or configure VR FPS Stabilizer and restart
+Skyrim VR. Do not continue testing in the current process.
+
+VR FPS Stabilizer is the exclusive owner of upscaling profile changes. The
+gate and assay must never change or apply the upscaling method, quality mode,
+render-scale mode, DLSS profile or preset, or FSR runtime. They may observe
+those values and verify Stabilizer's result, but they must not mutate them.
 
 Preserve this one receipt with the run evidence. Do not call `prepare_coc`
 again during start-cell establishment or any measured transition. Do not query
@@ -49,6 +56,15 @@ the assay, and do not add these preflight facts to the per-transition waiter.
 - Default transition deadline: 120 seconds.
 - Stability ends at the first coherent state that satisfies the applicable
   exact-cell, profile, lifecycle, and two-eye presentation contract.
+
+Before dispatch, obtain each destination's expected profile from the approved
+Stabilizer-owned fixture or a previously verified observation of that exact
+Stabilizer configuration. The profile supplied to a waiter is a read-only
+assertion; it does not authorize an upscaling mutation. Never guess a target,
+reuse the source-cell profile as the destination target, or invoke an
+upscaling `apply` action. If an exact destination assertion is unavailable,
+stop before the first COC and ask the user to provide or verify the Stabilizer
+fixture.
 
 Start-cell establishment is not a measured transition. After the one-time
 pre-assay gate, if needed, issue one isolated COC to the configured start cell,
@@ -67,9 +83,11 @@ For each measured transition:
 2. Call `qualification_dispatch` with the same ownership pair to mark the
    server QPC/frame. Require its accepted receipt before submitting the exact
    `coc <target>` command, then call one bounded `qualification_wait` with that
-   pair. The waiter continuously observes live state without returning each
-   intermediate snapshot to the client. The dispatch acknowledgement is part
-   of the measured absolute latency.
+   pair and the destination's read-only Stabilizer-owned profile assertion.
+   The waiter continuously observes live state without returning each
+   intermediate snapshot to the client. It validates the profile but does not
+   apply it. The dispatch acknowledgement is part of the measured absolute
+   latency.
 3. Require `playerLoaded` and the exact destination cell before testing CSX
    stability. This prevents the source world's still-loaded state from passing
    before the queued COC executes.
@@ -80,6 +98,10 @@ For each measured transition:
    `satisfied: true` and `outcome: stable`, preserve its evidence and dispatch
    the next transition. A monolithic scenario whose tool steps ignore semantic
    JSON failures is not an acceptable substitute.
+
+If the observed destination profile differs from the Stabilizer-owned
+assertion, stop and classify the attempt as a fixture mismatch. Do not call an
+upscaling mutation to make the observed state match the assertion.
 
 Do not wait for loading-menu open/close events, query or manipulate menus, add
 a fixed recovery delay, or transfer repeated full status responses. These are
@@ -134,10 +156,12 @@ native profiles must agree. Record the stereo-evidence class as
 `native_pipeline_frames`; do not claim the stronger render-scale fidelity
 contract.
 
-Do not prescribe the method, quality mode, or render-scale policy. VR
-Stabilizer, environment rules, or the user's setup may legitimately select a
-different profile at each destination. Detect the effective mode and apply the
-corresponding active or native-resolution stability checks.
+Do not prescribe the method, quality mode, or render-scale policy. VR FPS
+Stabilizer alone selects the profile at each destination. Validate its
+selection against the read-only fixture assertion and apply the corresponding
+active or native-resolution stability checks. A target passed to
+`qualification_wait` is an assertion only and must never be treated as a
+request to change runtime state.
 
 ## Diagnostic sessions
 

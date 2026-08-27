@@ -34,6 +34,10 @@ foreach ($requiredSkillText in @(
     'exactly once',
     'persisted: false',
     'startup-active VR FPS',
+    'monitor-first gate',
+    'exclusive owner of upscaling profile changes',
+    'Never guess it',
+    'upscaling apply action',
     'Do not invoke `prepare_coc` again',
     'Do not add its settings to the per-transition waiter predicate'
 )) {
@@ -49,7 +53,12 @@ foreach ($requiredProtocolText in @(
     '`after.foveation.ready` is `true`',
     '`after.vrFpsStabilizer.activeForSession` is `true`',
     '`vr_fps_stabilizer_required`',
-    'it applies no partial',
+    'partial mutation',
+    'activate or configure VR FPS Stabilizer and restart',
+    'exclusive owner of upscaling profile changes',
+    'Stabilizer-owned fixture',
+    'Never guess a target',
+    'does not authorize an upscaling mutation',
     'Do not call `prepare_coc`',
     'do not add these preflight facts to the per-transition waiter'
 )) {
@@ -70,6 +79,12 @@ Assert-Protocol (-not $assayText.Contains('prepare_coc', [StringComparison]::Ord
     'The measured assay must not invoke or recheck prepare_coc.'
 Assert-Protocol (([regex]::Matches($protocol, '"action": "prepare_coc"')).Count -eq 1) `
     'The protocol must contain exactly one prepare_coc invocation.'
+Assert-Protocol (-not $protocol.Contains('"action": "apply"', [StringComparison]::Ordinal)) `
+    'The COC protocol must not contain an upscaling apply action.'
+Assert-Protocol ($protocol.Contains('It validates the profile but does not', [StringComparison]::Ordinal)) `
+    'The waiter target must be documented as validation, not mutation.'
+Assert-Protocol ([regex]::IsMatch($protocol, 'read-only\s+assertion')) `
+    'The waiter target must be a read-only profile assertion.'
 
 $sourceSkillHash = (Get-FileHash -LiteralPath $sourceSkillPath -Algorithm SHA256).Hash
 $pluginSkillHash = (Get-FileHash -LiteralPath $pluginSkillPath -Algorithm SHA256).Hash
