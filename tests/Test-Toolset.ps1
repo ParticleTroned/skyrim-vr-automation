@@ -27,6 +27,7 @@ $tests = @(
     @{ Name = 'build-test-control'; Path = 'tools\build-test-control\Test-CSXBuildTests.ps1'; Arguments = @() },
     @{ Name = 'doctor'; Path = 'tools\doctor\Test-AutomationDoctor.ps1'; Arguments = @() },
     @{ Name = 'git-launcher'; Path = 'tests\Test-GitLauncher.ps1'; Arguments = @() },
+    @{ Name = 'coc-stability-protocol'; Path = 'tests\Test-CocStabilityProtocol.ps1'; Arguments = @() },
     @{ Name = 'codex-distribution'; Path = 'tests\Test-CodexDistribution.ps1'; Arguments = @() },
     @{ Name = 'portability'; Path = 'tests\Test-Portability.ps1'; Arguments = @() },
     @{ Name = 'publication'; Path = 'tests\Test-Publication.ps1'; Arguments = @() }

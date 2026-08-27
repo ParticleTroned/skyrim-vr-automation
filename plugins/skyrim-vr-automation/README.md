@@ -55,7 +55,8 @@ new task to the bundled implementations and their operational contracts:
   bounded runtime shutdown.
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
 - `$coc-stability` runs load-synchronized COC transitions through the
-  server-side stability waiter and refuses fixed-delay substitutes.
+  server-side stability waiter, performs its debug/FOV/Stabilizer gate once
+  before any COC, and refuses fixed-delay or in-assay preflight substitutes.
 - `$fidelstab` runs the preserved paced Breezehome fidelity and stability
   protocol.
 - `$render-scale-qualification` attaches to the intended DLL that is already

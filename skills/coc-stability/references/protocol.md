@@ -1,5 +1,46 @@
 # Load-synchronized COC protocol
 
+## One-time pre-assay gate
+
+Run this gate once while Skyrim VR is in-game, before any COC, including an
+unmeasured COC used to establish the start cell. First identify the exact CSX
+producer Build ID. Then invoke the direct `communityshaders.menu` tool with:
+
+```json
+{
+  "action": "prepare_coc",
+  "expectedBuildId": "<exact CSX Build ID>"
+}
+```
+
+The action checks the startup-authoritative state displayed by the CSX
+VR → VR FPS Stabilizer UI before it changes anything. Require all of the
+following from its receipt:
+
+- `ready` is `true`, `promptRequired` is `false`, and `persisted` is `false`;
+- `after.vr` and `after.inGame` are `true`;
+- `after.developerMode.active` is `true`;
+- `after.foveation.ready` is `true`, with foveated vendor dispatch enabled,
+  FOV center area `0.3`, periphery TAA enabled, periphery TAA center area
+  `0.3`, and periphery TAA outer scale `0.7`;
+- `after.vrFpsStabilizer.activeForSession` is `true`.
+
+When VR FPS Stabilizer is active for the startup session, `prepare_coc`
+idempotently enables developer mode and corrects the FOV plus TAA values in
+memory. It does not call a settings save path. If the in-game VR context or
+startup-active Stabilizer prerequisite is absent, it applies no partial
+mutation and returns `ready: false` with `promptRequired: true`.
+
+Stop before the first COC when the action is missing or does not return the
+required receipt. Prompt the user with the exact `errorCode`; in particular,
+`vr_fps_stabilizer_required` requires an external installation/configuration
+change and a Skyrim VR restart.
+
+Preserve this one receipt with the run evidence. Do not call `prepare_coc`
+again during start-cell establishment or any measured transition. Do not query
+the menu, recheck developer mode, recheck FOV/TAA, or recheck Stabilizer during
+the assay, and do not add these preflight facts to the per-transition waiter.
+
 ## Configured comparison fixture
 
 - Use the start cell and exact COC target sequence selected by the user.
@@ -9,9 +50,10 @@
 - Stability ends at the first coherent state that satisfies the applicable
   exact-cell, profile, lifecycle, and two-eye presentation contract.
 
-Start-cell establishment is not a measured transition. If needed, issue one
-isolated COC to the configured start cell, wait for the same stability barrier,
-and only then start the diagnostic sessions and measured run.
+Start-cell establishment is not a measured transition. After the one-time
+pre-assay gate, if needed, issue one isolated COC to the configured start cell,
+wait for the same stability barrier, and only then start the diagnostic
+sessions and measured run.
 
 ## Non-overlap invariant
 

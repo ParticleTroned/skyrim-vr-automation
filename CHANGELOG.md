@@ -5,7 +5,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 ## Unreleased
 
 - Publish the `coc-stability` skill for load-synchronized, exact-destination
-  COC transition testing without fixed-delay fallbacks.
+  COC transition testing without fixed-delay fallbacks. Its one-time in-game
+  preflight now requires startup-active VR FPS Stabilizer sync and establishes
+  transient CSX developer mode plus the FOV/TAA 0.3/0.7 fixture before any COC,
+  without adding checks or observer work to the measured assay.
 - Add the bounded `csx-render-scale-pr-v1` qualification package and
   `$render-scale-qualification` skill for one-command attachment to the DLL
   that is already running in game. Protocol revision 4 discovers the exact
