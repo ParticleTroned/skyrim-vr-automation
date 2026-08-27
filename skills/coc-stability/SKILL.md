@@ -16,6 +16,14 @@ stop. Do not issue a COC or another in-game command. After the user loads into
 the game, visually confirms it is loaded, and says `start`, begin the timed live
 path.
 
+The live command grammar is closed: `start COC protocol` authorizes only the
+readiness phase and `start` authorizes only the post-load phase defined in the
+protocol. Quoted, contextual, partial, or historical mentions do not authorize
+an action. If a required action cannot complete under that command's explicit
+scope, preserve its receipt, freeze the phase, and ask the user what to do.
+Never retry, substitute an action, alter settings, or issue an extra game
+command without a new explicit user command.
+
 When Skyrim reaches its main menu/load window, and before loading into the test
 world, establish the analysis environment. In parallel, use Community Shaders'
 `tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server

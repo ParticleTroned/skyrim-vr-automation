@@ -71,27 +71,17 @@ function Invoke-CocMcpTool {
         [Parameter(Mandatory)][string]$Endpoint,
         [Parameter(Mandatory)][string]$Tool,
         [Parameter(Mandatory)][Collections.IDictionary]$Arguments,
+        [pscustomobject]$Session,
         [ValidateRange(1, 180)][int]$TimeoutSeconds = 20
     )
 
-    $session = Open-CocMcpSession -Endpoint $Endpoint `
-        -TimeoutSeconds $TimeoutSeconds
-    $list = Invoke-CocMcpRequest -Endpoint $Endpoint `
-        -Headers $session.headers -TimeoutSeconds $TimeoutSeconds -Payload @{
-            jsonrpc = '2.0'
-            id = [DateTime]::UtcNow.Ticks
-            method = 'tools/list'
-            params = @{}
-        }
-    if ($list.json.PSObject.Properties['error']) {
-        throw "DevBench tools/list failed: $($list.json.error | ConvertTo-Json -Compress)"
-    }
-    if (@($list.json.result.tools | Where-Object name -eq $Tool).Count -ne 1) {
-        throw "DevBench tool '$Tool' is missing or ambiguous."
+    if ($null -eq $Session) {
+        $Session = Open-CocMcpSession -Endpoint $Endpoint `
+            -TimeoutSeconds $TimeoutSeconds
     }
 
     $call = Invoke-CocMcpRequest -Endpoint $Endpoint `
-        -Headers $session.headers -TimeoutSeconds $TimeoutSeconds -Payload @{
+        -Headers $Session.headers -TimeoutSeconds $TimeoutSeconds -Payload @{
             jsonrpc = '2.0'
             id = [DateTime]::UtcNow.Ticks
             method = 'tools/call'
@@ -117,7 +107,7 @@ function Invoke-CocMcpTool {
     }
     return [pscustomobject][ordered]@{
         tool = $Tool
-        sessionId = $session.id
+        sessionId = $Session.id
         content = @($content)
         value = @($content | Select-Object -First 1)[0]
         rawResult = $call.json.result
@@ -168,6 +158,7 @@ function New-CocMeasuredScenario {
             transitionId = $transitionId
             ownerId = $OwnerId
             expectedBuildId = $ExpectedBuildId
+            cocCellEditorId = $cell
         }
         if ($ordinal -eq 1) { $dispatch.startPerformanceTelemetry = $true }
 
@@ -185,11 +176,6 @@ function New-CocMeasuredScenario {
             tool = 'communityshaders.renderscale'
             label = "coc-$($ordinal.ToString('D2'))-dispatch"
             args = $dispatch
-        })
-        $steps.Add([ordered]@{
-            tool = 'console'
-            label = "coc-$($ordinal.ToString('D2'))-command"
-            args = @{ action = 'exec'; command = "coc $cell"; capture = $false }
         })
         $steps.Add([ordered]@{
             tool = 'communityshaders.renderscale'

@@ -47,6 +47,8 @@ function Assert-Protocol {
 
 $skill = Get-Content -LiteralPath $sourceSkillPath -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocolPath -Raw
+$runner = Get-Content -LiteralPath $sourceRunnerPath -Raw
+$runnerModule = Get-Content -LiteralPath $sourceRunnerModulePath -Raw
 $normalizedSkill = [regex]::Replace($skill, '\s+', ' ')
 
 foreach ($requiredSkillText in @(
@@ -54,6 +56,9 @@ foreach ($requiredSkillText in @(
     'start COC protocol',
     'ready to load',
     'Do not issue a COC',
+    'The live command grammar is closed',
+    'freeze the phase',
+    'ask the user what to do',
     'visibly loaded and says `start`',
     'tools/ghidra-mcp-control.ps1',
     'pyGhidraReady: true',
@@ -87,6 +92,10 @@ foreach ($requiredSkillText in @(
 
 foreach ($requiredProtocolText in @(
     '## Two-command operator handshake',
+    '## Literal operator-command contract',
+    'closed grammar',
+    'blocked awaiting user direction',
+    'ask one concise question',
     'It authorizes only readiness',
     'Do not issue a console command',
     'second command is `start`',
@@ -109,10 +118,13 @@ foreach ($requiredProtocolText in @(
     '## Fast start-cell establishment',
     'immediately queue one',
     'Queue that deadline before identity',
+    '"wait": 10000',
+    '"waitUntil": "playerLoaded", "timeoutMs": 20000',
     'never postpone the scheduled COC',
     '## One-time post-load fixture gate',
     '"action": "prepare_coc"',
-    'This fixture receipt is the only hard pre-measurement gate',
+    'A returned semantic fixture defect',
+    'full error history',
     '## Bounded parallel baseline',
     'independent monotonic watchdog job',
     'at 10 seconds the watchdog starts it',
@@ -121,6 +133,8 @@ foreach ($requiredProtocolText in @(
     'not permission to delay or cancel',
     '## Atomic diagnostics and measured assay',
     'startPerformanceTelemetry: true',
+    'exact `cocCellEditorId`',
+    'no separate console action is permitted',
     'Do not issue separate',
     'continueOnError: false',
     'normal tool receipts',
@@ -201,6 +215,26 @@ Assert-Protocol (([regex]::Matches(
     ),
     'coc WindhelmExterior01'
 )).Count -eq 1) 'The timed start must dispatch exactly one Windhelm COC.'
+Assert-Protocol ($runnerModule.Contains(
+    'cocCellEditorId = $cell',
+    [StringComparison]::Ordinal
+)) 'The measured scenario must bind each COC to qualification_dispatch.'
+Assert-Protocol (-not $runnerModule.Contains(
+    "method = 'tools/list'",
+    [StringComparison]::Ordinal
+)) 'The controller must not rediscover tools during protocol execution.'
+Assert-Protocol (-not $runnerModule.Contains(
+    "tool = 'console'",
+    [StringComparison]::Ordinal
+)) 'The measured scenario must not issue a separate console COC step.'
+Assert-Protocol ($runner.Contains(
+    "state = 'blocked-awaiting-user'",
+    [StringComparison]::Ordinal
+)) 'A controller blocker must request user direction.'
+Assert-Protocol ($runner.Contains(
+    'fixtureAnomalies',
+    [StringComparison]::Ordinal
+)) 'Fixture anomalies must be preserved for the measured assay.'
 
 foreach ($pair in @(
     @($sourceSkillPath, $pluginSkillPath, 'COC skill'),

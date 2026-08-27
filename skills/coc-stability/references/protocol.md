@@ -2,6 +2,33 @@
 
 ## Two-command operator handshake
 
+## Literal operator-command contract
+
+Treat the following as a closed grammar. A quoted, historical, partial, or
+contextual mention is not a command.
+
+- `start COC protocol` is valid only at Skyrim's main menu/load window. It
+  authorizes only the readiness actions in the next section: project-scoped
+  registrations, the managed Ghidra status/start operation, evidence inspect
+  and arm, one registry attachment check, one harmless Ghidra call, one
+  harmless DevBench identity call, and the one-step negative scenario probe.
+  It authorizes no console, COC, menu, fixture, scene, image, GPU, INI, MO2,
+  hardware, or profile action.
+- `start` is valid only after a reusable `ready to load` receipt and the user
+  has visibly confirmed that the game is loaded. It authorizes exactly the
+  post-load path in this document, beginning with the timed Windhelm scenario.
+  It does not authorize a new readiness or capability/discovery chain.
+- Any other action requires a new explicit user command that names it.
+
+A phase is **blocked awaiting user direction** when an explicitly authorized
+command fails, times out, is rejected, lacks a required receipt or tool family,
+or needs an action outside that command's scope. On a block, preserve all
+receipts, make no retry or substitute call, make no game, console, menu,
+configuration, GPU, INI, MO2, hardware, or upscaling change, and ask one
+concise question identifying the blocked phase and receipt. A semantic
+baseline, fixture, profile, fidelity, lifecycle, or presentation anomaly is
+not a block: record it and retain the scheduled measured history.
+
 The first command is `start COC protocol`, issued while Skyrim is at its main
 menu/load window. It authorizes only readiness. Register or verify tools, start
 external analyzers and the dump collector, make the required harmless calls,
@@ -111,11 +138,28 @@ the corresponding recheck or re-arm before another live trigger.
 ## Fast start-cell establishment
 
 At the moment the user confirms Skyrim VR is visibly loaded and says `start`,
-immediately queue one async DevBench server scenario whose only steps are a
-10,000 ms wait followed by exactly:
+immediately queue exactly this async DevBench server scenario. Its 10,000 ms
+server wait begins at scenario acceptance; no client-side sleep is permitted.
 
-```text
-coc WindhelmExterior01
+```json
+{
+  "action": "run",
+  "async": true,
+  "continueOnError": false,
+  "steps": [
+    { "wait": 10000 },
+    {
+      "tool": "console",
+      "label": "start-cell-command",
+      "args": {
+        "action": "exec",
+        "command": "coc WindhelmExterior01",
+        "capture": false
+      }
+    },
+    { "waitUntil": "playerLoaded", "timeoutMs": 20000 }
+  ]
+}
 ```
 
 Queue that deadline before identity, status, capability, schema, or capture
@@ -125,8 +169,9 @@ producer Build ID. Do not await one read before starting the other, and do not
 add work after both finish. These reads may complete early or late, but never
 postpone the scheduled COC.
 
-If the server does not accept the timed scenario, stop without substituting a
-client sleep. After the COC step returns, wait for the load event and take one
+If the server does not accept this scenario, or its exact load wait fails, stop
+without substituting a client sleep or retrying the COC, preserve the scenario
+receipt, and ask the user what to do. After the successful load wait, take one
 exact-cell scene observation. Start-cell establishment is not measured.
 
 Call `coc-evidence-control status` off the game control plane and bind the
@@ -177,10 +222,12 @@ winning file, or invoke `mo2-control` for an upscaling decision. Multiple
 adapters or configuration files require no resolution by this protocol; the
 running public CSX profile is the sole observation source.
 
-This fixture receipt is the only hard pre-measurement gate. If the action is
-missing, Stabilizer was not startup-active, or the runtime fixture cannot be
-corrected, preserve the receipt and stop because the controlled fixture was
-never established.
+The direct fixture call itself is required. A rejected or unavailable call is a
+blocked phase and requires a user question. A returned semantic fixture defect
+(`ready:false`, `persisted:true`, `promptRequired:true`, or a missing expected
+field) is recorded as an anomaly. It suppresses only the early baseline-success
+shortcut; the independent 10-second watchdog still dispatches the complete
+20-transition assay so a faulty build produces its full error history.
 
 ## Bounded parallel baseline
 
@@ -234,8 +281,10 @@ Use the one async server scenario generated and submitted by
 1. render-scale stress `reset` then `start`; retain its `sessionId`;
 2. for transition 1, call `qualification_begin` with a unique transition ID and
    run owner ID;
-3. call `qualification_dispatch` with
-   `startPerformanceTelemetry: true` immediately adjacent to exactly one COC;
+3. call `qualification_dispatch` with the exact `cocCellEditorId` and, for
+   transition 1, `startPerformanceTelemetry: true`. This one main-thread
+   action starts CPU/GPU telemetry and records the timer immediately before it
+   executes exactly that COC command; no separate console action is permitted;
 4. call `qualification_wait` once with the same ownership pair, exact target
    cell, no `target` argument, and `timeoutMs: 10000`; require its externally
    owned observation mode to return the coherent Stabilizer-selected profile;
@@ -247,7 +296,8 @@ Do not issue separate `cpu_performance_reset`, `cpu_performance_start`,
 atomically resets/starts both performance captures on its dispatch frame and
 returns the CPU session ID and GPU start frame used for guarded cleanup.
 
-The adjacent dispatch marker defines the first COC command boundary. Therefore
+The COC command inside transition 1's dispatch action defines the first
+measured COC command boundary. Therefore
 the CPU window, GPU window, and transition timer exclude the Windhelm settle,
 fixture correction, baseline, stress setup, and client latency. Report only
 this first-COC-through-final-transition interval as assay performance data.

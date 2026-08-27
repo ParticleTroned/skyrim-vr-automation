@@ -21,6 +21,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot 'CocStabilityControl.psm1'
 Import-Module $modulePath -Force
+$ownedJobs = [Collections.Generic.List[object]]::new()
+$phase = 'initializing'
 
 function Write-AtomicJson {
     param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Path)
@@ -113,6 +115,7 @@ $dispatchJobScript = {
 
 try {
     if ($Command -eq 'status') {
+        $phase = 'status'
         if ([string]::IsNullOrWhiteSpace($StatePath)) {
             throw 'StatePath is required for status.'
         }
@@ -151,6 +154,7 @@ try {
         }
     }
     else {
+        $phase = 'input-validation'
         if ($ExpectedPid -le 0) { throw 'ExpectedPid is required for run.' }
         if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) {
             throw 'ExpectedBuildId is required for run.'
@@ -188,25 +192,32 @@ try {
             throw 'The exact Skyrim PID does not have live owned crash coverage.'
         }
 
-        $health = Invoke-CocMcpTool -Endpoint $Endpoint -Tool 'inspect' `
-            -Arguments @{ kind = 'health' } -TimeoutSeconds 10
-        if ([int]$health.value.pid -ne $ExpectedPid -or
-            -not [bool]$health.value.vr -or
-            [string]$health.value.exe -ne 'SkyrimVR.exe') {
-            throw 'DevBench health does not match the exact Skyrim VR process.'
-        }
-
+        $phase = 'fixture'
         $fixture = Invoke-CocMcpTool -Endpoint $Endpoint `
             -Tool 'communityshaders.menu' -Arguments @{
                 action = 'prepare_coc'
                 expectedBuildId = $ExpectedBuildId
             } -TimeoutSeconds 15
-        if (-not [bool]$fixture.value.ready -or
-            [bool]$fixture.value.persisted -or
-            [bool]$fixture.value.promptRequired) {
-            throw 'The one-time runtime fixture gate did not pass.'
+        $fixtureAnomalies = [Collections.Generic.List[string]]::new()
+        if ($null -eq $fixture.value) {
+            $fixtureAnomalies.Add('prepare_coc returned no fixture receipt')
+        }
+        elseif (@('ready', 'persisted', 'promptRequired') | Where-Object {
+                $null -eq $fixture.value.PSObject.Properties[$_]
+            }) {
+            $fixtureAnomalies.Add('prepare_coc omitted a required fixture field')
+        }
+        elseif (-not [bool]$fixture.value.ready) {
+            $fixtureAnomalies.Add('prepare_coc reported ready:false')
+        }
+        elseif ([bool]$fixture.value.persisted) {
+            $fixtureAnomalies.Add('prepare_coc reported persisted:true')
+        }
+        elseif ([bool]$fixture.value.promptRequired) {
+            $fixtureAnomalies.Add('prepare_coc reported promptRequired:true')
         }
 
+        $phase = 'baseline-and-dispatch'
         $originTimestamp = [Diagnostics.Stopwatch]::GetTimestamp()
         $frequency = [Diagnostics.Stopwatch]::Frequency
         $dueTimestamp = $originTimestamp + [long](
@@ -221,6 +232,7 @@ try {
                 $modulePath, $Endpoint, $scenarioJson, $claimPath,
                 'deadline', $dueTimestamp, $frequency
             )
+        $ownedJobs.Add($watchdogJob)
         $baselineSpecs = [ordered]@{
             state = @('inspect', @{ kind = 'state' })
             scene = @('inspect', @{ kind = 'scene' })
@@ -251,6 +263,7 @@ try {
                     $modulePath, $Endpoint, [string]$entry.Value[0],
                     ($entry.Value[1] | ConvertTo-Json -Depth 30 -Compress), 15
                 )
+            $ownedJobs.Add($baselineJobs[$entry.Key])
         }
 
         $baselineResults = @{}
@@ -277,13 +290,15 @@ try {
                 if ($successful) {
                     $baselineVerdict = Test-CocBaseline -Results $baselineResults `
                         -ExpectedCell ([string]$protocolConfig.startCellEditorId)
-                    if ([bool]$baselineVerdict.acceptable -and
+                    if ($fixtureAnomalies.Count -eq 0 -and
+                        [bool]$baselineVerdict.acceptable -and
                         [Diagnostics.Stopwatch]::GetTimestamp() -lt $dueTimestamp) {
                         $earlyJob = Start-ThreadJob -Name "$ownerId-early" `
                             -ScriptBlock $dispatchJobScript -ArgumentList @(
                                 $modulePath, $Endpoint, $scenarioJson, $claimPath,
                                 'baseline-complete', 0L, $frequency
                             )
+                        $ownedJobs.Add($earlyJob)
                     }
                 }
             }
@@ -337,6 +352,7 @@ try {
             dispatchAcceptedElapsedMs = $acceptedElapsedMs
             scenarioRunId = $scenarioRunId
             fixture = $fixture.value
+            fixtureAnomalies = @($fixtureAnomalies)
             baseline = $baselineResults
             baselineVerdict = $baselineVerdict
         }
@@ -354,6 +370,7 @@ try {
                 dispatchSource = [string]$dispatchResult.source
                 dispatchAcceptedElapsedMs = $acceptedElapsedMs
                 baselineDeadlineMs = $BaselineDeadlineMs
+                fixtureAnomalies = @($fixtureAnomalies)
                 baseline = $baselineResults
                 baselineVerdict = $baselineVerdict
             }
@@ -367,14 +384,22 @@ catch {
         ok = $false
         command = $Command
         timestampUtc = [DateTime]::UtcNow.ToString('o')
-        state = 'tool-error'
-        data = $null
+        state = 'blocked-awaiting-user'
+        data = [pscustomobject]@{
+            phase = $phase
+            nextAction = 'ask_user'
+        }
         errors = @($_.Exception.Message)
     }
 }
 finally {
-    Get-Job -Name 'coc-*-baseline-*', 'coc-*-watchdog', 'coc-*-early' `
-        -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
+    foreach ($job in @($ownedJobs)) {
+        if ($null -eq $job) { continue }
+        if ($job.State -notin @('Completed', 'Failed', 'Stopped')) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        }
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $json = @{ InputObject = $result; Depth = 100 }
