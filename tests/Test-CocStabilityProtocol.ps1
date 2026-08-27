@@ -38,6 +38,10 @@ $protocol = Get-Content -LiteralPath $sourceProtocolPath -Raw
 
 foreach ($requiredSkillText in @(
     'When Skyrim reaches its main menu/load window',
+    'start COC protocol',
+    'ready to load',
+    'Do not issue a COC',
+    'visibly loaded and says `start`',
     'tools/ghidra-mcp-control.ps1',
     'both DevBench and Ghidra MCP tools',
     'harmless call through each',
@@ -61,6 +65,11 @@ foreach ($requiredSkillText in @(
 }
 
 foreach ($requiredProtocolText in @(
+    '## Two-command operator handshake',
+    'It authorizes only readiness',
+    'Do not issue a console command',
+    'second command is `start`',
+    'this readiness report does not authorize any game command',
     '## Main-menu Codex and evidence readiness',
     'tools/ghidra-mcp-control.ps1',
     'listenerOwnedBySession: true',
@@ -102,6 +111,10 @@ foreach ($requiredProtocolText in @(
     ) "COC protocol is missing: $requiredProtocolText"
 }
 
+$handshakePosition = $protocol.IndexOf(
+    '## Two-command operator handshake',
+    [StringComparison]::Ordinal
+)
 $readinessPosition = $protocol.IndexOf(
     '## Main-menu Codex and evidence readiness',
     [StringComparison]::Ordinal
@@ -127,13 +140,14 @@ $failurePosition = $protocol.IndexOf(
     [StringComparison]::Ordinal
 )
 Assert-Protocol (
-    $readinessPosition -ge 0 -and
+    $handshakePosition -ge 0 -and
+    $handshakePosition -lt $readinessPosition -and
     $readinessPosition -lt $startPosition -and
     $startPosition -lt $fixturePosition -and
     $fixturePosition -lt $baselinePosition -and
     $baselinePosition -lt $assayPosition -and
     $assayPosition -lt $failurePosition
-) 'Readiness, start, fixture, baseline, assay, and failure phases are out of order.'
+) 'Handshake, readiness, start, fixture, baseline, assay, and failure phases are out of order.'
 
 $assayText = $protocol.Substring($assayPosition)
 Assert-Protocol (-not $assayText.Contains(

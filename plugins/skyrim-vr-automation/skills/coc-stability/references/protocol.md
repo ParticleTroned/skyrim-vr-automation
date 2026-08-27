@@ -1,13 +1,34 @@
 # Deadline-driven COC stability protocol
 
+## Two-command operator handshake
+
+The first command is `start COC protocol`, issued while Skyrim is at its main
+menu/load window. It authorizes only readiness. Register or verify tools, start
+external analyzers and the dump collector, make the required harmless calls,
+report `ready to load`, and return control to the user. Do not issue a console
+command, COC, load, or in-game probe.
+
+The user then loads into the game. After the user can see that loading is
+complete, the second command is `start`. That command alone authorizes fast
+start-cell establishment and the measured assay. Do not repeat readiness work
+on this critical path.
+
+If Codex must restart during readiness, keep Skyrim at the main menu and keep
+the owned Ghidra and ProcDump processes alive. In the new window, the user
+repeats `start COC protocol`; resume readiness and report `ready to load` only
+after both MCP tool calls pass. Never treat that first command as the second
+`start` command.
+
 ## Main-menu Codex and evidence readiness
 
 Complete this phase when Skyrim reaches its main menu/load window and before a
 save or test world is loaded. Do not defer it into the in-game start window.
 
-1. Resolve the one live `SkyrimVR.exe` PID. Confirm `devbench_vr` is registered
-   at `http://127.0.0.1:8921/mcp` and the installed `devbench-control`
-   entrypoint is present.
+1. Resolve the one live `SkyrimVR.exe` PID. Register missing MCP entries as
+   `devbench_vr` at `http://127.0.0.1:8921/mcp` and `ghidra` at
+   `http://127.0.0.1:8080/mcp`, then verify both exact identities. Do not
+   overwrite an existing entry that points elsewhere. Require the installed
+   `devbench-control` entrypoint.
 2. In one parallel local setup group:
    - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status`;
      if stopped, call `start` and reuse its saved project and paths;
@@ -44,6 +65,12 @@ If a real local readiness check or harmless MCP call fails after attachment,
 stop at the main menu and preserve the receipt. Do not diagnose a missing
 installation merely from a missing tool.
 
+When every check passes, report `ready to load` with the exact Skyrim PID,
+DevBench and Ghidra endpoint identities, managed Ghidra PID/listener ownership,
+ProcDump PID/state path/capture directory, CDB path, and installed automation
+plugin version. Stop and wait for the user's in-game `start`; this readiness
+report does not authorize any game command.
+
 A readiness receipt is reusable only while all of these remain true:
 
 - the same Codex window still exposes both MCP tool families;
@@ -58,9 +85,9 @@ the corresponding recheck or re-arm before another live trigger.
 
 ## Fast start-cell establishment
 
-At the moment the user confirms Skyrim VR is in-game, immediately queue one
-async DevBench server scenario whose only steps are a 10,000 ms wait followed
-by exactly:
+At the moment the user confirms Skyrim VR is visibly loaded and says `start`,
+immediately queue one async DevBench server scenario whose only steps are a
+10,000 ms wait followed by exactly:
 
 ```text
 coc WindhelmExterior01

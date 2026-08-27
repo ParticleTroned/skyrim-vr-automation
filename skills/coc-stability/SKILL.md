@@ -10,6 +10,12 @@ Use this entrypoint for live operation. Read
 diagnosing the protocol, never after the user has entered the live start
 window.
 
+Use a strict two-command handshake. At Skyrim's main menu/load window the user
+says `start COC protocol`; perform readiness only, report `ready to load`, and
+stop. Do not issue a COC or another in-game command. After the user loads into
+the game, visually confirms it is loaded, and says `start`, begin the timed live
+path.
+
 When Skyrim reaches its main menu/load window, and before loading into the test
 world, establish the analysis environment. In parallel, use Community Shaders'
 `tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server and
@@ -19,13 +25,14 @@ current Codex window exposes both DevBench and Ghidra MCP tools and make one
 harmless call through each. An enabled UI toggle is not proof. If either tool
 family is absent, leave Skyrim at the main menu, keep the external servers and
 collector running, restart Codex, and repeat only the tool-call checks. Retain
-the Ghidra and ProcDump receipts.
+the Ghidra and ProcDump receipts. Report readiness only after every required
+receipt and real MCP call passes, then wait for the user's second command.
 
-When the user confirms Skyrim VR is in-game, make the first live operation an
-async DevBench server scenario that waits exactly 10 seconds and dispatches one
-isolated `coc WindhelmExterior01`. During that server wait, read runtime
-identity and the exact CSX Build ID concurrently. Do not put discovery or
-sequential status calls ahead of this COC.
+When the user confirms Skyrim VR is visibly loaded and says `start`, make the
+first live operation an async DevBench server scenario that waits exactly 10
+seconds and dispatches one isolated `coc WindhelmExterior01`. During that
+server wait, read runtime identity and the exact CSX Build ID concurrently. Do
+not put discovery or sequential status calls ahead of this COC.
 
 After Windhelm loads, call `communityshaders.menu` once with
 `{"action":"prepare_coc","expectedBuildId":"<exact build ID>"}`. Require
