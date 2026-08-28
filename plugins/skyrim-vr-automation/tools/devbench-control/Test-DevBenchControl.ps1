@@ -115,9 +115,28 @@ $nativeSnapshot = [pscustomobject]@{
 }
 $nativeStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
 Assert-Test ($nativeStable.satisfied -and $nativeStable.stereoEvidence -eq 'native_pipeline_frames') 'native-resolution stability uses converged profiles and advancing world frames'
+$nativeTaaProfile = New-TestUpscalingProfile -Method 'taa' -RenderScale $false
+$nativeProjectedNone = New-TestUpscalingProfile -Method 'none' -RenderScale $false
+$nativeSnapshot.profilePresence = 27
+$nativeSnapshot.transitionState = [pscustomobject]@{ name = 'active'; value = 6 }
+$nativeSnapshot.profiles.requested = $nativeProjectedNone
+$nativeSnapshot.profiles.effective = $nativeTaaProfile
+$nativeSnapshot.profiles.stable = $nativeProjectedNone
+$nativeTaaStatus = New-TestRenderScaleStatus -RenderScale $false
+$nativeTaaStatus.controller.state = 'Active'
+$nativeTaaStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeTaaProfile
+Assert-Test ($nativeTaaStable.satisfied -and $nativeTaaStable.expectedProfileMatches) 'targeted native TAA accepts its active native controller state without treating the render-scale projection as a profile mismatch'
+$nativeWrongTarget = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeProjectedNone
+Assert-Test (-not $nativeWrongTarget.satisfied -and $nativeWrongTarget.reasons -contains 'effective native profile does not match the expected target') 'targeted native stability rejects a different effective profile'
+$nativeSnapshot.transitionState = [pscustomobject]@{ name = 'active'; value = 6 }
+$nativeTaaStatus.controller.state = 'Idle'
+$nativeSplitState = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeTaaProfile
+Assert-Test (-not $nativeSplitState.satisfied -and $nativeSplitState.reasons -contains "native-resolution controller state is 'active/idle'") 'targeted native stability rejects split controller states'
+$nativeSnapshot.transitionState = [pscustomobject]@{ name = 'idle'; value = 0 }
 $nativeFsrProfile = New-TestUpscalingProfile -Method 'fsr' -RenderScale $false
 $nativeSnapshot.profiles.requested = $nativeFsrProfile
 $nativeSnapshot.profiles.effective = $nativeFsrProfile
+$nativeSnapshot.profiles.stable = $nativeFsrProfile
 $nativeFsrStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
 Assert-Test ($nativeFsrStable.satisfied -and $nativeFsrStable.method -eq 'fsr') 'native-resolution stability follows the effective method without prescribing DLSS or FSR'
 $mismatchedProfile = New-TestUpscalingProfile -Method 'fsr' -RenderScale $false
@@ -225,6 +244,9 @@ Assert-Test ($entryPointText -match '\$null -eq \$headers') 'bounded waits estab
 Assert-Test ($entryPointText -match '\[switch\]\$AcceptAlreadyLoaded') 'playerLoaded exposes an explicit compatibility opt-out for freshness'
 Assert-Test ($entryPointText -match '\$playerTransitionObserved') 'playerLoaded requires an observed unloaded-to-loaded transition by default'
 Assert-Test ($entryPointText -match "Condition 'upscalingStable' requires -ExpectedCell") 'upscalingStable cannot accept a stale source scene'
+Assert-Test ($entryPointText -match '\[string\]\$ExpectedProfileJson') 'upscalingStable accepts a complete expected profile when a protocol needs target correlation'
+Assert-Test ($entryPointText -match 'ExpectedProfileJson requires') 'upscalingStable rejects incomplete expected profile data'
+Assert-Test ($entryPointText -match 'ExpectedProfile \$expectedUpscalingProfile') 'upscalingStable passes the expected profile into the stability predicate'
 Assert-Test ($entryPointText -match "scene\.cell\.PSObject\.Properties\['editorId'\]") 'upscalingStable reads the structured live scene cell editor ID'
 Assert-Test ($entryPointText -match '\$stableCandidateCount -ge \$StableSamples') 'upscalingStable requires consecutive stable observations'
 Assert-Test ($entryPointText -match '\$stableFrameAdvance -ge \$MinimumStableFrameAdvance') 'upscalingStable requires advancing world frames'

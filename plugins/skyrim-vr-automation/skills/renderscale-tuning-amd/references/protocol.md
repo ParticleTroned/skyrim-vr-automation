@@ -154,13 +154,20 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `performance=5`, and `ultra_performance=6`. Configured runtime matching and
    physical backend matching are separate requirements.
 6. For None and TAA, do not call a vendor qualification waiter or manufacture
-   an FSR target. Use the existing DevBench `upscalingStable` barrier in
-   Dragonsreach once, with only the shared deadline's remaining budget. Do not
-   poll `operation` or start a second 30-second window. Require the final
-   operation read to be complete and the final snapshot to have no active
-   operation before releasing the timing-only owner with
-   `qualification_cancel`. That expected cancellation closes the timing bracket
-   and is not a render failure.
+   an FSR target. Call DevBench `upscalingStable` in Dragonsreach exactly once
+   with only the shared deadline's remaining budget and the complete normalized
+   apply target as `-ExpectedProfileJson`. The target-correlated native barrier
+   requires the authoritative effective runtime profile to equal that target,
+   render scale to remain disabled, no active operation, and either
+   `idle/idle` or `active/active` native controller state. Native TAA
+   legitimately reports `active/active`; its render-scale controller
+   projection may remain `None` and must not be compared with the effective
+   TAA profile. Do not poll `operation` or start a second 30-second window.
+   Read that apply's operation exactly once after the barrier; require its
+   target and effective profile to match, its state to be `completed`, and the
+   final snapshot to have no active operation before releasing the timing-only
+   owner with `qualification_cancel`. That expected cancellation closes the
+   timing bracket and is not a render failure.
 7. Read the operation, transition-filtered API events, authoritative API
    snapshot, render-scale status, preparation trace, and provider-lifecycle
    evidence. Inspect the completed transition before allowing the next apply.
@@ -211,10 +218,11 @@ presentation; exact provider generation and resource ownership; and strict
 completion. Record first physical match, first coherent stereo presentation,
 `presentationStable`, `cleanupDrained`, and strict completion separately.
 
-For None and TAA require the public operation to complete; exact authoritative
-method; `qualityMode: native_aa`; `renderScaleMode: false`; native dimensions;
+For None and TAA require the public operation target and effective profile to
+match the complete target; exact authoritative effective method;
+`qualityMode: native_aa`; `renderScaleMode: false`; native dimensions;
 producer-native physical-contract evidence; advancing coherent in-world
-`upscalingStable`; no unresolved physical
+target-correlated `upscalingStable`; no unresolved physical
 mutation; and no FSR evaluation treated as active presentation. If exact native
 presentation generation is unavailable, retain that tooling gap and classify
 generation proof `INCONCLUSIVE`; retain raw dimensions but do not calculate

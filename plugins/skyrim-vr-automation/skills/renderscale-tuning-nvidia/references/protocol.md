@@ -132,13 +132,20 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `fsrRuntime: fsr3` only for FSR. Include the preserved `dlssProfile.name`
    for DLSS and DLAA. Physical backend proof remains separate.
 6. For None and TAA, do not call a vendor qualification waiter or manufacture
-   a DLSS/FSR target. Use the existing DevBench `upscalingStable` barrier in
-   Dragonsreach once, with only the shared deadline's remaining budget. Do not
-   poll `operation` or start a second 30-second window. Require the final
-   operation read to be complete and the final snapshot to have no active
-   operation before releasing the timing-only owner with
-   `qualification_cancel`. That expected cancellation closes the timing bracket
-   and is not a render failure.
+   a DLSS/FSR target. Call DevBench `upscalingStable` in Dragonsreach exactly
+   once with only the shared deadline's remaining budget and the complete
+   normalized apply target as `-ExpectedProfileJson`. The target-correlated
+   native barrier requires the authoritative effective runtime profile to
+   equal that target, render scale to remain disabled, no active operation,
+   and either `idle/idle` or `active/active` native controller state. Native
+   TAA legitimately reports `active/active`; its render-scale controller
+   projection may remain `None` and must not be compared with the effective
+   TAA profile. Do not poll `operation` or start a second 30-second window.
+   Read that apply's operation exactly once after the barrier; require its
+   target and effective profile to match, its state to be `completed`, and the
+   final snapshot to have no active operation before releasing the timing-only
+   owner with `qualification_cancel`. That expected cancellation closes the
+   timing bracket and is not a render failure.
 7. Read the operation, transition-filtered API events, authoritative API
    snapshot, render-scale status, preparation trace, and applicable DLSS
    trace. Inspect the completed transition before allowing the next apply.
@@ -190,9 +197,10 @@ strict completion. Record first physical-profile match, first coherent stereo
 presentation, `presentationStable`, `cleanupDrained`, and strict completion
 separately. Cleanup may follow presentation and must not replace its timing.
 
-For None and TAA require the public operation to complete; the authoritative
-method to be exact; `qualityMode: native_aa`; `renderScaleMode: false`; native
-physical-contract evidence from the producer; advancing coherent in-world
+For None and TAA require the public operation target and effective profile to
+match the complete target; the authoritative effective method to be exact;
+`qualityMode: native_aa`; `renderScaleMode: false`; native physical-contract
+evidence from the producer; advancing coherent in-world target-correlated
 `upscalingStable`; no
 unresolved physical mutation; and no vendor evaluation treated as the active
 presentation. If the receipt cannot expose an exact native presentation

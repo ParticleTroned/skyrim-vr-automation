@@ -339,16 +339,21 @@ function Get-DevBenchRenderScalePreparationTelemetry {
     }
 
     $allEventsValue = Get-DevBenchTelemetryMember $preparation 'events'
-    $allEvents = if ($null -eq $allEventsValue) { @() } else { @($allEventsValue) }
+    $allEvents = @()
+    if ($null -ne $allEventsValue) {
+        $allEvents = @($allEventsValue)
+    }
     $filterApplied = $PSBoundParameters.ContainsKey('TransitionEpoch') -and
         $null -ne $TransitionEpoch
-    $events = if ($filterApplied) {
-        @($allEvents | Where-Object {
+    $events = @()
+    if ($filterApplied) {
+        $events = @($allEvents | Where-Object {
                 [string](Get-DevBenchTelemetryMember $_ 'transitionEpoch') -ceq
                     [string]$TransitionEpoch
             })
-    } else {
-        @($allEvents)
+    }
+    else {
+        $events = @($allEvents)
     }
 
     $stages = [ordered]@{}
@@ -447,7 +452,8 @@ function Test-DevBenchUpscalingStable {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$UpscalingSnapshot,
-        [Parameter(Mandatory)]$RenderScaleStatus
+        [Parameter(Mandatory)]$RenderScaleStatus,
+        $ExpectedProfile
     )
 
     $snapshot = if ($UpscalingSnapshot.PSObject.Properties['snapshot']) { $UpscalingSnapshot.snapshot } else { $UpscalingSnapshot }
@@ -466,6 +472,9 @@ function Test-DevBenchUpscalingStable {
     $hasRequested = ($profilePresence -band 0x2u) -ne 0
     $hasEffective = ($profilePresence -band 0x8u) -ne 0
     $hasStable = ($profilePresence -band 0x10u) -ne 0
+    $expectsNativeProfile = $null -ne $ExpectedProfile -and
+        $ExpectedProfile.PSObject.Properties['renderScaleMode'] -and
+        -not [bool]$ExpectedProfile.renderScaleMode
     $criticalConditions = @(
         'loading_transition', 'relatch_pending', 'transition_pending',
         'first_world_frame_pending', 'post_load_recovery',
@@ -482,12 +491,20 @@ function Test-DevBenchUpscalingStable {
     Require-StableValue (($flags -band 0x4u) -eq 0) 'an upscaling restart is required'
     Require-StableValue ([uint64]$snapshot.activeOperationId -eq 0) 'an upscaling operation is still active'
     Require-StableValue ($blockingConditions.Count -eq 0) "blocking upscaling conditions remain: $($blockingConditions -join ', ')"
-    Require-StableValue ($hasRequested -and $hasEffective) 'requested and effective profiles are not both authoritative'
-    if ($hasRequested -and $hasEffective) {
-        Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.requested $profiles.effective) 'requested and effective profiles differ'
+    if ($expectsNativeProfile) {
+        Require-StableValue ($hasEffective) 'the effective native profile is not authoritative'
+        if ($hasEffective) {
+            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.effective $ExpectedProfile) 'effective native profile does not match the expected target'
+        }
     }
-    if ($hasStable -and $hasEffective) {
-        Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.stable $profiles.effective) 'stable and effective profiles differ'
+    else {
+        Require-StableValue ($hasRequested -and $hasEffective) 'requested and effective profiles are not both authoritative'
+        if ($hasRequested -and $hasEffective) {
+            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.requested $profiles.effective) 'requested and effective profiles differ'
+        }
+        if ($hasStable -and $hasEffective) {
+            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.stable $profiles.effective) 'stable and effective profiles differ'
+        }
     }
     Require-StableValue (
         [uint32]$snapshot.dimensions.displayEyeWidth -gt 0 -and
@@ -575,9 +592,12 @@ function Test-DevBenchUpscalingStable {
         }
     }
     else {
-        Require-StableValue ($transitionState -eq 'idle') "native-resolution transition state is '$transitionState'"
+        $controllerState = Get-DevBenchNamedValue $controller.state
+        $nativeControllerSettled =
+            ($transitionState -eq 'idle' -and $controllerState -eq 'idle') -or
+            ($transitionState -eq 'active' -and $controllerState -eq 'active')
+        Require-StableValue ($nativeControllerSettled) "native-resolution controller state is '$transitionState/$controllerState'"
         Require-StableValue (($flags -band 0x10u) -eq 0 -and ($flags -band 0x20u) -eq 0) 'render-scale remains latched or active for a native-resolution profile'
-        Require-StableValue ((Get-DevBenchNamedValue $controller.state) -eq 'idle') 'render-scale controller has not returned to idle'
     }
 
     $signature = if ($hasEffective) {
@@ -603,6 +623,8 @@ function Test-DevBenchUpscalingStable {
         method = $method
         qualityMode = $qualityMode
         effectiveRenderScaleMode = $effectiveRenderScaleMode
+        expectedProfile = $ExpectedProfile
+        expectedProfileMatches = if ($null -ne $ExpectedProfile -and $hasEffective) { Test-DevBenchUpscalingProfilesEqual $profiles.effective $ExpectedProfile } else { $null }
         dlssProfile = $dlssProfile
         fsrRuntime = $fsrRuntime
         frame = [uint32]$renderStatus.frame

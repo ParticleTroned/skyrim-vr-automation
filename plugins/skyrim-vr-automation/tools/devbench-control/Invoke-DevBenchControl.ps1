@@ -34,6 +34,7 @@ param(
     [string[]]$IgnoredMenus = @('HUD Menu'),
     [switch]$AcceptAlreadyLoaded,
     [string]$ExpectedCell,
+    [string]$ExpectedProfileJson,
     [ValidateRange(2, 20)]
     [int]$StableSamples = 2,
     [ValidateRange(1, 1000)]
@@ -349,6 +350,21 @@ try {
     else {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
         if ($Condition -eq 'upscalingStable' -and [string]::IsNullOrWhiteSpace($ExpectedCell)) { throw "Condition 'upscalingStable' requires -ExpectedCell so the prior scene cannot satisfy the barrier." }
+        if ($Condition -ne 'upscalingStable' -and -not [string]::IsNullOrWhiteSpace($ExpectedProfileJson)) { throw '-ExpectedProfileJson is valid only with Condition upscalingStable.' }
+        $expectedUpscalingProfile = $null
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedProfileJson)) {
+            try {
+                $expectedUpscalingProfile = $ExpectedProfileJson | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw "ExpectedProfileJson is invalid: $($_.Exception.Message)"
+            }
+            foreach ($name in @('method', 'qualityMode', 'renderScaleMode', 'dlssProfile', 'fsrRuntime')) {
+                if (-not $expectedUpscalingProfile.PSObject.Properties[$name]) {
+                    throw "ExpectedProfileJson requires '$name'."
+                }
+            }
+        }
         $requiredTools = switch ($Condition) {
             'noBlockingMenu' { @('menu') }
             'playerLoaded' { @('inspect') }
@@ -470,7 +486,7 @@ try {
                     }
                     $upscaling = @(Invoke-ToolRpc -Name 'communityshaders.upscaling_api' -Arguments $upscalingArguments -Headers $headers).content | Select-Object -First 1
                     $renderScale = @(Invoke-ToolRpc -Name 'communityshaders.renderscale' -Arguments $renderScaleArguments -Headers $headers).content | Select-Object -First 1
-                    $stability = Test-DevBenchUpscalingStable -UpscalingSnapshot $upscaling -RenderScaleStatus $renderScale
+                    $stability = Test-DevBenchUpscalingStable -UpscalingSnapshot $upscaling -RenderScaleStatus $renderScale -ExpectedProfile $expectedUpscalingProfile
                     $actualCell = if ($scene.cell -is [string]) {
                         [string]$scene.cell
                     }
@@ -502,6 +518,7 @@ try {
                         satisfied = $instantaneousStable -and $stableCandidateCount -ge $StableSamples -and $stableFrameAdvance -ge $MinimumStableFrameAdvance
                         retryable = $false
                         expectedCell = $ExpectedCell
+                        expectedProfile = $expectedUpscalingProfile
                         actualCell = $actualCell
                         cellMatches = $cellMatches
                         playerLoaded = [bool]$state.playerLoaded
