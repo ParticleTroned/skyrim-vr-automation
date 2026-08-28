@@ -44,6 +44,50 @@ try {
     Import-Module (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'mo2-control\MO2Control.psm1') -Force
     $config = Read-MO2ControlConfig -ConfigPath $configPath
     $access = Invoke-MO2RequestAccess -Config $config -Label fixture; $accessId = [string]$access.data.access.accessId
+    $legacyId = '20260825t174017z-legacy-fixture-06166c48'
+    $legacyProfileName = 'Codex Task - ' + $legacyId
+    $legacyProfilePath = Join-Path $profiles $legacyProfileName
+    New-Item -ItemType Directory -Path $legacyProfilePath -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $source 'modlist.txt'), (Join-Path $source 'plugins.txt'), (Join-Path $source 'settings.ini') -Destination $legacyProfilePath
+    $workspaceRoot = Join-Path $sessions 'workspaces'
+    New-Item -ItemType Directory -Path $workspaceRoot -Force | Out-Null
+    $legacyManifestPath = Join-Path $workspaceRoot ($legacyId + '.json')
+    [ordered]@{
+        contractVersion = '1.2.0'; workspaceId = $legacyId; accessId = 'retired-access'; status = 'ready'
+        profile = $legacyProfileName; profilePath = $legacyProfilePath
+        sourceProfile = 'Mad God Stable'; sourceProfilePath = $source
+        registeredMods = @(); initialModNames = @('Loader')
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $legacyManifestPath -Encoding utf8
+    $preservedCache = Join-Path $mods 'Synthesis Patch (SFW)\ShaderCache\preserved.bin'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $preservedCache) -Force | Out-Null
+    'user-owned-cache' | Set-Content -LiteralPath $preservedCache -Encoding utf8
+    $legacyManifestHash = (Get-FileHash -LiteralPath $legacyManifestPath -Algorithm SHA256).Hash
+    $preservedCacheHash = (Get-FileHash -LiteralPath $preservedCache -Algorithm SHA256).Hash
+    [IO.File]::WriteAllText($ini, ([IO.File]::ReadAllText($ini) -replace 'selected_profile=@ByteArray\(Codex\)', ('selected_profile=@ByteArray(' + $legacyProfileName + ')')), [Text.UTF8Encoding]::new($false))
+    $legacyInspection = Invoke-MO2Inspect -Config $config
+    if (-not $legacyInspection.data.selectedTaskWorkspace.legacy -or -not $legacyInspection.data.selectedTaskWorkspace.recoverable -or
+        @($legacyInspection.checks | Where-Object { $_.name -eq 'selected-task-workspace' -and $_.status -eq 'warn' }).Count -ne 1) {
+        throw 'MO2 inspection did not identify the selected recoverable legacy workspace.'
+    }
+    $wrongLegacyRecovery = & $entry recover-legacy-selection -ConfigPath $configPath -AccessId $accessId -WorkspaceId '20260825t174017z-wrong-fixture-06166c48' -NoExit -Confirm:$false -Compact | ConvertFrom-Json
+    if ($wrongLegacyRecovery.ok -or (Get-Content -LiteralPath $ini -Raw) -notmatch [regex]::Escape("selected_profile=@ByteArray($legacyProfileName)")) {
+        throw 'Legacy selection recovery accepted a mismatched workspace identity.'
+    }
+    $legacyDryRun = & $entry recover-legacy-selection -ConfigPath $configPath -AccessId $accessId -WorkspaceId $legacyId -WhatIf -Compact | ConvertFrom-Json
+    if (-not $legacyDryRun.ok -or $legacyDryRun.state -ne 'dry-run' -or $legacyDryRun.data.approval.reusableApprovalEligible -or
+        (Get-Content -LiteralPath $ini -Raw) -notmatch [regex]::Escape("selected_profile=@ByteArray($legacyProfileName)")) {
+        throw 'Legacy selection recovery dry-run changed state or exposed reusable approval.'
+    }
+    $legacyRecovery = & $entry recover-legacy-selection -ConfigPath $configPath -AccessId $accessId -WorkspaceId $legacyId -Confirm:$false -Compact | ConvertFrom-Json
+    if (-not $legacyRecovery.ok -or $legacyRecovery.state -ne 'legacy-selection-recovered' -or
+        (Get-Content -LiteralPath $ini -Raw) -notmatch 'selected_profile=@ByteArray\(Mad God Stable\)' -or
+        -not (Test-Path -LiteralPath $legacyProfilePath -PathType Container) -or
+        (Get-FileHash -LiteralPath $legacyManifestPath -Algorithm SHA256).Hash -cne $legacyManifestHash -or
+        (Get-FileHash -LiteralPath $preservedCache -Algorithm SHA256).Hash -cne $preservedCacheHash -or
+        -not (Test-Path -LiteralPath $legacyRecovery.data.selectedProfileRecovery.receiptPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $legacyRecovery.data.recoveryReceiptPath -PathType Leaf)) {
+        throw 'Legacy selection recovery did not preserve the legacy workspace and cache while restoring the stable profile.'
+    }
     $fixtureStatusRaw = & $entry fixture-status -ConfigPath $configPath -Compact
     if ($fixtureStatusRaw -match "`r|`n") { throw 'Compact workspace output was not one line.' }
     $fixtureStatus = $fixtureStatusRaw | ConvertFrom-Json
@@ -135,7 +179,7 @@ try {
     if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace cleanup failed.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     if (-not $releasedAccess.ok) { throw 'Access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=41; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=46; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally {
     $env:SKYRIM_VR_AUTOMATION_TEST_FIXTURE_ROOT = $previousFixtureRoot

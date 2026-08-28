@@ -51,6 +51,8 @@ by the host environment.
 Do not propose reusable approval for:
 
 - `recover-access`, because it transfers an abandoned lease;
+- workspace `recover-legacy-selection`, because it changes the shared MO2
+  selected profile after exact legacy-workspace classification;
 - `terminate-game` or `terminate`, because they force process termination;
 - workspace `refresh-fixture` or `release`, because they replace shared fixture
   metadata or recursively remove exact owned workspace paths;

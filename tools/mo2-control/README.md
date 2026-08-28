@@ -49,6 +49,12 @@ the current profile hash and require materialized output. Legacy task profiles
 without this contract must be recreated; ordinary non-task profiles are not
 subject to this workspace-only gate.
 
+`inspect` and `validate` also classify a persisted selected `Codex Task -`
+profile. A legacy profile without runtime-output isolation produces a focused
+warning even when another exact profile was requested. After MO2 and Skyrim
+are closed, use workspace control `recover-legacy-selection` to restore the
+configured stable source without deleting the legacy workspace or its output.
+
 ## Quick start
 
 Read `APPROVALS.md` before submitting an elevated command. Controllers report

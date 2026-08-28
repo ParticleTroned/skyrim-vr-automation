@@ -257,6 +257,17 @@ MO2, verify the exact profile directory and `selected_profile`, then run
 `validate -RequireClosed`. A fallback is a failed precondition even if MO2 can
 launch.
 
+### Persisted legacy task profile
+
+Symptom: `inspect` reports that MO2 selects a `Codex Task -` profile whose
+workspace has no runtime-output isolation contract.
+
+Response: do not launch that profile. Close Skyrim and MO2, acquire the exact
+access lease, validate closed state, preview workspace
+`recover-legacy-selection`, and run it with the reported workspace ID. The
+operation selects the configured stable source and retains the legacy profile,
+mods, cache, manifest, exact INI backup, and recovery receipt.
+
 ### `Cannot start -r`
 
 Symptom: MO2 tries to open a path such as `...\MO2Root\-r`.

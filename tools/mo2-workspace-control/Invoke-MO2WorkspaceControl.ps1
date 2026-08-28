@@ -3,7 +3,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'register-mod', 'ensure-mod-wins', 'release')]
+    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'register-mod', 'ensure-mod-wins', 'recover-legacy-selection', 'release')]
     [string]$Command,
 
     [string]$ConfigPath,
@@ -37,13 +37,19 @@ function New-WorkspaceApprovalMetadata([string]$Subcommand) {
     $hostExecutable = [string][Environment]::ProcessPath
     if ([string]::IsNullOrWhiteSpace($hostExecutable)) { $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path }
     $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
-    $oneShotCommands = @('refresh-fixture', 'release')
+    $oneShotCommands = @('refresh-fixture', 'recover-legacy-selection', 'release')
+    $oneShotReason = switch ($Subcommand) {
+        'refresh-fixture' { 'Shared fixture replacement must remain a one-shot approval.' }
+        'recover-legacy-selection' { 'Changing MO2 away from an exact legacy task profile must remain a one-shot approval.' }
+        'release' { 'Recursive owned-workspace removal must remain a one-shot approval.' }
+        default { $null }
+    }
     return [pscustomobject][ordered]@{
         hostExecutable = $hostExecutable; entryPoint = $entryPoint; subcommand = $Subcommand
         reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
         reusableApprovalEligible = $Subcommand -notin $oneShotCommands
         escalationUsuallyRequired = $Subcommand -notin @('inspect', 'fixture-status')
-        oneShotReason = if ($Subcommand -in $oneShotCommands) { 'Shared fixture replacement or recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
+        oneShotReason = $oneShotReason
         invocationRule = 'Use this literal prefix directly. Put changing access, workspace, mod, and evidence arguments afterward; do not hide the prefix in variables, -Command, pipelines, or a command string.'
     }
 }
@@ -191,7 +197,15 @@ function Write-WorkspaceBytesAtomic([string]$Path, [byte[]]$Bytes) {
     finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
-function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string]$StableProfile, [string]$EvidenceRoot, [switch]$WhatIf) {
+function Set-MO2SelectedProfileForRelease(
+    $Config,
+    [string]$TaskProfile,
+    [string]$StableProfile,
+    [string]$EvidenceRoot,
+    [string]$Operation = 'select-stable-before-workspace-release',
+    [string]$ReceiptName = 'selected-profile-release.receipt.json',
+    [switch]$WhatIf
+) {
     $iniPath = Resolve-WorkspaceConfiguredPath -Path ([string]$Config.mo2.ini) -Purpose 'MO2 INI'
     if (-not (Test-Path -LiteralPath $iniPath -PathType Leaf)) { throw "MO2 INI does not exist: $iniPath" }
     $beforeBytes = [IO.File]::ReadAllBytes($iniPath)
@@ -204,7 +218,7 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
     $replacement = $selectionMatches[0].Groups['prefix'].Value + '@ByteArray(' + $StableProfile + ')'
     $afterText = $beforeText.Remove($selectionMatches[0].Index, $selectionMatches[0].Length).Insert($selectionMatches[0].Index, $replacement)
     $backupPath = Join-Path $EvidenceRoot 'ModOrganizer.before.ini'
-    $receiptPath = Join-Path $EvidenceRoot 'selected-profile-release.receipt.json'
+    $receiptPath = Join-Path $EvidenceRoot $ReceiptName
     $record = [pscustomobject][ordered]@{
         iniPath = $iniPath; selectedProfileBefore = $beforeValue; selectedProfileAfter = $StableProfile
         backupPath = $backupPath; receiptPath = $receiptPath; changed = $beforeValue -cne $StableProfile
@@ -222,7 +236,7 @@ function Set-MO2SelectedProfileForRelease($Config, [string]$TaskProfile, [string
         $verified = if ($verifiedMatches.Count -eq 1) { $verifiedMatches[0].Groups['value'].Value } else { $null }
         if ($verified -cne $StableProfile) { throw 'MO2 selected profile postcondition did not match the stable source.' }
         $receipt = [pscustomobject][ordered]@{
-            contractVersion = '1.0.0'; operation = 'select-stable-before-workspace-release'; iniPath = $iniPath
+            contractVersion = '1.0.0'; operation = $Operation; iniPath = $iniPath
             taskProfile = $TaskProfile; stableProfile = $StableProfile; selectedProfileBefore = $beforeValue
             selectedProfileAfter = $verified; backupPath = $backupPath
             beforeSha256 = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
@@ -552,6 +566,62 @@ try {
             $owned.data | Add-Member -NotePropertyName runtimeOutputIsolation -NotePropertyValue $isolation -Force
         }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = [string]$owned.data.status; data = $owned.data }
+    }
+    elseif ($Command -eq 'recover-legacy-selection') {
+        if ([string]::IsNullOrWhiteSpace($WorkspaceId)) { throw 'recover-legacy-selection requires WorkspaceId.' }
+        $stableProfile = if ($config.defaults.PSObject.Properties['testProfileSource']) {
+            [string]$config.defaults.testProfileSource
+        }
+        else { throw 'defaults.testProfileSource is required for legacy selection recovery.' }
+        $validation = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $stableProfile
+        $legacy = $validation.data.selectedTaskWorkspace
+        if (-not $legacy.applicable -or -not $legacy.identified -or -not $legacy.legacy -or -not $legacy.recoverable) {
+            throw 'The selected profile is not one exact recoverable legacy task workspace.'
+        }
+        if ([string]$legacy.workspaceId -cne $WorkspaceId) {
+            throw "Selected legacy workspace identity does not match WorkspaceId '$WorkspaceId'."
+        }
+        $manifestHashBefore = (Get-FileHash -LiteralPath ([string]$legacy.manifestPath) -Algorithm SHA256).Hash
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+        $evidenceRoot = Join-Path (Split-Path -Parent ([string]$legacy.manifestPath)) ($WorkspaceId + '-legacy-selection-recovery-' + $stamp)
+        $recoveryReceiptPath = Join-Path $evidenceRoot 'legacy-workspace-recovery.receipt.json'
+        $approved = $PSCmdlet.ShouldProcess(
+            [string]$validation.data.config.mo2Ini,
+            "select stable profile '$stableProfile' instead of legacy task profile '$($legacy.profile)'"
+        )
+        $selection = Set-MO2SelectedProfileForRelease `
+            -Config $config `
+            -TaskProfile ([string]$legacy.profile) `
+            -StableProfile $stableProfile `
+            -EvidenceRoot $evidenceRoot `
+            -Operation 'recover-legacy-workspace-selection' `
+            -ReceiptName 'legacy-selection-recovery.receipt.json' `
+            -WhatIf:(-not $approved)
+        if ($approved) {
+            $manifestHashAfter = (Get-FileHash -LiteralPath ([string]$legacy.manifestPath) -Algorithm SHA256).Hash
+            if ($manifestHashAfter -cne $manifestHashBefore) {
+                throw 'Legacy workspace manifest changed during selection recovery.'
+            }
+            Write-WorkspaceJsonAtomic -Path $recoveryReceiptPath -Value ([pscustomobject][ordered]@{
+                contractVersion = '1.0.0'; operation = 'recover-legacy-workspace-selection'
+                workspaceId = $WorkspaceId; legacyProfile = [string]$legacy.profile
+                stableProfile = $stableProfile; manifestPath = [string]$legacy.manifestPath
+                manifestSha256Before = $manifestHashBefore; manifestSha256After = $manifestHashAfter
+                legacyProfilePreserved = Test-Path -LiteralPath ([string]$legacy.profilePath) -PathType Container
+                selectedProfileReceiptPath = [string]$selection.receiptPath
+                shaderCacheTouched = $false; completedUtc = [DateTime]::UtcNow.ToString('o')
+            })
+        }
+        $result = [pscustomobject][ordered]@{
+            ok = $true; command = $Command; state = $(if ($approved) { 'legacy-selection-recovered' } else { 'dry-run' })
+            data = [pscustomobject][ordered]@{
+                workspaceId = $WorkspaceId; legacyProfile = [string]$legacy.profile
+                stableProfile = $stableProfile; manifestPath = [string]$legacy.manifestPath
+                manifestSha256 = $manifestHashBefore; selectedProfileRecovery = $selection
+                recoveryReceiptPath = $recoveryReceiptPath
+                legacyWorkspacePreserved = $true; shaderCacheUntouched = $true
+            }
+        }
     }
     elseif ($Command -eq 'register-mod') {
         $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId

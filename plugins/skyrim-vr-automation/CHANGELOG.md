@@ -4,6 +4,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Detect persisted pre-isolation task profiles during MO2 inspection and add a
+  closed-state recovery that selects the stable profile while preserving the
+  legacy workspace, cache, manifest, and exact INI evidence.
 - Keep VR FPS Stabilizer as the sole profile owner by omitting static profile
   targets from every measured COC waiter and recording the coherent
   post-dispatch profile selected externally.

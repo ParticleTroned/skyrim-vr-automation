@@ -282,6 +282,121 @@ function Get-MO2TaskWorkspaceIsolation {
     }
 }
 
+function Get-MO2SelectedTaskWorkspace {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [AllowNull()][string]$Profile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Profile) -or
+        -not $Profile.StartsWith('Codex Task - ', [StringComparison]::Ordinal)) {
+        return [pscustomobject][ordered]@{
+            applicable = $false; profile = $Profile; identified = $false
+            legacy = $false; recoverable = $false; errors = @()
+        }
+    }
+
+    $errors = [Collections.Generic.List[string]]::new()
+    $stagingRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.storage.sessionStaging)))
+    $workspaceRoot = Join-Path $stagingRoot 'workspaces'
+    $matches = @()
+    if (Test-Path -LiteralPath $workspaceRoot -PathType Container) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $workspaceRoot -Filter '*.json' -File -ErrorAction Stop)) {
+            try {
+                $candidate = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop)
+                $candidateProfile = if ($candidate.PSObject.Properties['profileName']) {
+                    [string]$candidate.profileName
+                }
+                else { [string]$candidate.profile }
+                if ($candidateProfile -ceq $Profile) {
+                    $matches += [pscustomobject]@{ path = $file.FullName; data = $candidate }
+                }
+            }
+            catch {
+                $errors.Add("Workspace manifest is unreadable: $($file.FullName). $($_.Exception.Message)")
+            }
+        }
+    }
+
+    if ($matches.Count -ne 1) {
+        $errors.Add("Expected exactly one workspace manifest for selected task profile '$Profile'; found $($matches.Count).")
+        return [pscustomobject][ordered]@{
+            applicable = $true; profile = $Profile; identified = $false
+            legacy = $true; recoverable = $false; manifestPath = $null
+            workspaceId = $null; contractVersion = $null; status = $null
+            sourceProfile = $null; profilePath = $null; hasRuntimeOutput = $false
+            errors = @($errors)
+        }
+    }
+
+    $owned = $matches[0]
+    $manifest = $owned.data
+    $workspaceId = [string]$manifest.workspaceId
+    $hasRuntimeOutput = $manifest.PSObject.Properties['runtimeOutput'] -and $null -ne $manifest.runtimeOutput
+    $sourceProfile = [string]$manifest.sourceProfile
+    $configuredSource = if ($Config.defaults.PSObject.Properties['testProfileSource']) {
+        [string]$Config.defaults.testProfileSource
+    }
+    else { '' }
+    $profilesRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory)))
+    $expectedProfilePath = Join-Path $profilesRoot $Profile
+    $profilePath = if ($manifest.PSObject.Properties['profileDirectory']) {
+        [string]$manifest.profileDirectory
+    }
+    else { [string]$manifest.profilePath }
+    $sourcePath = if ([string]::IsNullOrWhiteSpace($configuredSource)) { $null } else { Join-Path $profilesRoot $configuredSource }
+    $manifestSourcePath = if ($manifest.PSObject.Properties['sourceProfilePath']) {
+        [string]$manifest.sourceProfilePath
+    }
+    else { '' }
+    $expectedManifestPath = if ($workspaceId -match '^[a-z0-9-]+$') {
+        Join-Path $workspaceRoot ($workspaceId + '.json')
+    }
+    else { $null }
+    $recoverable = (
+        $errors.Count -eq 0 -and
+        -not $hasRuntimeOutput -and
+        -not [string]::IsNullOrWhiteSpace($expectedManifestPath) -and
+        (Test-MO2SamePath ([string]$owned.path) $expectedManifestPath) -and
+        $Profile -ceq ('Codex Task - ' + $workspaceId) -and
+        $sourceProfile -ceq $configuredSource -and
+        (Test-MO2SamePath $profilePath $expectedProfilePath) -and
+        -not [string]::IsNullOrWhiteSpace($sourcePath) -and
+        (Test-MO2SamePath $manifestSourcePath $sourcePath) -and
+        (Test-Path -LiteralPath $expectedProfilePath -PathType Container) -and
+        (Test-Path -LiteralPath $sourcePath -PathType Container)
+    )
+
+    return [pscustomobject][ordered]@{
+        applicable = $true; profile = $Profile; identified = $true
+        legacy = -not $hasRuntimeOutput; recoverable = $recoverable
+        manifestPath = [string]$owned.path; workspaceId = $workspaceId
+        contractVersion = [string]$manifest.contractVersion; status = [string]$manifest.status
+        sourceProfile = $sourceProfile; profilePath = $profilePath
+        hasRuntimeOutput = [bool]$hasRuntimeOutput; errors = @($errors)
+    }
+}
+
+function New-MO2SelectedTaskWorkspaceCheck {
+    param([Parameter(Mandatory)]$SelectedTaskWorkspace)
+
+    if (-not $SelectedTaskWorkspace.applicable) { return $null }
+    if (-not $SelectedTaskWorkspace.identified) {
+        return New-MO2Check -Name 'selected-task-workspace' -Status 'warn' -Message (
+            "MO2 selects task profile '$($SelectedTaskWorkspace.profile)', but its exact workspace ownership could not be identified. Do not launch it."
+        ) -Details $SelectedTaskWorkspace
+    }
+    if ($SelectedTaskWorkspace.legacy) {
+        return New-MO2Check -Name 'selected-task-workspace' -Status 'warn' -Message (
+            "MO2 selects legacy task profile '$($SelectedTaskWorkspace.profile)' without runtime-output isolation. Do not launch it; use workspace recover-legacy-selection after MO2 and Skyrim are closed."
+        ) -Details $SelectedTaskWorkspace
+    }
+    return New-MO2Check -Name 'selected-task-workspace' -Status 'info' -Message (
+        "MO2 selects task profile '$($SelectedTaskWorkspace.profile)' with a declared runtime-output contract; prepare and launch perform the full isolation check."
+    ) -Details $SelectedTaskWorkspace
+}
+
 function ConvertFrom-MO2ByteArrayValue {
     param([AllowNull()][string]$Value)
 
@@ -667,6 +782,7 @@ function Get-MO2InspectionData {
 
     $ini = if (Test-Path -LiteralPath $mo2Ini -PathType Leaf) { Read-MO2IniFile -Path $mo2Ini } else { [ordered]@{} }
     $selectedProfile = if ($ini.Count -gt 0) { ConvertFrom-MO2ByteArrayValue (Find-MO2IniValue -Ini $ini -Key 'selected_profile') } else { $null }
+    $selectedTaskWorkspace = Get-MO2SelectedTaskWorkspace -Config $Config -Profile $selectedProfile
     $profiles = if (Test-Path -LiteralPath $profilesRoot -PathType Container) {
         @(Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction Stop | Sort-Object Name | ForEach-Object Name)
     }
@@ -696,6 +812,7 @@ function Get-MO2InspectionData {
             executable = $executable
         }
         selectedProfile = $selectedProfile
+        selectedTaskWorkspace = $selectedTaskWorkspace
         profiles = @($profiles)
         executables = @($executables)
         processes = [pscustomobject][ordered]@{
@@ -773,6 +890,8 @@ function Invoke-MO2Inspect {
     $checks += New-MO2Check -Name 'mo2-executable' -Status $(if (Test-Path -LiteralPath $data.config.mo2Executable -PathType Leaf) { 'pass' } else { 'fail' }) -Message $(if (Test-Path -LiteralPath $data.config.mo2Executable -PathType Leaf) { 'MO2 executable exists.' } else { "MO2 executable does not exist: $($data.config.mo2Executable)" })
     $checks += New-MO2Check -Name 'mo2-ini' -Status $(if (Test-Path -LiteralPath $data.config.mo2Ini -PathType Leaf) { 'pass' } else { 'fail' }) -Message $(if (Test-Path -LiteralPath $data.config.mo2Ini -PathType Leaf) { 'MO2 INI exists and was read.' } else { "MO2 INI does not exist: $($data.config.mo2Ini)" })
     $checks += New-MO2Check -Name 'process-state' -Status 'info' -Message "MO2=$($data.processes.mo2.Count), game=$($data.processes.game.Count), runtime=$($data.processes.runtime.Count)."
+    $selectedTaskWorkspaceCheck = New-MO2SelectedTaskWorkspaceCheck -SelectedTaskWorkspace $data.selectedTaskWorkspace
+    if ($null -ne $selectedTaskWorkspaceCheck) { $checks += $selectedTaskWorkspaceCheck }
     $overwriteNeedsAttention = (
         $data.overwrite.errors.Count -gt 0 -or
         $data.overwrite.truncated -or
@@ -822,6 +941,9 @@ function Invoke-MO2Validate {
     else {
         $checks += New-MO2Check -Name 'selected-profile' -Status 'pass' -Message "MO2 selected profile matches the request: $($data.requested.profile)"
     }
+
+    $selectedTaskWorkspaceCheck = New-MO2SelectedTaskWorkspaceCheck -SelectedTaskWorkspace $data.selectedTaskWorkspace
+    if ($null -ne $selectedTaskWorkspaceCheck) { $checks += $selectedTaskWorkspaceCheck }
 
     $registered = @($data.executables | Where-Object title -eq $data.requested.executable)
     if ($registered.Count -eq 1) {

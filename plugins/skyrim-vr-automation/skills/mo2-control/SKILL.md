@@ -52,6 +52,10 @@ are:
    An estimated duration is advisory only and never permits lease stealing.
    Before any closed-state mutation, run `validate -AccessId <literal-access-id>
    -RequireClosed` and account for every warning or block.
+   If inspection identifies a selected legacy task workspace without
+   runtime-output isolation, do not launch it. After closed-state proof,
+   preview and use workspace `recover-legacy-selection` with its exact ID; the
+   operation restores the stable profile without deleting legacy output.
 4. Use `-WhatIf` when the command supports it and the requested change has not
    already been proven in an isolated fixture.
 5. For a live run, call `prepare -AccessId` with the owned lease, retain its

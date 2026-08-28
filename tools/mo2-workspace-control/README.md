@@ -13,12 +13,14 @@ commands accept `-Compact` for one-line JSON.
 For elevated use, follow `../mo2-control/APPROVALS.md`. Every result reports a
 literal command-specific `data.approval.reusablePrefix`. `create`,
 `register-mod`, and `ensure-mod-wins` are eligible for narrow reusable approval;
-`refresh-fixture` and `release` remain one-shot because they replace shared
-metadata or recursively remove exact owned paths.
+`refresh-fixture`, `recover-legacy-selection`, and `release` remain one-shot
+because they replace shared metadata, change shared profile selection, or
+recursively remove exact owned paths.
 
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label weather-api -SavePolicy MainMenuOnly -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> register-mod -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -ModName "Codex Weather API Test 20260822" -ModDirectory "<exact-mod-directory>" -WinningPaths "SKSE\Plugins\CommunityShaders.dll" -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> recover-legacy-selection -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> release -AccessId <literal-access-id> -WorkspaceId <literal-workspace-id> -CleanupOwnedMods -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
@@ -83,3 +85,11 @@ transaction. `ensure-mod-wins` can subsequently re-check and reposition only a
 mod already proven task-owned by that workspace. Winner proof intentionally
 covers enabled loose-file providers in the exact profile. Overwrite, unmanaged
 game files, and archives still require separate VFS evidence.
+
+`recover-legacy-selection` is the bounded migration path for a retained task
+profile created before runtime-output isolation. It requires the current
+access lease and closed-state proof, identifies one exact legacy manifest, and
+atomically selects the configured stable source profile. It preserves the
+legacy profile, mods, shader caches, and manifest unchanged while retaining an
+exact MO2 INI backup and receipt. It refuses current isolated workspaces,
+ambiguous ownership, a mismatched workspace ID, or a noncanonical source.
