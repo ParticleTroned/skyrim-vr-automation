@@ -102,10 +102,13 @@ generation/resource ownership, the lane's physical backend, clean mutation
 and lifecycle state, and no terminal failure. Stop the baseline-only stress
 session.
 
-Now arm one fresh measured Simple CSM telemetry set for that lane in a bounded
-fan-out: stress, texture lifetime, load presentation, provider lifecycle,
-resource publication, preparation, CPU, GPU, profiler, fidelity, stereo,
-retry, failure, memory, and queue evidence. Reset and require CPU/GPU capture
+Now arm one fresh measured Simple CSM telemetry set for that lane with
+stateful telemetry actions serialized in its short ownership sequence: stress,
+texture lifetime, load presentation, CPU/GPU reset, and profiler pre-arm.
+Require and retain each receipt before starting the next stateful action;
+provider lifecycle, resource publication, preparation, fidelity, stereo, retry,
+failure, memory, and queue remain status evidence. Only read-only
+discovery/status calls may run in parallel. Reset and require CPU/GPU capture
 to be inactive and pre-arm only the profiler. In the first measured mutation
 scenario, start the profiler immediately before dispatch; dispatch then starts
 CPU/GPU capture on its QPC/frame. Stop only that lane's owned sessions after
@@ -124,6 +127,14 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `stateRevision`, profile-presence flags, complete configured/requested/
    applying/effective/stable/persisted profiles, conditions, operation state,
    and physical dimensions.
+   A 429/502/503/504 from this read-only snapshot is a control-plane
+   interruption, not a profile result. Use only the controller's short bounded
+   retry budget for that exact snapshot. While unavailable, do not launch a
+   scenario, cancel, or apply. If it does not recover, record
+   `pre_snapshot_transport_unavailable`, stop future mutations, clean up only
+   task-owned sessions, and ask the user to repair or restart the control
+   plane. Do not consume the 30-second completion deadline or add another
+   extended wait.
 2. Require complete configured and effective API profiles and no active
    operation. Construct its complete API target from the effective profile's
    `name` fields; mutate only `method`, `qualityMode`, and
@@ -255,9 +266,10 @@ mutation; and no FSR evaluation treated as active presentation. Their
 requested/stable controller state may remain the inactive native None physical
 projection; record it separately and never require it to equal the public
 effective TAA profile. If exact native presentation generation is unavailable,
-retain that tooling gap and classify
-generation proof `INCONCLUSIVE`; retain raw dimensions but do not calculate
-native or `dimensionsMatch` booleans.
+record `generationEvidence: "not_exposed"` and retain raw dimensions but do not
+calculate native or `dimensionsMatch` booleans. Native-generation evidence is
+optional: mark only that evidence facet `INCONCLUSIVE`; do not relabel a core
+`PASS`, make control unsafe, or block the next row solely because it is absent.
 
 None, TAA, and FSR Native AA are distinct contracts: None has neither FSR nor
 TAA, TAA is native non-vendor TAA, and FSR Native AA performs native-resolution

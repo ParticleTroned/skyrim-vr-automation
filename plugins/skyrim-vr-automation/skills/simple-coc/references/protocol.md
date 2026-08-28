@@ -115,9 +115,15 @@ reported stale state or absence. Required capture lanes are:
   admission/early-exit, shader-cache, SSS/SSGI prewarm, DLSS/FSR/FSR4, D3D,
   total, request-to-prepared, and prepared-to-creator timings.
 
-After exact-cell verification, start stress, trace, lifetime, and probe
-captures as one concurrent bounded fan-out immediately before transition 1.
-In that same fan-out, pre-arm the selected profiler lane:
+After exact-cell verification, stateful telemetry actions are serialized in a
+short ownership sequence immediately before transition 1: start stress, then
+each exposed trace, lifetime, and probe capture, reset CPU/GPU telemetry, and
+pre-arm the selected profiler lane. Require and preserve each receipt before
+the next stateful action. Only independent read-only schema or status checks
+may run concurrently; never fan out `start`, `reset`, or `set_enabled` calls.
+Do not retry an action that already returned an ownership receipt.
+
+Pre-arm the selected profiler lane after its preceding stateful receipts:
 
 - For `communityshaders.profiler_api`, call `set_enabled` with
   `contractMajor: 1`, `enabled: true`, unique client/command identity, and the

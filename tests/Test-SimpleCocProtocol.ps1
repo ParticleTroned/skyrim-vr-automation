@@ -64,7 +64,8 @@ foreach ($required in @(
     'reset each supported lane',
     'Do not poll',
     'start stress, trace, lifetime, and probe',
-    'one concurrent bounded fan-out',
+    'short ownership sequence',
+    'never fan out `start`, `reset`, or `set_enabled` calls',
     'run another discovery or reset cycle',
     'capture.requiresEnabled: true',
     '`contractMajor: 1`',
@@ -96,6 +97,10 @@ foreach ($required in @(
         throw "Simple COC protocol is missing: $required"
     }
 }
+if ($protocol.Contains('one concurrent bounded fan-out', [StringComparison]::Ordinal)) {
+    throw 'Simple COC still permits concurrent stateful telemetry arming.'
+}
+
 
 $forensics = Get-Content -LiteralPath $sourceForensics -Raw
 foreach ($required in @(

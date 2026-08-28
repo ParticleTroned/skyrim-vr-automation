@@ -117,6 +117,10 @@ foreach ($variant in $variants) {
         'vendor_native', 'requested/stable render-scale projections may be `none`',
         '`none` is a failure',
         'Scenario steps cannot interpolate earlier',
+        'short ownership sequence',
+        'short bounded retry budget', 'pre_snapshot_transport_unavailable',
+        'Native-generation evidence is optional',
+        'do not relabel a core `PASS`',
         'using its exact returned', 'ownership guard',
         'physicalMutationStarted', 'not merely engine-target creator entry',
         'ordinary world frame', 'mixed eye, mixed generation',
@@ -135,6 +139,7 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('SteamVR frame-timing', [StringComparison]::OrdinalIgnoreCase)) "$($variant.Name) retained an external timing comparison."
     Assert-True (-not $protocol.Contains('wait up to 30,000 ms for the public operation', [StringComparison]::Ordinal)) "$($variant.Name) can spend two serial 30-second windows."
     Assert-True (-not $protocol.Contains('Require a complete stable active profile.', [StringComparison]::Ordinal)) "$($variant.Name) still derives public targets from the physical controller projection."
+    Assert-True (-not $protocol.Contains('bounded fan-out', [StringComparison]::Ordinal)) "$($variant.Name) still permits concurrent stateful telemetry arming."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
@@ -208,9 +213,13 @@ foreach ($token in @(
 # Simple CSM's canonical 25-step contract.
 $simpleCsmSkill = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\SKILL.md') -Raw
 $simpleCsmProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\references\protocol.md') -Raw
+$simpleCsmPluginProtocolPath = Join-Path $repositoryRoot 'plugins\skyrim-vr-automation\skills\simple-csm\references\protocol.md'
 Assert-Contains $simpleCsmSkill 'name: simple-csm' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'exactly 25 Community Shaders menu applies' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'tools/render-scale-qualification/protocol.v1.json' 'Simple CSM regression guard'
+Assert-Contains $simpleCsmProtocol 'short ownership sequence' 'Simple CSM regression guard'
+Assert-True (-not $simpleCsmProtocol.Contains('one concurrent bounded fan-out', [StringComparison]::Ordinal)) 'Simple CSM permits concurrent stateful telemetry arming.'
+Assert-True ((Get-FileHash -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\references\protocol.md') -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $simpleCsmPluginProtocolPath -Algorithm SHA256).Hash) 'Simple CSM source/package parity failed for telemetry arming.'
 Assert-True (-not $simpleCsmProtocol.Contains('renderscale-tuning-nvidia', [StringComparison]::Ordinal)) 'Simple CSM references NVIDIA tuning.'
 Assert-True (-not $simpleCsmProtocol.Contains('renderscale-tuning-amd', [StringComparison]::Ordinal)) 'Simple CSM references AMD tuning.'
 

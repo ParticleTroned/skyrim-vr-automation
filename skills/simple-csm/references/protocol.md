@@ -62,12 +62,13 @@ transitions.
 
 ## 3. Arm the Simple COC telemetry lanes
 
-Apply Simple COC section 3 after exact-cell verification. Start the single
-fresh stress session plus texture-lifetime, load-presentation, and every other
-supported session capture as one concurrent bounded fan-out; pre-arm but do
-not start the profiler capture. Do not start CPU or GPU counters in that
-fan-out; transition 1's dispatch remains their sole timing origin. Preserve
-the profiler initial state and pre-arm it exactly as Simple COC requires.
+Apply Simple COC section 3 after exact-cell verification. Stateful telemetry
+actions are serialized in its short ownership sequence: start the single fresh
+stress session, then texture-lifetime, load-presentation, and each other
+supported capture; reset CPU/GPU telemetry; then pre-arm but do not start the
+profiler capture. Do not start CPU or GPU counters in that sequence; transition
+1's dispatch remains their sole timing origin. Preserve the profiler initial
+state and pre-arm it exactly as Simple COC requires.
 
 Replace only the base protocol's session-wide DLSS trace ownership:
 
