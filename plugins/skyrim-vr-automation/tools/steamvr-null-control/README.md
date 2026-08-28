@@ -23,7 +23,7 @@ Valve's null display driver does not provide the controlled standing pose this
 automation requires. The separately installed `codex_head_pose` server driver
 supplies one HMD pose and is mapped to `/user/head` with SteamVR
 `TrackingOverrides`. Its default eye height is 1.68 metres; the controller can
-update the pose through `Local\CSXVRHeadPose-v1`. The returned `inputContract`
+update the pose through `Local\CSXVRHeadPose-v2`. The returned `inputContract`
 marks the HMD pose provider ready only after both driver acknowledgement and an
 application-observed OpenVR qualification. Controller input remains
 unavailable, replay readiness remains false, and the broader measurement policy
