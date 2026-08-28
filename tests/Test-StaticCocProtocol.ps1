@@ -44,6 +44,8 @@ foreach ($required in @(
     '`binaryListReady: true`',
     '`list_binaries` MCP call',
     'Do not require PyGhidra or `eval_python` activation',
+    'explicit DevBench runtime metadata',
+    'reimports the supplied candidate',
     '2 + (20 x 5) = 102 steps',
     'qualification_status',
     'qualification_dispatch',

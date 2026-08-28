@@ -27,7 +27,8 @@ command without a new explicit user command.
 When Skyrim reaches its main menu/load window, and before loading into the test
 world, establish the analysis environment. In parallel, use Community Shaders'
 `tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server
-against the exact intended CSX DLL path and SHA-256, and run
+against the candidate DLL path and SHA-256 from the explicit DevBench runtime
+metadata, and run
 `coc-evidence-control inspect` plus `arm` against the exact Skyrim PID.
 Require CDB/WinDbg, ProcDump, dump storage, and an owned crash collector. It is
 exception-triggered; use `capture-hang` only after a visually confirmed freeze
@@ -39,7 +40,9 @@ call through each. Require the native-headless Ghidra receipt and live
 `list_binaries` MCP call to prove `binaryListReady: true`,
 `programMatchesExpectation: true`, and the exact active executable path. The
 controller records the imported artifact SHA-256; a listening server or project
-name alone is not proof. Do not require PyGhidra or `eval_python` activation. If
+name alone is not proof. The controller reimports a stale managed program when
+the supplied candidate path or SHA-256 differs; do not select a snapshot or
+reuse a prior candidate. Do not require PyGhidra or `eval_python` activation. If
 either tool family is absent, leave Skyrim at the main menu, preserve the receipts, and ask
 the user to restart Codex. After the user returns and explicitly repeats
 `start COC protocol`, repeat only the tool-call checks. Retain the Ghidra and

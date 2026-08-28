@@ -51,7 +51,12 @@ after both MCP tool calls pass. Never treat that first command as the second
 Complete this phase when Skyrim reaches its main menu/load window and before a
 save or test world is loaded. Do not defer it into the in-game start window.
 
-1. Resolve the one live `SkyrimVR.exe` PID. Require the trusted workspace's
+1. Resolve the one live `SkyrimVR.exe` PID and the candidate artifact from the
+   explicit DevBench runtime metadata used for this run. Require
+   `artifactPath` or `dllPath` plus `artifactSha256`; hash that exact local DLL
+   and require the values to agree. This binds analysis to the deployed build,
+   not an upscaling policy. Never search MO2, select an AIO by name, scan for a
+   plausible DLL, or reuse a prior Ghidra candidate. Require the trusted workspace's
    project-scoped `.codex/config.toml` to declare `devbench_vr` at
    `http://127.0.0.1:8921/mcp` and `ghidra` at
    `http://127.0.0.1:8080/mcp`. Do not treat a volatile global `codex mcp add`
@@ -60,9 +65,12 @@ save or test world is loaded. Do not defer it into the in-game start window.
    Codex and repeat `start COC protocol`; then verify both exact live
    identities. Require the installed `devbench-control` entrypoint.
 2. In one parallel local setup group:
-   - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 status
-     -ProgramPath <exact intended CSX DLL>`; if stopped or mismatched, stop only
-     its managed session and call `start -ProgramPath <exact intended CSX DLL>`;
+   - call Community Shaders' canonical `tools/ghidra-mcp-control.ps1 start
+     -ProgramPath <runtime-metadata candidate DLL>` once. It reuses an owned
+     session only when its recorded path and SHA-256 match. Otherwise it
+     gracefully stops only that managed session, waits for its listener to
+     vacate, and reimports the supplied candidate. Do not manually choose,
+     stop, or retarget a Ghidra snapshot;
    - run `coc-evidence-control inspect` and require CDB/WinDbg, ProcDump, and
      free-space readiness;
    - arm ProcDump with `-TargetPid <exact Skyrim PID>`, unless an existing owned

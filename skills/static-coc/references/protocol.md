@@ -13,8 +13,12 @@ change runtime code, profile selection, or pinned reference rows.
   10,000 ms server wait.
 - VR FPS Stabilizer owns profile selection; omit `target` from every waiter.
 
-Before arming, verify the exact running DevBench-enabled candidate DLL and its
-64-character producer Build ID. Call the registered top-level
+Before arming, resolve the candidate DLL from the explicit DevBench runtime
+metadata for this run (`artifactPath` or `dllPath` and `artifactSha256`), hash
+that exact local file, and require the values to agree. Never select an AIO by
+name, search MO2, scan for a plausible DLL, or reuse a prior Ghidra candidate.
+Verify the exact running DevBench-enabled candidate DLL and its 64-character
+producer Build ID. Call the registered top-level
 `communityshaders.renderscale` tool and require its typed schema or descriptor
 to accept the `strict`, `presentation`, and `cleanup` milestones. If the tool
 is not typed, use the DevBench-control route to invoke that same registered
@@ -22,8 +26,11 @@ tool. Do not substitute client timing, an old waiter, or a second console COC.
 
 ## Arm phase
 
-At the main loading window, bind the exact Skyrim PID and Build ID to the
-DevBench and managed native-headless Ghidra MCP receipts. Require the
+At the main loading window, call the managed native-headless Ghidra controller
+once with `start -ProgramPath <runtime-metadata candidate DLL>`. It reuses its
+owned session only for the same path and SHA-256; otherwise it gracefully stops
+that owned session and reimports the supplied candidate. Bind the exact Skyrim
+PID and Build ID to the DevBench and resulting Ghidra MCP receipts. Require the
 controller's `binaryListReady: true` and `programMatchesExpectation: true`
 receipt: it records the imported artifact SHA-256 and confirms the active
 executable path through the read-only `list_binaries` MCP call. Do not require
