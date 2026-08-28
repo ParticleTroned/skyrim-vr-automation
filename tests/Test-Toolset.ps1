@@ -34,6 +34,7 @@ $tests = @(
     @{ Name = 'simple-coc-ghidra'; Path = 'tests\Test-SimpleCocGhidra.ps1'; Arguments = @() },
     @{ Name = 'simple-coc-5-protocol'; Path = 'tests\Test-SimpleCoc5Protocol.ps1'; Arguments = @() },
     @{ Name = 'simple-csm-protocol'; Path = 'tests\Test-SimpleCSMProtocol.ps1'; Arguments = @() },
+    @{ Name = 'renderscale-tuning-protocol'; Path = 'tests\Test-RenderScaleTuningProtocol.ps1'; Arguments = @() },
     @{ Name = 'static-coc-protocol'; Path = 'tests\Test-StaticCocProtocol.ps1'; Arguments = @() },
     @{ Name = 'codex-plugin-registration'; Path = 'tests\Test-CodexPluginRegistration.ps1'; Arguments = @() },
     @{ Name = 'codex-distribution'; Path = 'tests\Test-CodexDistribution.ps1'; Arguments = @() },

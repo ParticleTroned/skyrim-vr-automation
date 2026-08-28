@@ -48,7 +48,7 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its thirteen skills
+The repository publishes a Codex marketplace plugin. Its fourteen skills
 connect a new task to the bundled implementations and their operational
 contracts:
 
@@ -69,6 +69,9 @@ contracts:
 - `$simple-csm` positions once at Dragonsreach and applies the canonical
   hardware-specific 25-step CS menu matrix with five-second pacing and the
   same telemetry and evidence extraction.
+- `$renderscale-tuning` proves replacement admission against the last proven
+  stereo presentation using CS-menu-close release and direct generation,
+  ownership, mutation, publication, preparation, and per-eye telemetry.
 - `$static-coc` runs the preserved 20-transition COC assay with one strict,
   30-second milestone wait per transition and reports presentation and cleanup
   timing without weakening the canonical strict gate.

@@ -4,6 +4,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add the separate `$renderscale-tuning` correctness protocol: release queued
+  settings on CS menu close, retain the last proven stereo generation until
+  destructive mutation, reject stale use afterward, and capture the complete
+  admission, ownership, publication, preparation, and per-eye evidence set
+  with performance profiling disabled.
 - Add the `$simple-csm` protocol: reuse Simple COC 5 binding, runtime fixture,
   telemetry, failure handling, and evidence extraction; position once at
   Dragonsreach; then measure the canonical hardware-specific 25-step CS menu
