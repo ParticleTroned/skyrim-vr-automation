@@ -69,9 +69,10 @@ contracts:
 - `$simple-csm` positions once at Dragonsreach and applies the canonical
   hardware-specific 25-step CS menu matrix with five-second pacing and the
   same telemetry and evidence extraction.
-- `$renderscale-tuning` proves replacement admission against the last proven
-  stereo presentation using CS-menu-close release and direct generation,
-  ownership, mutation, publication, preparation, and per-eye telemetry.
+- `$renderscale-tuning-nvidia` runs the exact 33-transition NVIDIA public-API
+  matrix across None, TAA, DLAA, DLSS, and explicit FSR3.
+- `$renderscale-tuning-amd` runs separate 31-transition public-API lanes for
+  explicit FSR4, explicit FSR3, and documented FSR4-to-FSR3 fallback.
 - `$static-coc` runs the preserved 20-transition COC assay with one strict,
   30-second milestone wait per transition and reports presentation and cleanup
   timing without weakening the canonical strict gate.

@@ -4,17 +4,19 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Split render-scale tuning into explicit NVIDIA and AMD protocols. The
+  NVIDIA lane runs the exact 33-transition None/TAA/DLAA/DLSS/FSR3 matrix;
+  the AMD lane runs separate 31-transition explicit-FSR4, explicit-FSR3, and
+  documented-fallback matrices. Both use only the public upscaling API,
+  preserve dormant profile fields, bind each apply to the immediately prior
+  state revision, and retain the full Simple CSM telemetry contract.
 - Keep configured FSR4 preference separate from physical backend identity in
   Simple CSM and render-scale tuning: omit the runtime preference from strict
   FSR waiter targets and require coherent desired, authoritative, resource,
   lifecycle, and both-eye dispatch backends so NVIDIA and unsupported AMD
   capability fallback to FSR3/host is not misclassified as a latch failure.
-- Add the separate `$renderscale-tuning` correctness protocol: release queued
-  settings on CS menu close, retain the last proven stereo generation until
-  destructive mutation, reject stale use afterward, and capture the complete
-  admission, ownership, publication, preparation, and per-eye evidence set
-  with performance profiling disabled. Its explicit acceptance extension
-  reuses only the existing 20-transition qualification.
+- Add the original render-scale tuning correctness protocol and its complete
+  admission, ownership, publication, preparation, and per-eye evidence set.
 - Add the `$simple-csm` protocol: reuse Simple COC 5 binding, runtime fixture,
   telemetry, failure handling, and evidence extraction; position once at
   Dragonsreach; then measure the canonical hardware-specific 25-step CS menu

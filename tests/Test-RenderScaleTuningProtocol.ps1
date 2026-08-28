@@ -6,127 +6,167 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
-$sourceRoot = Join-Path $repositoryRoot 'skills\renderscale-tuning'
-$pluginRoot = Join-Path $repositoryRoot 'plugins\skyrim-vr-automation\skills\renderscale-tuning'
-$sourceSkill = Join-Path $sourceRoot 'SKILL.md'
-$sourceProtocol = Join-Path $sourceRoot 'references\protocol.md'
-$pluginSkill = Join-Path $pluginRoot 'SKILL.md'
-$pluginProtocol = Join-Path $pluginRoot 'references\protocol.md'
+function Assert-True([bool]$Condition, [string]$Message) {
+    if (-not $Condition) { throw $Message }
+}
 
-foreach ($pair in @(
-    @($sourceSkill, $pluginSkill),
-    @($sourceProtocol, $pluginProtocol)
-)) {
-    foreach ($path in $pair) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Render-scale tuning protocol file is missing: $path"
+function Assert-Contains([string]$Content, [string]$Token, [string]$Context) {
+    Assert-True $Content.Contains($Token, [StringComparison]::Ordinal) "$Context is missing: $Token"
+}
+
+function Assert-Profile(
+    [object]$Destination,
+    [string]$Method,
+    [string]$Quality,
+    [bool]$RenderScale,
+    [string]$Context
+) {
+    Assert-True ($Destination.method -eq $Method) "$Context method is wrong."
+    Assert-True ($Destination.qualityMode -eq $Quality) "$Context quality is wrong."
+    Assert-True ([bool]$Destination.renderScaleMode -eq $RenderScale) "$Context render-scale flag is wrong."
+}
+
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$variants = @(
+    [pscustomobject]@{
+        Name = 'renderscale-tuning-nvidia'
+        Trigger = '`renderscale-tuning nvidia`'
+        Count = 33
+        Sequence = @(
+            'none', 'taa', 'dlaa', 'dlss_hoshipa', 'dlss_ultra_quality',
+            'dlss_quality', 'dlss_balanced', 'dlss_performance',
+            'dlss_ultra_performance', 'dlaa', 'taa', 'none',
+            'fsr_native_aa', 'fsr_hoshipa', 'fsr_ultra_quality', 'fsr_quality',
+            'fsr_balanced', 'fsr_performance', 'fsr_ultra_performance',
+            'fsr_native_aa', 'taa', 'none', 'dlaa', 'fsr_native_aa',
+            'dlss_hoshipa', 'fsr_hoshipa', 'none', 'fsr_ultra_performance',
+            'dlss_ultra_performance', 'taa', 'fsr_native_aa', 'none', 'dlaa'
+        )
+    },
+    [pscustomobject]@{
+        Name = 'renderscale-tuning-amd'
+        Trigger = '`renderscale-tuning amd`'
+        Count = 31
+        Sequence = @(
+            'none', 'taa', 'fsr_native_aa', 'fsr_hoshipa',
+            'fsr_ultra_quality', 'fsr_quality', 'fsr_balanced',
+            'fsr_performance', 'fsr_ultra_performance', 'fsr_native_aa',
+            'taa', 'none', 'fsr_hoshipa', 'fsr_native_aa', 'none',
+            'fsr_quality', 'taa', 'fsr_balanced', 'none', 'fsr_performance',
+            'fsr_native_aa', 'taa', 'fsr_ultra_performance', 'none',
+            'fsr_native_aa', 'fsr_hoshipa', 'taa', 'none', 'fsr_native_aa',
+            'fsr_ultra_performance', 'fsr_hoshipa'
+        )
+    }
+)
+
+foreach ($variant in $variants) {
+    $sourceRoot = Join-Path $repositoryRoot "skills\$($variant.Name)"
+    $pluginRoot = Join-Path $repositoryRoot "plugins\skyrim-vr-automation\skills\$($variant.Name)"
+    foreach ($relative in @('SKILL.md', 'references\protocol.md', 'references\matrix.v1.json')) {
+        $source = Join-Path $sourceRoot $relative
+        $plugin = Join-Path $pluginRoot $relative
+        Assert-True (Test-Path -LiteralPath $source -PathType Leaf) "Missing source file: $source"
+        Assert-True (Test-Path -LiteralPath $plugin -PathType Leaf) "Missing package file: $plugin"
+        $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+        $pluginHash = (Get-FileHash -LiteralPath $plugin -Algorithm SHA256).Hash
+        Assert-True ($sourceHash -eq $pluginHash) "$($variant.Name) source/package parity failed for $relative"
+    }
+
+    $skill = Get-Content -LiteralPath (Join-Path $sourceRoot 'SKILL.md') -Raw
+    $protocol = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\protocol.md') -Raw
+    $matrix = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
+
+    Assert-Contains $skill "name: $($variant.Name)" $variant.Name
+    Assert-Contains $skill $variant.Trigger $variant.Name
+    Assert-Contains $skill 'Do not execute or alter its 25-step matrix.' $variant.Name
+    Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
+    Assert-Contains $skill 'does not authorize' $variant.Name
+    Assert-Contains $skill 'VR FPS Stabilizer settings remain' $variant.Name
+
+    foreach ($token in @(
+        '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
+        '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
+        '`expectedStateRevision`', '`clientId`', '`commandId`',
+        '`persistence: runtime_only`', 'Wait exactly 5,000 ms server-side.',
+        '`timeoutMs: 30000`', 'return as soon as satisfied',
+        '`qualification_begin`', '`qualification_dispatch`',
+        '`startPerformanceTelemetry: true`', '`qualification_cancel`',
+        'Do not call a vendor', 'upscalingStable',
+        'CPU', 'GPU', 'profiler', 'current/completed/published publication generations',
+        'deferred-setup acknowledgement', 'D3D device/context',
+        'without protocol-side arithmetic', 'shader-cache waits', 'SSS/SSGI prewarm',
+        'DLSS, FSR,', 'request-to-prepared', 'prepared-to-creator',
+        'replacement admission state and all reasons', 'consecutive stretch frames',
+        'No external', 'Never average'
+    )) {
+        Assert-Contains $protocol $token $variant.Name
+    }
+    Assert-True (-not $protocol.Contains('communityshaders.menu open', [StringComparison]::Ordinal)) "$($variant.Name) retained menu mutation."
+    Assert-True (-not $protocol.Contains('CS-menu-origin render-scale', [StringComparison]::Ordinal)) "$($variant.Name) retained the old render-scale mutation primitive."
+    Assert-True (-not $protocol.Contains('SteamVR frame-timing', [StringComparison]::OrdinalIgnoreCase)) "$($variant.Name) retained an external timing comparison."
+
+    Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
+    Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
+    Assert-True ($matrix.pacingMilliseconds -eq 5000) "$($variant.Name) pacing is wrong."
+    Assert-True ($matrix.completionTimeoutMilliseconds -eq 30000) "$($variant.Name) timeout is wrong."
+    Assert-True (@($matrix.transitions).Count -eq $variant.Count) "$($variant.Name) transition count is wrong."
+    $ordinals = @($matrix.transitions | ForEach-Object ordinal)
+    Assert-True (($ordinals -join ',') -eq ((1..$variant.Count) -join ',')) "$($variant.Name) ordinals are not contiguous."
+    $actualSequence = @($matrix.transitions | ForEach-Object destination)
+    Assert-True (($actualSequence -join ',') -eq ($variant.Sequence -join ',')) "$($variant.Name) sequence differs from the canonical matrix."
+    foreach ($destination in $actualSequence) {
+        Assert-True ($null -ne $matrix.destinations.$destination) "$($variant.Name) references unknown destination $destination."
+    }
+
+    Assert-Profile $matrix.destinations.none 'none' 'native_aa' $false "$($variant.Name) None"
+    Assert-Profile $matrix.destinations.taa 'taa' 'native_aa' $false "$($variant.Name) TAA"
+    foreach ($property in $matrix.destinations.PSObject.Properties) {
+        $destination = $property.Value
+        if ($destination.completionClass -eq 'vendor_scaled') {
+            Assert-True ($destination.renderScaleMode -eq $true) "$($variant.Name) scaled destination is not enabled: $($property.Name)"
+            Assert-True ($destination.qualityMode -ne 'native_aa') "$($variant.Name) scaled destination uses native AA: $($property.Name)"
         }
     }
-    if ((Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash -ne
-        (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash) {
-        throw 'Render-scale tuning source/package parity failed.'
-    }
 }
 
-$skill = Get-Content -LiteralPath $sourceSkill -Raw
-$protocol = Get-Content -LiteralPath $sourceProtocol -Raw
-
-foreach ($required in @(
-    'name: renderscale-tuning',
-    'exact user command',
-    '`renderscale-tuning acceptance`',
-    '25-step matrix as part of this skill',
-    'one positioning COC to `WhiterunDragonsreach`',
-    'does not authorize a build',
-    'VR FPS Stabilizer remains the sole owner',
-    'Do not calculate, infer, rename, or substitute'
-)) {
-    if (-not $skill.Contains($required, [StringComparison]::Ordinal)) {
-        throw "Render-scale tuning skill is missing: $required"
-    }
+$nvidia = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-nvidia\references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
+Assert-True ($nvidia.adapterVendor -eq 'nvidia') 'NVIDIA matrix vendor is wrong.'
+Assert-True ($nvidia.initialDestination -eq 'dlss_hoshipa') 'NVIDIA baseline is wrong.'
+Assert-True ($nvidia.initialDormantFsrRuntime -eq 'fsr3') 'NVIDIA dormant FSR runtime is wrong.'
+Assert-Profile $nvidia.destinations.dlaa 'dlss' 'native_aa' $false 'NVIDIA DLAA'
+Assert-Profile $nvidia.destinations.fsr_native_aa 'fsr' 'native_aa' $false 'NVIDIA FSR Native AA'
+foreach ($property in $nvidia.destinations.PSObject.Properties | Where-Object { $_.Name -like 'fsr_*' }) {
+    Assert-True ($property.Value.fsrRuntime -eq 'fsr3') "NVIDIA FSR destination does not explicitly request FSR3: $($property.Name)"
+    Assert-True ((@($property.Value.expectedBackends) -join ',') -eq 'fsr_host,fsr_runtime') "NVIDIA FSR backend contract is wrong: $($property.Name)"
 }
 
-foreach ($required in @(
-    '`prepare_coc`',
-    'FOV/TAA `0.3/0.3/0.7` fixture',
-    '`coc WhiterunDragonsreach`',
-    'Keep Tracy,',
-    'DevBench CPU telemetry',
-    'DevBench GPU telemetry',
-    '`startPerformanceTelemetry: false`',
-    '`timeoutMs: 30000`',
-    '30 seconds is only its upper bound',
-    'exactly three complete DLSS pairs',
-    'currentPresentationProven',
-    'currentPresentationGeneration',
-    'replacementAdmissionBlocked',
-    '`replacementAdmissionBlockReasons`',
-    '`physicalMutationStarted` frame and QPC',
-    'actual left-eye path and generation',
-    'actual right-eye path and generation',
-    'current, completed, and published publication generation',
-    'published width and height versus expected width and height',
-    'D3D device match and D3D context match',
-    'shader-cache wait time and cache outcome',
-    'SSS and SSGI prewarming time and outcome',
-    'DLSS, FSR, and FSR4 preparation time and outcome',
-    'request-to-prepared latency',
-    'prepared-to-creator latency',
-    'Never recreate `dimensionsMatch` with protocol-side math',
-    'For every FSR waiter, omit',
-    '`fsrRuntime` from `target`',
-    'configured FSR runtime preference separately from',
-    '`desiredBackend`',
-    '`authoritativeBackend`',
-    '`actualDispatchBackend`',
-    '`fsr_host` or `fsr_runtime` capability fallback',
-    'AMD hardware without supported FSR4 execution',
-    'Classify each transition and every matrix row',
-    'Run this section only for `renderscale-tuning acceptance`'
-)) {
-    if (-not $protocol.Contains($required, [StringComparison]::Ordinal)) {
-        throw "Render-scale tuning protocol is missing: $required"
-    }
-}
+$amd = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-amd\references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
+Assert-True ($amd.adapterVendor -eq 'amd') 'AMD matrix vendor is wrong.'
+Assert-True ($amd.initialDestination -eq 'fsr_hoshipa') 'AMD baseline is wrong.'
+Assert-Profile $amd.destinations.fsr_native_aa 'fsr' 'native_aa' $false 'AMD FSR Native AA'
+$lanes = @($amd.lanes)
+Assert-True (($lanes.id -join ',') -eq 'explicit_fsr4,explicit_fsr3,fsr4_to_fsr3_fallback') 'AMD lanes are wrong.'
+Assert-True ($lanes[0].configuredFsrRuntime -eq 'fsr4' -and (@($lanes[0].expectedBackends) -join ',') -eq 'fsr4_runtime') 'Explicit FSR4 lane is wrong.'
+Assert-True ($lanes[1].configuredFsrRuntime -eq 'fsr3' -and (@($lanes[1].expectedBackends) -join ',') -eq 'fsr_host,fsr_runtime') 'Explicit FSR3 lane is wrong.'
+Assert-True ($lanes[2].configuredFsrRuntime -eq 'fsr4' -and $lanes[2].requiresDocumentedFsr4UnavailableCondition -and (@($lanes[2].expectedBackends) -join ',') -eq 'fsr_host,fsr_runtime') 'FSR4 fallback lane is wrong.'
 
-$ordered = @(
-    'communityshaders.menu open',
-    'CS-menu-origin render-scale `apply`',
-    'Read one bounded pre-close status/event checkpoint',
-    '`qualification_dispatch`',
-    '`communityshaders.menu close`',
-    '`qualification_wait`'
-)
-$prior = -1
-foreach ($token in $ordered) {
-    $index = $protocol.IndexOf($token, [StringComparison]::Ordinal)
-    if ($index -le $prior) {
-        throw "Menu-close transition ordering is missing or invalid at: $token"
-    }
-    $prior = $index
-}
-
-$matrixRows = @([regex]::Matches($protocol, '(?m)^\| (?:[1-9]|1[0-5]) \|'))
-if ($matrixRows.Count -ne 15) {
-    throw "Expected exactly 15 matrix rows, found $($matrixRows.Count)."
-}
-if ($protocol -match 'startPerformanceTelemetry:\s*true') {
-    throw 'Correctness protocol must never start performance telemetry.'
-}
-foreach ($unsupported in @('external SteamVR', 'SteamVR frame-timing')) {
-    if ($skill.Contains($unsupported, [StringComparison]::OrdinalIgnoreCase) -or
-        $protocol.Contains($unsupported, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Protocol retains unsupported acceptance step: $unsupported"
-    }
-}
+# Guard the separate protocol explicitly: this change must not absorb or alter
+# Simple CSM's canonical 25-step contract.
+$simpleCsmSkill = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\SKILL.md') -Raw
+$simpleCsmProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\references\protocol.md') -Raw
+Assert-Contains $simpleCsmSkill 'name: simple-csm' 'Simple CSM regression guard'
+Assert-Contains $simpleCsmProtocol 'exactly 25 Community Shaders menu applies' 'Simple CSM regression guard'
+Assert-Contains $simpleCsmProtocol 'tools/render-scale-qualification/protocol.v1.json' 'Simple CSM regression guard'
+Assert-True (-not $simpleCsmProtocol.Contains('renderscale-tuning-nvidia', [StringComparison]::Ordinal)) 'Simple CSM references NVIDIA tuning.'
+Assert-True (-not $simpleCsmProtocol.Contains('renderscale-tuning-amd', [StringComparison]::Ordinal)) 'Simple CSM references AMD tuning.'
 
 [pscustomobject][ordered]@{
     ok = $true
-    trigger = 'renderscale-tuning'
-    initialCell = 'WhiterunDragonsreach'
-    primaryTransitions = 6
-    matrixRows = 15
-    performanceTelemetry = $false
+    protocols = @('renderscale-tuning-nvidia', 'renderscale-tuning-amd')
+    nvidiaTransitions = 33
+    amdTransitionsPerLane = 31
+    amdLanes = 3
+    simpleCsmTransitions = 25
     sourceAndPluginMatch = $true
-} | ConvertTo-Json
+} | ConvertTo-Json -Depth 5
