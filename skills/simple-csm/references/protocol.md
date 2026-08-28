@@ -37,6 +37,13 @@ inventory, MO2 files, INI precedence, or VR FPS Stabilizer state to choose it.
 Stop before mutation when the live adapter is missing, ambiguous, unsupported,
 or disagrees with the producer.
 
+Treat configured FSR runtime preference and physical backend identity as
+separate facts. `fsrRuntime: "fsr4"` records the configured preference; it
+does not prove that the active backend is `fsr4_runtime`. Capability fallback
+may truthfully select `fsr_host` or `fsr_runtime` on NVIDIA and on AMD hardware
+without supported FSR4 execution. Never predict the backend from adapter
+vendor or model.
+
 Load the canonical JSON relative to the installed plugin; do not copy,
 reorder, deduplicate, substitute, or infer its entries. Require exactly 25
 entries with ordinals 1 through 25. The NVIDIA matrix may contain DLSS and FSR;
@@ -97,11 +104,16 @@ For each canonical matrix entry in ordinal order, append this block:
    `expectedCellEditorId: "WhiterunDragonsreach"`, the fixed foveation fixture,
    `milestone: "strict"`, and `timeoutMs: 30000`. Its `target` is the exact
    matrix profile: numeric quality mode and render-scale state, plus
-   `dlssProfile: "K"` for DLSS or the producer-reported exact `fsrRuntime` for
-   FSR.
+   `dlssProfile: "K"` for DLSS. Omit `fsrRuntime` from every FSR waiter target;
+   validate its configured value separately from physical backend evidence.
 8. Render-scale `status` with the exact Build ID. Retain the transition-filtered
    preparation trace and full resource-publication telemetry exactly as Simple
-   COC requires.
+   COC requires. For FSR, require `desiredBackend`, `authoritativeBackend`,
+   `actualDispatchBackend`, lifecycle backend, stable resource keys, and both
+   eye dispatches to converge on one of `fsr_host`, `fsr_runtime`, or
+   `fsr4_runtime`. When configured FSR4 falls back, preserve the truthful
+   fallback flag and do not classify the coherent FSR3/host backend as a latch
+   failure.
 9. For a DLSS entry, stop and read its owned bounded trace.
 
 The dispatch receipt is the timing origin immediately preceding the apply.

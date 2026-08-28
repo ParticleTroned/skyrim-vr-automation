@@ -40,6 +40,15 @@ retain the schema/tool-description receipt and an exact raw JSON field-path
 map for that Build ID. Do not derive a missing value from counters or related
 fields. Stop before mutation when a core field is absent.
 
+Keep configured FSR runtime preference separate from physical backend
+identity. A configured `fsrRuntime: "fsr4"` is not evidence that execution
+uses `fsr4_runtime`; capability fallback may select `fsr_host` or
+`fsr_runtime` on NVIDIA or on AMD hardware without supported FSR4 execution.
+Never infer the backend from GPU vendor or model. For every FSR waiter, omit
+`fsrRuntime` from `target`, verify the configured preference independently,
+and bind physical proof to the desired, authoritative, stable-resource,
+lifecycle, and actual both-eye dispatch backend fields.
+
 Position once with `coc WhiterunDragonsreach`, wait 10,000 ms server-side, and
 require an advancing in-world frame in the exact cell with no blocking menu.
 The positioning COC is not a measured transition. Establish DLSS enabled,
@@ -75,7 +84,9 @@ with `continueOnError: false` in this exact order:
 8. `qualification_wait` for the exact cell, exact target profile, fixed
    foveation fixture, and `milestone: "strict"`, with `timeoutMs: 30000`.
    The event-driven waiter must return as soon as strict completion occurs;
-   30 seconds is only its upper bound.
+   30 seconds is only its upper bound. An FSR target contains method, quality,
+   and render-scale state but omits `fsrRuntime`; the configured preference is
+   checked independently from backend execution.
 9. Read one final render-scale status plus transition-filtered bounded events.
 10. Close the per-transition DLSS trace when the selected provider is DLSS.
 
@@ -100,6 +111,10 @@ the following values directly and retain their raw response paths:
   `replacementAdmissionBlockReasons` value;
 - preparation state and outcome, including admission and every early-exit
   reason;
+- configured FSR runtime preference separately from `desiredBackend`,
+  `authoritativeBackend`, stable resource backend, lifecycle backend,
+  `actualDispatchBackend`, both-eye dispatch backends, convergence, and the
+  runtime-fallback flag;
 - provider lifecycle state;
 - earliest destructive provider invalidation, dirtying, teardown, or resource
   destruction, including `physicalMutationStarted` frame and QPC;
@@ -219,7 +234,8 @@ Classify each transition and every matrix row as `PASS`, `FAIL`, `BLOCKED`, or
   mutation/device/resource invalidation; recovery fails closed; both eyes
   converge on the new publication; strict completion succeeds; and there is
   no OOM, device loss, fidelity/bounds mismatch, vendor failure, or terminal
-  fallback.
+  fallback. A configured FSR4 preference with a coherent, truthfully reported
+  `fsr_host` or `fsr_runtime` capability fallback is not itself a failure.
 - `FAIL`: mixed-eye/generation presentation; old-provider use after mutation;
   acceptance of wrong device/resource/publication; queue-only ordinary-world
   black keepalive; stale completed-output reuse without ownership proof; or

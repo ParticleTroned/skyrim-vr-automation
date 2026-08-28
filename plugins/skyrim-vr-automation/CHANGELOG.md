@@ -4,6 +4,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Keep configured FSR4 preference separate from physical backend identity in
+  Simple CSM and render-scale tuning: omit the runtime preference from strict
+  FSR waiter targets and require coherent desired, authoritative, resource,
+  lifecycle, and both-eye dispatch backends so NVIDIA and unsupported AMD
+  capability fallback to FSR3/host is not misclassified as a latch failure.
 - Add the separate `$renderscale-tuning` correctness protocol: release queued
   settings on CS menu close, retain the last proven stereo generation until
   destructive mutation, reject stale use afterward, and capture the complete

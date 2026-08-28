@@ -74,6 +74,14 @@ foreach ($required in @(
     'request-to-prepared latency',
     'prepared-to-creator latency',
     'Never recreate `dimensionsMatch` with protocol-side math',
+    'For every FSR waiter, omit',
+    '`fsrRuntime` from `target`',
+    'configured FSR runtime preference separately from',
+    '`desiredBackend`',
+    '`authoritativeBackend`',
+    '`actualDispatchBackend`',
+    '`fsr_host` or `fsr_runtime` capability fallback',
+    'AMD hardware without supported FSR4 execution',
     'Classify each transition and every matrix row',
     'Run this section only for `renderscale-tuning acceptance`'
 )) {
