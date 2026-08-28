@@ -286,16 +286,22 @@ Use the one async server scenario generated and submitted by
 `coc-stability-control` for setup and the complete transition sequence:
 
 1. render-scale stress `reset` then `start`; retain its `sessionId`;
-2. for transition 1, call `qualification_begin` with a unique transition ID and
-   run owner ID;
-3. call `qualification_dispatch` with the exact `cocCellEditorId` and, for
+2. before every transition, call `status` and `qualification_status` with the
+   exact expected Build ID. The server receipts prove the intended producer and
+   that the stress capture remains active before a new owner is armed;
+3. call `qualification_begin` with a unique nonzero transition ID and run owner
+   ID;
+4. call `qualification_dispatch` with the exact `cocCellEditorId` and, for
    transition 1, `startPerformanceTelemetry: true`. This one main-thread
    action starts CPU/GPU telemetry and records the timer immediately before it
    executes exactly that COC command; no separate console action is permitted;
-4. call `qualification_wait` once with the same ownership pair, exact target
-   cell, no `target` argument, and `timeoutMs: 10000`; require its externally
-   owned observation mode to return the coherent Stabilizer-selected profile;
-5. repeat begin, adjacent dispatch plus one COC, and one waiter for transitions
+5. call `qualification_wait` once with the same ownership pair, exact target
+   cell, no `target` argument, `milestone: "strict"`, and `timeoutMs: 30000`.
+   The strict receipt returns the first presentation-stable, cleanup-drained,
+   and strict-satisfied timestamps in the same owned transition while preserving
+   the coherent Stabilizer-selected profile;
+6. repeat server preflight, begin, adjacent dispatch plus one COC, and one
+   strict waiter for transitions
    2 through 20, omitting `startPerformanceTelemetry` after transition 1.
 
 Do not issue separate `cpu_performance_reset`, `cpu_performance_start`,
@@ -321,6 +327,41 @@ COCs after it cannot add valid evidence.
 Advance immediately after each coherent waiter receipt. Do not add fixed
 inter-transition waits, menu checks, client polling, or per-transition client
 round trips.
+
+Never call a presentation-only wait and then a cleanup-only wait for the same
+owner and transition ID: successful milestone completion consumes the owned
+transition. Presentation and cleanup milestones are permitted only in separate,
+explicitly labelled diagnostic runs. On an operator interruption while the
+game control plane remains responsive, cancel the active qualification with the
+same transition ID, owner ID, and Build ID; do not abandon ownership and begin
+another transition over it. Do not issue a cancel after a CTD, hang, or lost
+main thread.
+
+## Milestone receipt analysis
+
+For each strict waiter, retain `presentationStable`, its failure mask/reasons,
+elapsed milliseconds/frames; `cleanupDrained`, its failure mask/reasons,
+elapsed milliseconds/frames; `strictSatisfied`, its failure mask/reasons,
+elapsed milliseconds/frames; `outstandingCleanupDebt`; `timing`; `frames`;
+`observation`; and producer/build provenance. On timeout, also retain
+`timedOutMilestone`, all three masks/reason arrays, the last observation, and
+outstanding cleanup debt.
+
+`strictElapsedFrames` remains the canonical stabilization result: Dragonsreach
+must be at most 24, Windhelm at most 20, overall at most 22, and worst at most
+24. Keep retries at most 9, session stretch observations at most 428,
+consecutive stretch frames at most 18, and hard failures, OOMs, device loss,
+fidelity mismatches, vendor failures, and bounds-mismatch fallbacks at zero.
+Never replace the pinned RC166/main-VR ledger rows; append a candidate only
+after a completed run.
+
+Report all 20 per-transition presentation, cleanup, strict, and cleanup-tail
+frames/milliseconds. The cleanup tail is `strict - presentation` in frames and
+milliseconds. Also report median, p95, and maximum for each timing, retry /
+stretch / failure totals, ranked cleanup-debt causes, the exact producer Build
+ID and DLL provenance, scene/profile fixture, and ledger path. Presentation
+and cleanup-tail measurements diagnose where time was spent; they do not weaken
+the strict release gate.
 
 ## Fidelity interpretation
 

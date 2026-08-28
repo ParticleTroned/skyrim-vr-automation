@@ -27,6 +27,8 @@ $requiredFiles = @(
     'skills/devbench-control/agents/openai.yaml',
     'skills/coc-stability/SKILL.md',
     'skills/coc-stability/references/protocol.md',
+    'skills/static-coc/SKILL.md',
+    'skills/static-coc/references/protocol.md',
     'tools/coc-stability-control/Invoke-CocStabilityControl.ps1',
     'tools/coc-stability-control/CocStabilityControl.psm1',
     'tools/coc-stability-control/protocol.v1.json',

@@ -131,6 +131,13 @@ function New-CocMeasuredScenario {
     $transitionCount = [int]$ProtocolConfig.transitionCount
     if ($transitionCount -ne 20) { throw 'The measured COC run must contain 20 transitions.' }
 
+    $qualification = $ProtocolConfig.qualification
+    if ($null -eq $qualification -or
+        [string]$qualification.milestone -ne 'strict' -or
+        [int]$qualification.timeoutMs -ne 30000) {
+        throw 'The measured COC run requires the strict 30-second qualification milestone.'
+    }
+
     $foveation = [ordered]@{
         foveatedVendorDispatch = [bool]$ProtocolConfig.foveation.foveatedVendorDispatch
         foveatedCenterArea = [double]$ProtocolConfig.foveation.foveatedCenterArea
@@ -164,6 +171,23 @@ function New-CocMeasuredScenario {
 
         $steps.Add([ordered]@{
             tool = 'communityshaders.renderscale'
+            label = "coc-$($ordinal.ToString('D2'))-status"
+            args = [ordered]@{
+                action = 'status'
+                expectedBuildId = $ExpectedBuildId
+            }
+        })
+        $steps.Add([ordered]@{
+            tool = 'communityshaders.renderscale'
+            label = "coc-$($ordinal.ToString('D2'))-qualification-status"
+            args = [ordered]@{
+                action = 'qualification_status'
+                expectedBuildId = $ExpectedBuildId
+            }
+        })
+
+        $steps.Add([ordered]@{
+            tool = 'communityshaders.renderscale'
             label = "coc-$($ordinal.ToString('D2'))-begin"
             args = [ordered]@{
                 action = 'qualification_begin'
@@ -187,7 +211,8 @@ function New-CocMeasuredScenario {
                 expectedBuildId = $ExpectedBuildId
                 expectedCellEditorId = $cell
                 foveation = $foveation
-                timeoutMs = 10000
+                milestone = 'strict'
+                timeoutMs = [int]$qualification.timeoutMs
             }
         })
     }
@@ -267,4 +292,263 @@ function Test-CocBaseline {
     }
 }
 
-Export-ModuleMember -Function Invoke-CocMcpTool, New-CocMeasuredScenario, Test-CocBaseline
+function Get-CocPropertyValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Value,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($Value -is [Collections.IDictionary]) {
+        if ($Value.Contains($Name)) { return $Value[$Name] }
+        return $null
+    }
+    $property = $Value.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $null
+}
+
+function Get-CocPathValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Value,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $current = $Value
+    foreach ($segment in $Path.Split('.')) {
+        if ($null -eq $current) { return $null }
+        $current = Get-CocPropertyValue -Value $current -Name $segment
+    }
+    return $current
+}
+
+function ConvertTo-CocNumber {
+    [CmdletBinding()]
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+    try {
+        $number = [double]$Value
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            return $null
+        }
+        return $number
+    }
+    catch {
+        return $null
+    }
+}
+
+function ConvertTo-CocBoolean {
+    [CmdletBinding()]
+    param($Value)
+
+    if ($Value -is [bool]) { return $Value }
+    if ($Value -is [string]) {
+        $parsed = $false
+        if ([bool]::TryParse($Value, [ref]$parsed)) { return $parsed }
+    }
+    return $null
+}
+
+function Get-CocFirstNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Value,
+        [Parameter(Mandatory)][string[]]$Paths
+    )
+
+    foreach ($path in $Paths) {
+        $number = ConvertTo-CocNumber (Get-CocPathValue -Value $Value -Path $path)
+        if ($null -ne $number) { return $number }
+    }
+    return $null
+}
+
+function Get-CocTimingSummary {
+    [CmdletBinding()]
+    param([object[]]$Values)
+
+    $numbers = @($Values | ForEach-Object { ConvertTo-CocNumber $_ } |
+        Where-Object { $null -ne $_ } | Sort-Object)
+    if ($numbers.Count -eq 0) {
+        return [pscustomobject]@{ count = 0; median = $null; p95 = $null; max = $null }
+    }
+    $middle = [int][Math]::Floor(($numbers.Count - 1) / 2)
+    $median = if (($numbers.Count % 2) -eq 1) {
+        $numbers[$middle]
+    } else {
+        ($numbers[$middle] + $numbers[$middle + 1]) / 2.0
+    }
+    $p95 = $numbers[[int][Math]::Ceiling($numbers.Count * 0.95) - 1]
+    return [pscustomobject]@{
+        count = $numbers.Count
+        median = [Math]::Round($median, 3)
+        p95 = [Math]::Round($p95, 3)
+        max = [Math]::Round($numbers[-1], 3)
+    }
+}
+
+function Get-CocNumberTotal {
+    [CmdletBinding()]
+    param([object[]]$Values)
+
+    $numbers = @($Values | ForEach-Object { ConvertTo-CocNumber $_ } |
+        Where-Object { $null -ne $_ })
+    if ($numbers.Count -eq 0) { return $null }
+    return [Math]::Round((($numbers | Measure-Object -Sum).Sum), 3)
+}
+
+function Get-CocQualificationAnalysis {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Scenario,
+        [Parameter(Mandatory)]$ProtocolConfig
+    )
+
+    $records = @(Get-CocPropertyValue -Value $Scenario -Name 'results')
+    if ($records.Count -eq 0) {
+        return [pscustomobject]@{
+            available = $false
+            reason = 'The scenario transcript has no result records.'
+        }
+    }
+
+    $transitions = [Collections.Generic.List[object]]::new()
+    for ($ordinal = 1; $ordinal -le [int]$ProtocolConfig.transitionCount; $ordinal++) {
+        $label = "coc-$($ordinal.ToString('D2'))-wait"
+        $record = @($records | Where-Object {
+                [string](Get-CocPropertyValue -Value $_ -Name 'label') -ceq $label
+            } | Select-Object -First 1)[0]
+        $receipt = if ($record) {
+            Get-CocPropertyValue -Value $record -Name 'result'
+        } else {
+            $null
+        }
+        if ($null -eq $receipt -and $record) {
+            $receipt = Get-CocPropertyValue -Value $record -Name 'value'
+        }
+        $cell = if (($ordinal % 2) -eq 1) {
+            [string]$ProtocolConfig.interiorCellEditorId
+        } else {
+            [string]$ProtocolConfig.startCellEditorId
+        }
+        if ($null -eq $receipt) {
+            $transitions.Add([pscustomobject][ordered]@{
+                ordinal = $ordinal; destination = $cell; receiptPresent = $false
+                presentationElapsedMs = $null; presentationElapsedFrames = $null
+                cleanupElapsedMs = $null; cleanupElapsedFrames = $null
+                strictElapsedMs = $null; strictElapsedFrames = $null
+                cleanupTailMs = $null; cleanupTailFrames = $null
+            })
+            continue
+        }
+
+        $presentationMs = Get-CocFirstNumber $receipt @('presentationElapsedMs')
+        $presentationFrames = Get-CocFirstNumber $receipt @('presentationElapsedFrames')
+        $cleanupMs = Get-CocFirstNumber $receipt @('cleanupElapsedMs')
+        $cleanupFrames = Get-CocFirstNumber $receipt @('cleanupElapsedFrames')
+        $strictMs = Get-CocFirstNumber $receipt @('strictElapsedMs')
+        $strictFrames = Get-CocFirstNumber $receipt @('strictElapsedFrames')
+        $tailMs = if ($null -ne $strictMs -and $null -ne $presentationMs) {
+            [Math]::Round($strictMs - $presentationMs, 3)
+        } else { $null }
+        $tailFrames = if ($null -ne $strictFrames -and $null -ne $presentationFrames) {
+            [Math]::Round($strictFrames - $presentationFrames, 3)
+        } else { $null }
+        $observation = Get-CocPropertyValue -Value $receipt -Name 'observation'
+        $transitions.Add([pscustomobject][ordered]@{
+            ordinal = $ordinal
+            destination = $cell
+            receiptPresent = $true
+            transitionId = Get-CocPropertyValue -Value $receipt -Name 'transitionId'
+            ownerId = Get-CocPropertyValue -Value $receipt -Name 'ownerId'
+            timedOutMilestone = Get-CocPropertyValue -Value $receipt -Name 'timedOutMilestone'
+            presentationStable = ConvertTo-CocBoolean (Get-CocPropertyValue -Value $receipt -Name 'presentationStable')
+            presentationFailureMask = Get-CocPropertyValue -Value $receipt -Name 'presentationFailureMask'
+            presentationFailureReasons = @(Get-CocPropertyValue -Value $receipt -Name 'presentationFailureReasons')
+            presentationElapsedMs = $presentationMs
+            presentationElapsedFrames = $presentationFrames
+            cleanupDrained = ConvertTo-CocBoolean (Get-CocPropertyValue -Value $receipt -Name 'cleanupDrained')
+            cleanupFailureMask = Get-CocPropertyValue -Value $receipt -Name 'cleanupFailureMask'
+            cleanupFailureReasons = @(Get-CocPropertyValue -Value $receipt -Name 'cleanupFailureReasons')
+            cleanupElapsedMs = $cleanupMs
+            cleanupElapsedFrames = $cleanupFrames
+            strictSatisfied = ConvertTo-CocBoolean (Get-CocPropertyValue -Value $receipt -Name 'strictSatisfied')
+            strictFailureMask = Get-CocPropertyValue -Value $receipt -Name 'strictFailureMask'
+            strictFailureReasons = @(Get-CocPropertyValue -Value $receipt -Name 'strictFailureReasons')
+            strictElapsedMs = $strictMs
+            strictElapsedFrames = $strictFrames
+            cleanupTailMs = $tailMs
+            cleanupTailFrames = $tailFrames
+            outstandingCleanupDebt = Get-CocPropertyValue -Value $receipt -Name 'outstandingCleanupDebt'
+            timing = Get-CocPropertyValue -Value $receipt -Name 'timing'
+            frames = Get-CocPropertyValue -Value $receipt -Name 'frames'
+            observation = $observation
+            producer = Get-CocPropertyValue -Value $receipt -Name 'producer'
+            retryCount = Get-CocFirstNumber $receipt @('retryCount', 'retries', 'observation.retryCount', 'observation.retries')
+            sessionStretchObservations = Get-CocFirstNumber $receipt @('observation.stretch.sessionObservations', 'sessionStretchObservations')
+            consecutiveStretchFrames = Get-CocFirstNumber $receipt @('observation.stretch.consecutiveFrames', 'consecutiveStretchFrames')
+            vendorFailures = Get-CocFirstNumber $receipt @('observation.diagnostics.delta.vendorFailures', 'vendorFailures')
+            boundsMismatchFallbacks = Get-CocFirstNumber $receipt @('observation.diagnostics.delta.boundsMismatchFallbacks', 'boundsMismatchFallbacks')
+            ooms = Get-CocFirstNumber $receipt @('observation.diagnostics.delta.ooms', 'ooms')
+            deviceLosses = Get-CocFirstNumber $receipt @('observation.diagnostics.delta.deviceLosses', 'deviceLosses')
+            fidelityMismatches = Get-CocFirstNumber $receipt @('observation.diagnostics.delta.fidelityMismatches', 'fidelityMismatches')
+        })
+    }
+
+    $strictFrames = @($transitions | ForEach-Object { $_.strictElapsedFrames })
+    $presentationFrames = @($transitions | ForEach-Object { $_.presentationElapsedFrames })
+    $cleanupFrames = @($transitions | ForEach-Object { $_.cleanupElapsedFrames })
+    $tailFrames = @($transitions | ForEach-Object { $_.cleanupTailFrames })
+    $strictByDestination = [ordered]@{}
+    foreach ($cell in @(
+            [string]$ProtocolConfig.interiorCellEditorId,
+            [string]$ProtocolConfig.startCellEditorId
+        )) {
+        $strictByDestination[$cell] = Get-CocTimingSummary @(
+            $transitions | Where-Object destination -ceq $cell |
+                ForEach-Object { $_.strictElapsedFrames }
+        )
+    }
+    $strictTargets = Get-CocPropertyValue -Value $ProtocolConfig.qualification -Name 'strictFrameTargets'
+    $cleanupDebtRanked = @(
+        $transitions | Sort-Object -Property @(
+            @{ Expression = { if ($null -eq $_.cleanupTailFrames) { -1 } else { $_.cleanupTailFrames } }; Descending = $true },
+            @{ Expression = { if ($null -eq $_.cleanupTailMs) { -1 } else { $_.cleanupTailMs } }; Descending = $true }
+        )
+    )
+    return [pscustomobject][ordered]@{
+        available = $true
+        canonicalMilestone = 'strict'
+        strictFrameTargets = $strictTargets
+        transitions = @($transitions)
+        timings = [pscustomobject][ordered]@{
+            presentationFrames = Get-CocTimingSummary $presentationFrames
+            cleanupFrames = Get-CocTimingSummary $cleanupFrames
+            strictFrames = Get-CocTimingSummary $strictFrames
+            cleanupTailFrames = Get-CocTimingSummary $tailFrames
+            presentationMs = Get-CocTimingSummary @($transitions | ForEach-Object { $_.presentationElapsedMs })
+            cleanupMs = Get-CocTimingSummary @($transitions | ForEach-Object { $_.cleanupElapsedMs })
+            strictMs = Get-CocTimingSummary @($transitions | ForEach-Object { $_.strictElapsedMs })
+            cleanupTailMs = Get-CocTimingSummary @($transitions | ForEach-Object { $_.cleanupTailMs })
+            strictFramesByDestination = [pscustomobject]$strictByDestination
+        }
+        totals = [pscustomobject][ordered]@{
+            retries = Get-CocNumberTotal @($transitions | ForEach-Object { $_.retryCount })
+            sessionStretchObservations = Get-CocNumberTotal @($transitions | ForEach-Object { $_.sessionStretchObservations })
+            vendorFailures = Get-CocNumberTotal @($transitions | ForEach-Object { $_.vendorFailures })
+            boundsMismatchFallbacks = Get-CocNumberTotal @($transitions | ForEach-Object { $_.boundsMismatchFallbacks })
+            ooms = Get-CocNumberTotal @($transitions | ForEach-Object { $_.ooms })
+            deviceLosses = Get-CocNumberTotal @($transitions | ForEach-Object { $_.deviceLosses })
+            fidelityMismatches = Get-CocNumberTotal @($transitions | ForEach-Object { $_.fidelityMismatches })
+            presentationFailures = @($transitions | Where-Object { $_.presentationStable -eq $false }).Count
+            cleanupFailures = @($transitions | Where-Object { $_.cleanupDrained -eq $false }).Count
+            strictFailures = @($transitions | Where-Object { $_.strictSatisfied -eq $false }).Count
+        }
+        cleanupDebtRanked = $cleanupDebtRanked
+    }
+}
+
+Export-ModuleMember -Function Invoke-CocMcpTool, New-CocMeasuredScenario, Test-CocBaseline, Get-CocQualificationAnalysis

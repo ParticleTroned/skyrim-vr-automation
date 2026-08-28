@@ -35,6 +35,12 @@ $sourceRunnerModulePath = Join-Path $repositoryRoot (
 $pluginRunnerModulePath = Join-Path $repositoryRoot (
     'plugins\skyrim-vr-automation\tools\coc-stability-control\CocStabilityControl.psm1'
 )
+$sourceConfigPath = Join-Path $repositoryRoot (
+    'tools\coc-stability-control\protocol.v1.json'
+)
+$pluginConfigPath = Join-Path $repositoryRoot (
+    'plugins\skyrim-vr-automation\tools\coc-stability-control\protocol.v1.json'
+)
 
 function Assert-Protocol {
     param(
@@ -80,6 +86,9 @@ foreach ($requiredSkillText in @(
     'resolve a winning MO2 file',
     'Multiple adapters or Stabilizer INIs are irrelevant',
     'startPerformanceTelemetry: true',
+    'milestone: "strict"',
+    'timeoutMs: 30000',
+    'cleanup-tail aggregates',
     'continueOnError: false',
     'actual failed tool step',
     'make no further main-thread calls'
@@ -135,6 +144,14 @@ foreach ($requiredProtocolText in @(
     'not permission to delay or cancel',
     '## Atomic diagnostics and measured assay',
     'startPerformanceTelemetry: true',
+    '`milestone: "strict"`',
+    '`timeoutMs: 30000`',
+    '## Milestone receipt analysis',
+    'presentationStable',
+    'cleanupDrained',
+    'strictSatisfied',
+    'outstandingCleanupDebt',
+    'strictElapsedFrames',
     'exact `cocCellEditorId`',
     'no separate console action is permitted',
     'Do not issue separate',
@@ -221,6 +238,18 @@ Assert-Protocol ($runnerModule.Contains(
     'cocCellEditorId = $cell',
     [StringComparison]::Ordinal
 )) 'The measured scenario must bind each COC to qualification_dispatch.'
+Assert-Protocol ($runnerModule.Contains(
+    "action = 'qualification_status'",
+    [StringComparison]::Ordinal
+)) 'Every transition must confirm qualification ownership server-side.'
+Assert-Protocol ($runnerModule.Contains(
+    "milestone = 'strict'",
+    [StringComparison]::Ordinal
+)) 'The measured scenario must use the strict qualification milestone.'
+Assert-Protocol ($runnerModule.Contains(
+    'Get-CocQualificationAnalysis',
+    [StringComparison]::Ordinal
+)) 'The controller must provide milestone analysis from the server transcript.'
 Assert-Protocol (-not $runnerModule.Contains(
     "method = 'tools/list'",
     [StringComparison]::Ordinal
@@ -247,7 +276,8 @@ foreach ($pair in @(
     @($sourceProtocolPath, $pluginProtocolPath, 'COC protocol'),
     @($sourceEvidencePath, $pluginEvidencePath, 'COC evidence controller'),
     @($sourceRunnerPath, $pluginRunnerPath, 'COC stability controller'),
-    @($sourceRunnerModulePath, $pluginRunnerModulePath, 'COC stability module')
+    @($sourceRunnerModulePath, $pluginRunnerModulePath, 'COC stability module'),
+    @($sourceConfigPath, $pluginConfigPath, 'COC stability protocol config')
 )) {
     $sourceHash = (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash
     $pluginHash = (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash

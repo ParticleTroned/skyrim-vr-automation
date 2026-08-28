@@ -15,15 +15,17 @@ $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json -Depth 30
 $scenario = New-CocMeasuredScenario -ProtocolConfig $config `
     -ExpectedBuildId ('a' * 64) -OwnerId 'test-owner'
 $steps = @($scenario.steps)
+$statuses = @($steps | Where-Object label -like 'coc-*-status')
+$qualificationStatuses = @($steps | Where-Object label -like 'coc-*-qualification-status')
 $dispatches = @($steps | Where-Object label -like 'coc-*-dispatch')
-$commands = @($steps | Where-Object label -like 'coc-*-command')
 $waiters = @($steps | Where-Object label -like 'coc-*-wait')
 
 if ($scenario.async -ne $true -or $scenario.continueOnError -ne $false) {
     throw 'The measured scenario is not one async fail-fast control batch.'
 }
-if ($steps.Count -ne 82 -or $dispatches.Count -ne 20 -or
-    $commands.Count -ne 20 -or $waiters.Count -ne 20) {
+if ($steps.Count -ne 102 -or $statuses.Count -ne 20 -or
+    $qualificationStatuses.Count -ne 20 -or $dispatches.Count -ne 20 -or
+    $waiters.Count -ne 20) {
     throw 'The measured scenario does not contain setup plus exactly 20 transitions.'
 }
 $telemetryDispatches = @($dispatches | Where-Object {
@@ -35,20 +37,54 @@ if ($telemetryDispatches.Count -ne 1 -or
     throw 'Only transition 1 may atomically start CPU and GPU telemetry.'
 }
 for ($index = 0; $index -lt 20; $index++) {
-    $expected = if ((($index + 1) % 2) -eq 1) {
-        'coc WhiterunDragonsreach'
+    $expectedCell = if ((($index + 1) % 2) -eq 1) {
+        'WhiterunDragonsreach'
     } else {
-        'coc WindhelmExterior01'
+        'WindhelmExterior01'
     }
-    if ([string]$commands[$index].args.command -ne $expected) {
+    if ([string]$dispatches[$index].args.cocCellEditorId -ne $expectedCell) {
         throw "Transition $($index + 1) has the wrong exact COC target."
     }
-    if ([int]$waiters[$index].args.timeoutMs -ne 10000) {
-        throw "Transition $($index + 1) does not use the fixed waiter deadline."
+    if ([int]$waiters[$index].args.timeoutMs -ne 30000 -or
+        [string]$waiters[$index].args.milestone -ne 'strict') {
+        throw "Transition $($index + 1) does not use the strict 30-second waiter deadline."
     }
     if ($waiters[$index].args.Contains('target')) {
         throw "Transition $($index + 1) attempts to own the Stabilizer profile."
     }
+}
+
+$results = [Collections.Generic.List[object]]::new()
+for ($ordinal = 1; $ordinal -le 20; $ordinal++) {
+    $results.Add([pscustomobject]@{
+        label = "coc-$($ordinal.ToString('D2'))-wait"
+        result = [pscustomobject]@{
+            transitionId = $ordinal; ownerId = 'test-owner'
+            presentationStable = $true; presentationElapsedMs = $ordinal * 2
+            presentationElapsedFrames = $ordinal; presentationFailureMask = 0
+            presentationFailureReasons = @(); cleanupDrained = $true
+            cleanupElapsedMs = $ordinal * 3; cleanupElapsedFrames = $ordinal + 2
+            cleanupFailureMask = 0; cleanupFailureReasons = @()
+            strictSatisfied = $true; strictElapsedMs = $ordinal * 4
+            strictElapsedFrames = $ordinal + 5; strictFailureMask = 0
+            strictFailureReasons = @(); outstandingCleanupDebt = @()
+            timing = [pscustomobject]@{ dispatchTick = $ordinal }
+            frames = [pscustomobject]@{ dispatch = $ordinal }
+            observation = [pscustomobject]@{ diagnostics = [pscustomobject]@{
+                    delta = [pscustomobject]@{ vendorFailures = 0; boundsMismatchFallbacks = 0 }
+                } }
+            producer = [pscustomobject]@{ buildId = ('a' * 64) }
+        }
+    })
+}
+$analysis = Get-CocQualificationAnalysis -Scenario ([pscustomobject]@{
+        results = @($results)
+    }) -ProtocolConfig $config
+if (-not $analysis.available -or $analysis.transitions.Count -ne 20 -or
+    $analysis.timings.strictFrames.p95 -ne 24 -or
+    $analysis.transitions[0].cleanupTailFrames -ne 5 -or
+    $analysis.totals.vendorFailures -ne 0) {
+    throw 'Strict milestone analysis did not retain the required timing and failure evidence.'
 }
 
 $script = Get-Content -LiteralPath $scriptPath -Raw

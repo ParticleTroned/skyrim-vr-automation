@@ -3,6 +3,45 @@
   "startCellEditorId": "WindhelmExterior01",
   "interiorCellEditorId": "WhiterunDragonsreach",
   "transitionCount": 20,
+  "qualification": {
+    "milestone": "strict",
+    "timeoutMs": 30000,
+    "receiptFields": [
+      "presentationStable",
+      "presentationFailureMask",
+      "presentationFailureReasons",
+      "presentationElapsedMs",
+      "presentationElapsedFrames",
+      "cleanupDrained",
+      "cleanupFailureMask",
+      "cleanupFailureReasons",
+      "cleanupElapsedMs",
+      "cleanupElapsedFrames",
+      "strictSatisfied",
+      "strictFailureMask",
+      "strictFailureReasons",
+      "strictElapsedMs",
+      "strictElapsedFrames",
+      "outstandingCleanupDebt",
+      "timing",
+      "frames",
+      "observation",
+      "producer"
+    ],
+    "strictFrameTargets": {
+      "WhiterunDragonsreach": 24,
+      "WindhelmExterior01": 20,
+      "overall": 22,
+      "worst": 24
+    },
+    "retryLimit": 9,
+    "stretchLimits": {
+      "sessionObservations": 428,
+      "consecutiveFrames": 18,
+      "vendorFailures": 0,
+      "boundsMismatchFallbacks": 0
+    }
+  },
   "foveation": {
     "foveatedVendorDispatch": true,
     "foveatedCenterArea": 0.3,

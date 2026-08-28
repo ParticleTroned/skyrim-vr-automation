@@ -30,6 +30,7 @@ $tests = @(
     @{ Name = 'doctor'; Path = 'tools\doctor\Test-AutomationDoctor.ps1'; Arguments = @() },
     @{ Name = 'git-launcher'; Path = 'tests\Test-GitLauncher.ps1'; Arguments = @() },
     @{ Name = 'coc-stability-protocol'; Path = 'tests\Test-CocStabilityProtocol.ps1'; Arguments = @() },
+    @{ Name = 'static-coc-protocol'; Path = 'tests\Test-StaticCocProtocol.ps1'; Arguments = @() },
     @{ Name = 'codex-plugin-registration'; Path = 'tests\Test-CodexPluginRegistration.ps1'; Arguments = @() },
     @{ Name = 'codex-distribution'; Path = 'tests\Test-CodexDistribution.ps1'; Arguments = @() },
     @{ Name = 'portability'; Path = 'tests\Test-Portability.ps1'; Arguments = @() },

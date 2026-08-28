@@ -48,7 +48,7 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its nine skills connect a
+The repository publishes a Codex marketplace plugin. Its ten skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
@@ -62,6 +62,9 @@ new task to the bundled implementations and their operational contracts:
   with parallel identity reads, applies its post-load debug/FOV/Stabilizer gate
   once, and runs all 20 command-timed transitions in one anomaly-accumulating
   server batch without weakening the exact-cell or two-eye fidelity predicate.
+- `$static-coc` runs the preserved 20-transition COC assay with one strict,
+  30-second milestone wait per transition and reports presentation and cleanup
+  timing without weakening the canonical strict gate.
 - `$fidelstab` runs the preserved paced Breezehome fidelity and stability
   protocol.
 - `$render-scale-qualification` attaches to the intended DLL that is already

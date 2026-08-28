@@ -96,6 +96,19 @@ step, including a top-level embedded tool `error`/`ok:false`, or lost main
 thread aborts later COCs immediately. Preserve the embedded receipt. Do not
 split ordinary transitions into client round trips.
 
+Every canonical transition uses one `qualification_wait` with
+`milestone: "strict"` and `timeoutMs: 30000`. The strict receipt captures the
+first presentation-stable, cleanup-drained, and strict-satisfied observations
+without changing the independent 10-second start-cell settle. Do not use a
+presentation-only or cleanup-only wait in the same owned transition, add a
+fixed inter-transition wait, or poll the client. Those shorter milestones are
+separate diagnostic runs only.
+
+After the scenario completes, use `coc-stability-control status` for the
+per-transition milestone table and its presentation, cleanup, strict, and
+cleanup-tail aggregates. Strict frames remain the canonical RC166 comparison;
+presentation and cleanup-tail timings are diagnostic evidence only.
+
 After transition 20, attempt guarded GPU, CPU, stress, and ProcDump cleanup only
 while their control planes are responsive. On CTD or hang, make no further
 main-thread calls; wait for the already-armed dump to settle, preserve it, and

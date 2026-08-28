@@ -125,6 +125,8 @@ try {
         if ([string]$state.schema -ne 'csx-coc-stability-state-v1') {
             throw 'The state is not owned by COC stability control.'
         }
+        $protocolConfig = Get-Content -LiteralPath ([string]$state.protocolConfigPath) -Raw |
+            ConvertFrom-Json -Depth 30
         $statusReceipt = Invoke-CocMcpTool -Endpoint ([string]$state.endpoint) `
             -Tool 'scenario' -Arguments @{
                 action = 'status'
@@ -132,6 +134,8 @@ try {
             } -TimeoutSeconds 20
         $scenarioDone = [bool]$statusReceipt.value.done
         $scenarioOk = -not $scenarioDone -or [bool]$statusReceipt.value.ok
+        $analysis = Get-CocQualificationAnalysis -Scenario $statusReceipt.value `
+            -ProtocolConfig $protocolConfig
         $result = [pscustomobject][ordered]@{
             schema = 'csx-coc-stability-control-v1'
             ok = $scenarioOk
@@ -149,6 +153,7 @@ try {
                 ownerId = [string]$state.ownerId
                 scenarioRunId = [uint64]$state.scenarioRunId
                 scenario = $statusReceipt.value
+                analysis = $analysis
             }
             errors = if ($scenarioOk) { @() } else { @([string]$statusReceipt.value.error) }
         }

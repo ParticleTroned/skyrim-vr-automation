@@ -1,0 +1,110 @@
+# Static COC protocol
+
+## Fixed identity and milestone availability
+
+This is the preserved static 20-transition COC assay. It is not permission to
+change runtime code, profile selection, or pinned reference rows.
+
+- Initial positioning cell: `WindhelmExterior01`.
+- Odd transitions: `WhiterunDragonsreach`.
+- Even transitions: `WindhelmExterior01`.
+- Canonical waiter: `milestone: "strict"`, `timeoutMs: 30000`.
+- The initial, unmeasured Windhelm positioning scenario retains its separate
+  10,000 ms server wait.
+- VR FPS Stabilizer owns profile selection; omit `target` from every waiter.
+
+Before arming, verify the exact running DevBench-enabled candidate DLL and its
+64-character producer Build ID. Call the registered top-level
+`communityshaders.renderscale` tool and require its typed schema or descriptor
+to accept the `strict`, `presentation`, and `cleanup` milestones. If the tool
+is not typed, use the DevBench-control route to invoke that same registered
+tool. Do not substitute client timing, an old waiter, or a second console COC.
+
+## Arm phase
+
+At the main loading window, bind the exact Skyrim PID and Build ID to the
+DevBench and managed PyGhidra receipts. Arm one owned ProcDump exception
+collector and preserve its state path and capture directory. Require CDB/WinDbg
+and dump storage. If any receipt is missing, report `not armed`; do not send a
+COC. A new PID, endpoint, compilation, or failed identity check invalidates an
+old arm receipt.
+
+## Initial positioning
+
+With a fresh arm receipt, submit exactly one async server scenario:
+
+```json
+{
+  "action": "run",
+  "async": true,
+  "continueOnError": false,
+  "steps": [
+    { "wait": 10000 },
+    {
+      "tool": "console",
+      "args": { "action": "exec", "command": "coc WindhelmExterior01" }
+    }
+  ]
+}
+```
+
+While its server wait runs, record exact producer Build ID and DLL provenance.
+After Windhelm loads, call `communityshaders.menu` `prepare_coc` once with that
+Build ID. It may apply only the runtime FOV/TAA fixture, must enable debug
+logging from info-or-less-verbose, and must not save or alter upscaling.
+
+## Measured 102-step scenario
+
+Submit exactly one asynchronous DevBench scenario with
+`continueOnError: false`:
+
+1. render-scale stress `reset` and `start` with the exact Build ID;
+2. for each ordinal 1 through 20, append these five server-side steps:
+   1. `status` with the expected Build ID, proving the stress capture is active;
+   2. `qualification_status` with the expected Build ID, proving no foreign
+      owner is being overrun;
+   3. `qualification_begin` with that ordinal as a unique nonzero transition
+      ID, a run-unique owner ID, and the expected Build ID;
+   4. `qualification_dispatch` with the same ownership, exactly one
+      `cocCellEditorId`, and `startPerformanceTelemetry: true` only for ordinal
+      1. Dispatch owns the COC and reads server QPC immediately before it;
+   5. `qualification_wait` with the same ownership, exact destination,
+      `milestone: "strict"`, `timeoutMs: 30000`, expected Build ID, and the
+      fixture only when `prepare_coc` established protocol ownership.
+
+The scenario therefore contains 2 + (20 x 5) = 102 steps. Do not add fixed
+inter-transition waits, client polling, a separate console COC, a second
+waiter, or profile mutation. Semantic milestone failures are preserved receipts;
+an actual failed server step, ownership loss, stale build, dead game, or
+transport failure stops later COCs.
+
+On an operator interruption while the game control plane is responsive, call
+`qualification_cancel` only with the active transition's exact transition ID,
+owner ID, and Build ID. Never abandon that ownership and begin another
+transition. After a CTD, hang, or lost main thread, issue no further main-thread
+call; preserve and analyze the already-armed dump.
+
+## Analysis and ledger
+
+For every strict receipt record:
+
+- `presentationStable`, failure mask/reasons, elapsed ms/frames;
+- `cleanupDrained`, failure mask/reasons, elapsed ms/frames;
+- `strictSatisfied`, failure mask/reasons, elapsed ms/frames;
+- `outstandingCleanupDebt`, `timing`, `frames`, `observation`, and producer /
+  Build ID provenance.
+
+On timeout also retain `timedOutMilestone`, all milestone masks/reason arrays,
+the last observation, and outstanding cleanup debt. Report presentation,
+cleanup, strict, and cleanup-tail (`strict - presentation`) timing per
+transition, plus median/p95/max for all four. Report retry, stretch, hard
+failure, OOM, device-loss, fidelity, vendor-failure, and bounds-mismatch totals;
+rank cleanup debt by frequency and accumulated tail.
+
+Strict frames remain the release result: Dragonsreach <= 24, Windhelm <= 20,
+overall <= 22, worst <= 24, retries <= 9, session stretch observations <= 428,
+consecutive stretch frames <= 18, and all hard/fidelity/vendor/bounds failures
+must be zero. Presentation and cleanup-tail numbers diagnose the delay; they do
+not weaken the strict gate. Append a new candidate row to
+`docs/development/vr-render-scale-iteration.md` only after a completed run,
+using `n/a` for counters the producer did not emit.
