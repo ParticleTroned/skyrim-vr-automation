@@ -41,6 +41,11 @@ one evidence record.
 `ok` reflects transport success unless `-RequireSuccess` is supplied. Every
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
+The `communityshaders.profiler` bridge has a contract-specific adapter because
+its legacy response does not carry a generic top-level `ok`: `status` must
+contain a frame-bearing status object, while `enable` and `disable` must report
+the requested observed state. This keeps profiler collection fail-closed
+without misclassifying a valid bridge response as unknown.
 Replay completion receipts containing only scheduler facts such as `done`,
 `runId`, and `stepsRun` are classified as
 `scheduler-complete-unverified`, not semantic success. A replay response must

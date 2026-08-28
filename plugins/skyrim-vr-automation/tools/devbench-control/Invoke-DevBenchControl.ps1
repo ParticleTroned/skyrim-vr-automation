@@ -541,6 +541,22 @@ try {
         Update-InvocationEvidence -State 'dispatching'
         $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers -Mutation
         $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
+        if ($Tool -eq 'communityshaders.profiler' -and -not $semantic.known) {
+            $profilerPayload = @($data.content | Select-Object -First 1)
+            if ($profilerPayload.Count -eq 1 -and -not $profilerPayload[0].PSObject.Properties['error']) {
+                $requestedAction = [string]$arguments['action']
+                $profilerSuccess =
+                    ($requestedAction -eq 'status' -and $profilerPayload[0].PSObject.Properties['status'] -and $profilerPayload[0].status.PSObject.Properties['frame_count']) -or
+                    ($requestedAction -eq 'enable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and [bool]$profilerPayload[0].enabled) -or
+                    ($requestedAction -eq 'disable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and -not [bool]$profilerPayload[0].enabled)
+                if ($profilerSuccess) {
+                    $semantic.known = $true
+                    $semantic.ok = $true
+                    $semantic.outcome = 'profiler-contract-satisfied'
+                    $semantic.reasons = @()
+                }
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
             $matched = @($semantic.codes | Where-Object { $_ -eq $ExpectedErrorCode }).Count -gt 0
             $semantic | Add-Member -NotePropertyName expectedErrorCode -NotePropertyValue $ExpectedErrorCode -Force
