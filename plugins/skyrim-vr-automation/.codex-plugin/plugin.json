@@ -1,6 +1,6 @@
 {
   "name": "skyrim-vr-automation",
-  "version": "0.8.0+codex.20260828084624",
+  "version": "0.8.0+codex.20260828100712",
   "description": "Codex skills and tools for transactional Skyrim VR automation, DevBench qualification and profiling, local feedback, and reusable shader-cache management.",
   "author": {
     "name": "Treatid2",
@@ -40,6 +40,7 @@
       "Switch SteamVR to null HMD with a recoverable backup.",
       "Run a bounded Skyrim VR test session through MO2.",
       "Run a load-synchronized COC stability and transition-throughput test.",
+      "Run the five-second 25-step Community Shaders menu transition assay.",
       "Record and triage local feedback about the automation toolkit.",
       "Capture and compare CSX profiler evidence.",
       "With the intended DLL already running in game, start the fully unattended CSX render-scale qualification.",

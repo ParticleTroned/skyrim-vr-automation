@@ -31,6 +31,8 @@ $requiredFiles = @(
     'skills/simple-coc/references/protocol.md',
     'skills/simple-coc-5/SKILL.md',
     'skills/simple-coc-5/references/protocol.md',
+    'skills/simple-csm/SKILL.md',
+    'skills/simple-csm/references/protocol.md',
     'skills/static-coc/SKILL.md',
     'skills/static-coc/references/protocol.md',
     'tools/coc-stability-control/Invoke-CocStabilityControl.ps1',
@@ -113,7 +115,7 @@ if ($pluginManifest.license -ne 'GPL-3.0-or-later') {
     $violations.Add([pscustomobject]@{ file = '.codex-plugin/plugin.json'; issue = 'license is not GPL-3.0-or-later' })
 }
 
-foreach ($relativePath in @('skills/feedback-control/SKILL.md', 'skills/mo2-control/SKILL.md', 'skills/steamvr-null-hmd/SKILL.md', 'skills/devbench-control/SKILL.md', 'skills/coc-stability/SKILL.md', 'skills/simple-coc/SKILL.md', 'skills/simple-coc-5/SKILL.md', 'skills/render-scale-qualification/SKILL.md', 'skills/profiler-control/SKILL.md', 'skills/shader-cache-control/SKILL.md')) {
+foreach ($relativePath in @('skills/feedback-control/SKILL.md', 'skills/mo2-control/SKILL.md', 'skills/steamvr-null-hmd/SKILL.md', 'skills/devbench-control/SKILL.md', 'skills/coc-stability/SKILL.md', 'skills/simple-coc/SKILL.md', 'skills/simple-coc-5/SKILL.md', 'skills/simple-csm/SKILL.md', 'skills/render-scale-qualification/SKILL.md', 'skills/profiler-control/SKILL.md', 'skills/shader-cache-control/SKILL.md')) {
     $content = Get-Content -LiteralPath (Join-Path $repositoryRoot $relativePath) -Raw
     if ($content -match '\[TODO:') {
         $violations.Add([pscustomobject]@{ file = $relativePath; issue = 'contains an unfinished skill placeholder' })

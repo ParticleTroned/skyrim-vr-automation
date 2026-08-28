@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add the `$simple-csm` protocol: reuse Simple COC 5 binding, runtime fixture,
+  telemetry, failure handling, and evidence extraction; position once at
+  Dragonsreach; then measure the canonical hardware-specific 25-step CS menu
+  matrix without issuing measured COCs.
 - Detect persisted pre-isolation task profiles during MO2 inspection and add a
   closed-state recovery that selects the stable profile while preserving the
   legacy workspace, cache, manifest, and exact INI evidence.

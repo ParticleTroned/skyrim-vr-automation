@@ -48,8 +48,9 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its ten skills connect a
-new task to the bundled implementations and their operational contracts:
+The repository publishes a Codex marketplace plugin. Its thirteen skills
+connect a new task to the bundled implementations and their operational
+contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
   enhancement requests in a durable local queue; it never publishes them.
@@ -62,6 +63,12 @@ new task to the bundled implementations and their operational contracts:
   with parallel identity reads, applies its post-load debug/FOV/Stabilizer gate
   once, and runs all 20 command-timed transitions in one anomaly-accumulating
   server batch without weakening the exact-cell or two-eye fidelity predicate.
+- `$simple-coc` runs the measured 20-transition Windhelm/Dragonsreach assay
+  with ten-second pacing and the full CPU/GPU/render-scale evidence contract.
+- `$simple-coc-5` runs the same measured COC assay with five-second pacing.
+- `$simple-csm` positions once at Dragonsreach and applies the canonical
+  hardware-specific 25-step CS menu matrix with five-second pacing and the
+  same telemetry and evidence extraction.
 - `$static-coc` runs the preserved 20-transition COC assay with one strict,
   30-second milestone wait per transition and reports presentation and cleanup
   timing without weakening the canonical strict gate.
