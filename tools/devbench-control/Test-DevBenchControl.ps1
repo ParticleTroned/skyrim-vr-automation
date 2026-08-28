@@ -126,6 +126,27 @@ $nativeSnapshot.profiles.requested = $mismatchedProfile
 $nativeMismatch = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
 Assert-Test (-not $nativeMismatch.satisfied -and $nativeMismatch.reasons -contains 'requested and effective profiles differ') 'native-resolution stability rejects profile divergence'
 
+$resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response ([pscustomobject]@{
+        status = [pscustomobject]@{
+            resourcePublication = [pscustomobject]@{
+                current = $true; currentGeneration = 17; completedGeneration = 17; publishedGeneration = 17
+                expectedWidth = 1644; expectedHeight = 1826; publishedWidth = 1644; publishedHeight = 1826
+                complete = $true; deferredSetupAcknowledged = $true; deviceMatches = $true; contextMatches = $true
+                evaluated = $true; present = $true; generationMatchesCurrent = $true
+                generationMatchesCompleted = $true; dimensionsMatch = $true
+            }
+        }
+    })
+Assert-Test ($resourcePublication.available -and $resourcePublication.current -and
+    $resourcePublication.currentGeneration -eq 17 -and $resourcePublication.completedGeneration -eq 17 -and
+    $resourcePublication.publishedGeneration -eq 17 -and $resourcePublication.expectedWidth -eq 1644 -and
+    $resourcePublication.expectedHeight -eq 1826 -and $resourcePublication.publishedWidth -eq 1644 -and
+    $resourcePublication.publishedHeight -eq 1826 -and $resourcePublication.complete -and
+    $resourcePublication.deferredSetupAcknowledged -and $resourcePublication.deviceMatches -and
+    $resourcePublication.contextMatches -and $resourcePublication.missingFields.Count -eq 0) 'resource-publication telemetry retains generations, dimensions, setup, and D3D identity'
+$missingPublication = Get-DevBenchResourcePublicationTelemetry -Response ([pscustomobject]@{ status = [pscustomobject]@{} })
+Assert-Test (-not $missingPublication.available -and $missingPublication.missingFields -contains 'publishedGeneration') 'missing resource-publication telemetry remains explicit'
+
 $expectations = Get-DevBenchRuntimeExpectations -Runtime ([pscustomobject]@{ port = 8921; pid = 123; exe = 'SkyrimVR.exe'; buildId = 'build-1'; dllPath = 'C:\Test\CommunityShaders.dll'; artifactSha256 = 'ABC' })
 Assert-Test ($expectations.port -eq 8921 -and $expectations.pid -eq 123 -and $expectations.exe -eq 'SkyrimVR.exe') 'runtime expectations preserve process identity fields'
 Assert-Test ($expectations.buildId -eq 'build-1' -and $expectations.artifactPath -like '*CommunityShaders.dll' -and $expectations.artifactSha256 -eq 'ABC') 'runtime expectations preserve build and deployed artifact identity'

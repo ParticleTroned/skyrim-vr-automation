@@ -1383,6 +1383,7 @@ function Convert-ToTransitionRows($Records, $Scenario, [ValidateSet('coc', 'menu
         $expectedCell = Get-CSXPropertyValue $wait 'expectedCell'
         $foveationTarget = Get-CSXPropertyValue $wait 'foveationTarget'
         $qpcTiming = Get-CSXPropertyValue $wait 'timing'
+        $resourcePublication = $record.resourcePublication
         if ($null -eq $target -or $null -eq $expectedCell -or $null -eq $foveationTarget -or $null -eq $qpcTiming) {
             throw "Scenario wait receipt omitted transition proof at $Assay ordinal $ordinal."
         }
@@ -1404,6 +1405,19 @@ function Convert-ToTransitionRows($Records, $Scenario, [ValidateSet('coc', 'menu
             elapsedMs = $(if ($null -eq (Get-CSXPropertyValue $qpcTiming 'elapsedMs')) { $null } else { [double](Get-CSXPropertyValue $qpcTiming 'elapsedMs') })
             elapsedFrames = [uint64](Get-CSXPropertyValue $qpcTiming 'elapsedFrames' 0)
             satisfied = [bool](Get-CSXPropertyValue $wait 'satisfied' $false)
+            resourcePublication = $resourcePublication
+            publicationCurrent = Get-CSXPropertyValue $resourcePublication 'current'
+            publicationCurrentGeneration = Get-CSXPropertyValue $resourcePublication 'currentGeneration'
+            publicationCompletedGeneration = Get-CSXPropertyValue $resourcePublication 'completedGeneration'
+            publicationPublishedGeneration = Get-CSXPropertyValue $resourcePublication 'publishedGeneration'
+            publicationExpectedWidth = Get-CSXPropertyValue $resourcePublication 'expectedWidth'
+            publicationExpectedHeight = Get-CSXPropertyValue $resourcePublication 'expectedHeight'
+            publicationPublishedWidth = Get-CSXPropertyValue $resourcePublication 'publishedWidth'
+            publicationPublishedHeight = Get-CSXPropertyValue $resourcePublication 'publishedHeight'
+            publicationComplete = Get-CSXPropertyValue $resourcePublication 'complete'
+            publicationDeferredSetupAcknowledged = Get-CSXPropertyValue $resourcePublication 'deferredSetupAcknowledged'
+            publicationDeviceMatches = Get-CSXPropertyValue $resourcePublication 'deviceMatches'
+            publicationContextMatches = Get-CSXPropertyValue $resourcePublication 'contextMatches'
             receipts = [pscustomobject][ordered]@{ begin = $begin; dispatch = $dispatch; mutation = $mutation; wait = $wait }
         })
     }
@@ -1413,7 +1427,11 @@ function Convert-ToTransitionRows($Records, $Scenario, [ValidateSet('coc', 'menu
 function Write-TransitionEvidence($CocRows, $MenuRows) {
     $all = @($CocRows) + @($MenuRows)
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'transitions.json') -Value ([pscustomobject][ordered]@{ schema = 'csx-render-scale-transitions-v1'; rows = $all }) | Out-Null
-    $csv = (($all | Select-Object assay, ordinal, transitionId, method, qualityMode, renderScaleMode, elapsedMs, elapsedFrames, satisfied | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine) + [Environment]::NewLine
+    $csv = (($all | Select-Object assay, ordinal, transitionId, method, qualityMode, renderScaleMode, elapsedMs, elapsedFrames, satisfied,
+        publicationCurrent, publicationCurrentGeneration, publicationCompletedGeneration, publicationPublishedGeneration,
+        publicationExpectedWidth, publicationExpectedHeight, publicationPublishedWidth, publicationPublishedHeight,
+        publicationComplete, publicationDeferredSetupAcknowledged, publicationDeviceMatches, publicationContextMatches |
+        ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine) + [Environment]::NewLine
     Write-CSXTextFile -Path (Join-Path $script:evidenceRoot 'transitions.csv') -Value $csv | Out-Null
     foreach ($entry in @(
         [pscustomobject]@{ name = 'coc'; rows = @($CocRows) },
@@ -1672,7 +1690,7 @@ try {
             exterior = Get-CSXMetricSummary -Values ([double[]]@($cocRecords | Where-Object { $_.ordinal % 2 -eq 0 } | ForEach-Object elapsedMs)) -IncludeRate
         }
         failureCount = $cocFailureCount; diagnosticFailureLowerBound = $cocDiagnosticFailureLowerBound; failureBreakdown = $cocFailureBreakdown; failedTransitions = $cocFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $cocFailedTransitions -Trials 20
-        stretch = $stretch; stressTransitions = $cocStressTransitions
+        stretch = $stretch; stressTransitions = $cocStressTransitions; resourcePublication = Get-CSXResourcePublicationSummary -Records $cocRecords
         validation = [pscustomobject][ordered]@{ scenarioOk = [bool]$cocScenario.ok -and -not [bool]$cocScenario.aborted; stretchError = $stretchError; stressRecordError = $cocStressError }
         evidence = [pscustomobject][ordered]@{ scenarioRequest = 'coc/scenario.request.json'; scenarioResult = 'coc/scenario.result.json'; diagnostics = 'coc/diagnostics.json'; stressRecord = 'coc/stress-record.json'; cpuRecord = 'coc/cpu-record.json' }
     }
@@ -1738,7 +1756,7 @@ try {
         matrixName = $menuBuild.matrixName; completed = $menuRecords.Count; wallClockMs = [Math]::Round($menuWallWatch.Elapsed.TotalMilliseconds, 3); records = $menuRows
         statistics = Get-CSXMetricSummary -Values $menuTimes -IncludeRate; strata = Get-MenuStrata $menuRows
         failureCount = $menuFailureCount; diagnosticFailureLowerBound = $menuDiagnosticFailureLowerBound; failureBreakdown = $menuFailureBreakdown; failedTransitions = $menuFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $menuFailedTransitions -Trials 25
-        stretch = $menuStretch; stressTransitions = $menuStressTransitions
+        stretch = $menuStretch; stressTransitions = $menuStressTransitions; resourcePublication = Get-CSXResourcePublicationSummary -Records $menuRecords
         dlssTrace = [pscustomobject][ordered]@{
             outcome = $(if (-not $traceEvidence.ok) { 'failed' } elseif ($GpuVendor -eq 'NVIDIA') { 'dispatch_validated' } else { 'capability_lifecycle_only_zero_dispatch' })
             evidence = $traceEvidence

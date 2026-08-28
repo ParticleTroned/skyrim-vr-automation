@@ -70,9 +70,16 @@ for ($ordinal = 1; $ordinal -le 20; $ordinal++) {
             strictFailureReasons = @(); outstandingCleanupDebt = @()
             timing = [pscustomobject]@{ dispatchTick = $ordinal }
             frames = [pscustomobject]@{ dispatch = $ordinal }
-            observation = [pscustomobject]@{ diagnostics = [pscustomobject]@{
+            observation = [pscustomobject]@{
+                diagnostics = [pscustomobject]@{
                     delta = [pscustomobject]@{ vendorFailures = 0; boundsMismatchFallbacks = 0 }
-                } }
+                }
+                resourcePublication = [pscustomobject]@{
+                    current = $true; currentGeneration = $ordinal; completedGeneration = $ordinal; publishedGeneration = $ordinal
+                    expectedWidth = 1644; expectedHeight = 1826; publishedWidth = 1644; publishedHeight = 1826
+                    complete = $true; deferredSetupAcknowledged = $true; deviceMatches = $true; contextMatches = $true
+                }
+            }
             producer = [pscustomobject]@{ buildId = ('a' * 64) }
         }
     })
@@ -83,7 +90,10 @@ $analysis = Get-CocQualificationAnalysis -Scenario ([pscustomobject]@{
 if (-not $analysis.available -or $analysis.transitions.Count -ne 20 -or
     $analysis.timings.strictFrames.p95 -ne 24 -or
     $analysis.transitions[0].cleanupTailFrames -ne 5 -or
-    $analysis.totals.vendorFailures -ne 0) {
+    $analysis.totals.vendorFailures -ne 0 -or
+    -not $analysis.transitions[0].resourcePublication.current -or
+    $analysis.resourcePublication.availableSamples -ne 20 -or
+    $analysis.resourcePublication.currentSamples -ne 20) {
     throw 'Strict milestone analysis did not retain the required timing and failure evidence.'
 }
 

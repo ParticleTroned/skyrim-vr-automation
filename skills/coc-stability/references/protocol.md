@@ -261,6 +261,9 @@ one bundle containing:
 
 - exact scene/player state;
 - the public upscaling snapshot and render-scale lifecycle/status;
+- normalized render-target resource-publication telemetry: current,
+  current/completed/published generations, expected/published dimensions,
+  completion and deferred-setup acknowledgement, and D3D device/context matches;
 - render-scale stress, CPU telemetry, and GPU telemetry status;
 - already-configured CSX image capture, when available.
 
@@ -379,6 +382,12 @@ stretch / failure totals, ranked cleanup-debt causes, the exact producer Build
 ID and DLL provenance, scene/profile fixture, and ledger path. Presentation
 and cleanup-tail measurements diagnose where time was spent; they do not weaken
 the strict release gate.
+
+For the baseline and every transition, retain the normalized
+`resourcePublication` record. It must preserve current, current/completed/
+published generations, expected/published width and height, `complete`,
+`deferredSetupAcknowledged`, `deviceMatches`, and `contextMatches`. Missing
+fields are evidence, not values to infer or reconstruct.
 
 ## Fidelity interpretation
 

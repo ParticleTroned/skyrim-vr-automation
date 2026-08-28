@@ -289,6 +289,7 @@ function Test-CocBaseline {
         reasons = @($reasons | Select-Object -Unique)
         actualCell = $actualCell
         stability = $stability
+        resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $renderScale
     }
 }
 
@@ -441,6 +442,7 @@ function Get-CocQualificationAnalysis {
                 cleanupElapsedMs = $null; cleanupElapsedFrames = $null
                 strictElapsedMs = $null; strictElapsedFrames = $null
                 cleanupTailMs = $null; cleanupTailFrames = $null
+                resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $null
             })
             continue
         }
@@ -486,6 +488,7 @@ function Get-CocQualificationAnalysis {
             timing = Get-CocPropertyValue -Value $receipt -Name 'timing'
             frames = Get-CocPropertyValue -Value $receipt -Name 'frames'
             observation = $observation
+            resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $observation
             producer = Get-CocPropertyValue -Value $receipt -Name 'producer'
             retryCount = Get-CocFirstNumber $receipt @('retryCount', 'retries', 'observation.retryCount', 'observation.retries')
             sessionStretchObservations = Get-CocFirstNumber $receipt @('observation.stretch.sessionObservations', 'sessionStretchObservations')
@@ -519,6 +522,9 @@ function Get-CocQualificationAnalysis {
             @{ Expression = { if ($null -eq $_.cleanupTailMs) { -1 } else { $_.cleanupTailMs } }; Descending = $true }
         )
     )
+    $publicationSamples = @($transitions | ForEach-Object { $_.resourcePublication })
+    $availablePublications = @($publicationSamples | Where-Object { [bool]$_.available })
+    $currentPublications = @($availablePublications | Where-Object { [bool]$_.current })
     return [pscustomobject][ordered]@{
         available = $true
         canonicalMilestone = 'strict'
@@ -548,6 +554,12 @@ function Get-CocQualificationAnalysis {
             strictFailures = @($transitions | Where-Object { $_.strictSatisfied -eq $false }).Count
         }
         cleanupDebtRanked = $cleanupDebtRanked
+        resourcePublication = [pscustomobject][ordered]@{
+            samples = $publicationSamples
+            availableSamples = $availablePublications.Count
+            currentSamples = $currentPublications.Count
+            latest = $(if ($publicationSamples.Count -gt 0) { $publicationSamples[-1] } else { Get-DevBenchResourcePublicationTelemetry -Response $null })
+        }
     }
 }
 

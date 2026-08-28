@@ -12,6 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot '..\devbench-control\DevBenchControl.psm1') -Force
 
 function Invoke-McpRequest {
     param([string]$Endpoint, [hashtable]$Headers, $Payload)
@@ -69,17 +70,22 @@ function Initialize-McpSession {
 Initialize-McpSession
 $sessionReconnects = 0
 
-function Invoke-ProfilerAction {
-    param([string]$Action)
+function Invoke-DevBenchToolAction {
+    param(
+        [Parameter(Mandatory)][string]$ToolName,
+        [Parameter(Mandatory)][hashtable]$Arguments,
+        [Parameter(Mandatory)][string]$FailureLabel
+    )
+
     for ($attempt = 0; $attempt -lt 2; $attempt++) {
         try {
             $script:requestId++
             $rpc = Invoke-McpRequest -Endpoint $endpoint -Headers $script:headers -Payload @{
                 jsonrpc = '2.0'; id = $script:requestId; method = 'tools/call'; params = @{
-                    name = 'communityshaders.profiler'; arguments = @{ action = $Action }
+                    name = $ToolName; arguments = $Arguments
                 }
             }
-            if ($rpc.json.PSObject.Properties['error']) { throw "Profiler RPC failed: $($rpc.json.error | ConvertTo-Json -Compress)" }
+            if ($rpc.json.PSObject.Properties['error']) { throw "$FailureLabel RPC failed: $($rpc.json.error | ConvertTo-Json -Compress)" }
             if ($rpc.json.result.PSObject.Properties['isError'] -and $rpc.json.result.isError) {
                 throw (($rpc.json.result.content | ForEach-Object { $_.text }) -join "`n")
             }
@@ -96,9 +102,38 @@ function Invoke-ProfilerAction {
     }
 }
 
+function Invoke-ProfilerAction {
+    param([string]$Action)
+
+    return Invoke-DevBenchToolAction -ToolName 'communityshaders.profiler' -Arguments @{ action = $Action } -FailureLabel 'Profiler'
+}
+
+function Get-ResourcePublicationSnapshot {
+    param([Parameter(Mandatory)][string]$Phase)
+
+    try {
+        $response = Invoke-DevBenchToolAction -ToolName 'communityshaders.renderscale' -Arguments @{ action = 'status' } -FailureLabel 'Render-scale'
+        return [pscustomobject][ordered]@{
+            phase = $Phase
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            telemetry = Get-DevBenchResourcePublicationTelemetry -Response $response
+            error = $null
+        }
+    }
+    catch {
+        return [pscustomobject][ordered]@{
+            phase = $Phase
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            telemetry = Get-DevBenchResourcePublicationTelemetry -Response $null
+            error = $_.Exception.Message
+        }
+    }
+}
+
 $requestId = 1
 New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
 $startedUtc = [DateTime]::UtcNow
+$resourcePublicationBefore = Get-ResourcePublicationSnapshot -Phase 'before'
 $enableResult = Invoke-ProfilerAction -Action 'enable'
 for ($warmupIndex = 1; $warmupIndex -le $WarmupSamples; $warmupIndex++) {
     Invoke-ProfilerAction -Action 'status' | Out-Null
@@ -121,6 +156,7 @@ for ($sampleIndex = 1; $sampleIndex -le $Samples; $sampleIndex++) {
     })
     if ($sampleIndex -lt $Samples) { Start-Sleep -Milliseconds $IntervalMs }
 }
+$resourcePublicationAfter = Get-ResourcePublicationSnapshot -Phase 'after'
 $endedUtc = [DateTime]::UtcNow
 
 $timerRows = [System.Collections.Generic.List[object]]::new()
@@ -171,6 +207,10 @@ $summary = [pscustomobject][ordered]@{
     endpoint = $endpoint
     sessionReconnects = $sessionReconnects
     profilerEnableResult = $enableResult
+    resourcePublication = [pscustomobject][ordered]@{
+        before = $resourcePublicationBefore
+        after = $resourcePublicationAfter
+    }
     resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedTotalMs }))
     resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedCpuTotalMs }))
     maxSlotRefusals = [int](($records | Measure-Object slotRefusals -Maximum).Maximum)

@@ -107,6 +107,9 @@ For every strict receipt record:
 - `strictSatisfied`, failure mask/reasons, elapsed ms/frames;
 - `outstandingCleanupDebt`, `timing`, `frames`, `observation`, and producer /
   Build ID provenance.
+- normalized `resourcePublication`: current, current/completed/published
+  generations, expected/published width and height, `complete`,
+  `deferredSetupAcknowledged`, and D3D device/context matches.
 
 On timeout also retain `timedOutMilestone`, all milestone masks/reason arrays,
 the last observation, and outstanding cleanup debt. Report presentation,
@@ -114,6 +117,8 @@ cleanup, strict, and cleanup-tail (`strict - presentation`) timing per
 transition, plus median/p95/max for all four. Report retry, stretch, hard
 failure, OOM, device-loss, fidelity, vendor-failure, and bounds-mismatch totals;
 rank cleanup debt by frequency and accumulated tail.
+Do not infer a missing resource-publication field from another telemetry value;
+preserve it as missing evidence.
 
 Strict frames remain the release result: Dragonsreach <= 24, Windhelm <= 20,
 overall <= 22, worst <= 24, retries <= 9, session stretch observations <= 428,

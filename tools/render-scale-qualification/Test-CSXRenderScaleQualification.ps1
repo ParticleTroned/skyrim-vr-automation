@@ -56,6 +56,30 @@ function New-TestDiagnosticsDelta {
     }
 }
 
+$publicationRecords = Get-CSXQualificationWaitRecords -ScenarioResult ([pscustomobject]@{
+        results = @([pscustomobject]@{
+                label = 'coc-01-wait'
+                result = [pscustomobject]@{
+                    transitionId = 1; satisfied = $true
+                    observation = [pscustomobject]@{
+                        resourcePublication = [pscustomobject]@{
+                            current = $true; currentGeneration = 31; completedGeneration = 31; publishedGeneration = 31
+                            expectedWidth = 1644; expectedHeight = 1826; publishedWidth = 1644; publishedHeight = 1826
+                            complete = $true; deferredSetupAcknowledged = $true; deviceMatches = $true; contextMatches = $true
+                        }
+                    }
+                }
+            })
+    }) -LabelPrefix 'coc'
+Assert-Test ($publicationRecords.Count -eq 1 -and $publicationRecords[0].resourcePublication.available -and
+    $publicationRecords[0].resourcePublication.currentGeneration -eq 31 -and
+    $publicationRecords[0].resourcePublication.publishedWidth -eq 1644 -and
+    $publicationRecords[0].resourcePublication.complete -and
+    $publicationRecords[0].resourcePublication.contextMatches) 'Qualification wait extraction preserves resource-publication telemetry.'
+$publicationSummary = Get-CSXResourcePublicationSummary -Records $publicationRecords
+Assert-Test ($publicationSummary.availableSamples -eq 1 -and $publicationSummary.currentSamples -eq 1 -and
+    $publicationSummary.latest.deferredSetupAcknowledged) 'Qualification telemetry summary retains publication completeness.'
+
 function New-TestFailureBreakdown {
     $breakdown = [ordered]@{}
     foreach ($path in @(

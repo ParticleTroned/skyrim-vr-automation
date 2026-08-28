@@ -78,6 +78,9 @@ For each run preserve and report:
 - elapsed time and start/end frame;
 - method, backend, contract generation, transition epoch, render/display
   viewport, and final frame token;
+- resource-publication current state; current, completed, and published
+  generations; expected and published dimensions; `complete`, deferred-setup
+  acknowledgement, and D3D device/context matches;
 - fidelity mismatch count;
 - duplicate-constants and coalesced-duplicate counts;
 - session vendor-failure stretched-eye observations;

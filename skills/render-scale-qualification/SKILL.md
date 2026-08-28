@@ -69,6 +69,9 @@ baseline add `-PrMode`, `-BaselinePath`, and
 The package discovers the running Build ID and verified GPU matrix, executes
 the 20-transition COC assay, the 25-transition menu assay, two 30-second
 recovery barriers, and the three one-minute HMD-submission capture sequences.
+Each telemetry-bearing transition retains render-target resource-publication
+generations, expected/published dimensions, completion/deferred setup, and D3D
+device/context identity alongside CPU/GPU evidence.
 It then runs `gpt-5.6-sol` through the Codex CLI in six blinded batches: three
 replicates in each of two independently swapped presentation passes. The model
 evaluates sharpness, blur, shimmer, stereo alignment, equal eye scale, and

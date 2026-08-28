@@ -2,6 +2,7 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot '..\devbench-control\DevBenchControl.psm1') -Force
 
 function Get-CSXPropertyValue {
     param($InputObject, [Parameter(Mandatory)][string]$Name, $Default = $null)
@@ -781,9 +782,29 @@ function Get-CSXQualificationWaitRecords {
             satisfied = $satisfied; elapsedMs = $(if ($null -ne $elapsed) { [double]$elapsed } else { $null })
             target = Get-CSXPropertyValue $payload 'target'; foveation = Get-CSXPropertyValue $payload 'foveation'
             diagnostics = Get-CSXPropertyValue $payload 'diagnostics'; raw = $payload
+            resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $payload
         })
     }
     return @($records | Sort-Object ordinal)
+}
+
+function Get-CSXResourcePublicationSummary {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][object[]]$Records)
+
+    $samples = @($Records | ForEach-Object { $_.resourcePublication })
+    $available = @($samples | Where-Object { [bool]$_.available })
+    return [pscustomobject][ordered]@{
+        samples = $samples
+        availableSamples = $available.Count
+        currentSamples = @($available | Where-Object { [bool]$_.current }).Count
+        completeSamples = @($available | Where-Object { [bool]$_.complete }).Count
+        deferredSetupAcknowledgedSamples = @($available | Where-Object { [bool]$_.deferredSetupAcknowledged }).Count
+        dimensionsMatchSamples = @($available | Where-Object { [bool]$_.dimensionsMatch }).Count
+        deviceMatchSamples = @($available | Where-Object { [bool]$_.deviceMatches }).Count
+        contextMatchSamples = @($available | Where-Object { [bool]$_.contextMatches }).Count
+        latest = $(if ($samples.Count -gt 0) { $samples[-1] } else { Get-DevBenchResourcePublicationTelemetry -Response $null })
+    }
 }
 
 function Test-CSXFoveationEvidence {
@@ -4610,6 +4631,9 @@ function Update-CSXQualificationReport {
     $traceDropped = [uint64](($traceGroups | ForEach-Object { [uint64](Get-CSXPropertyValue $_.summary 'droppedRecords' 0) } | Measure-Object -Sum).Sum)
     $cocDelta = Get-CSXPathValue $raw 'baseline.cocPaired.aggregateDelta'
     $menuDelta = Get-CSXPathValue $raw 'baseline.menuPaired.aggregateDelta'
+    $cocPublication = Get-CSXPathValue $raw 'assays.coc.resourcePublication'
+    $menuPublication = Get-CSXPathValue $raw 'assays.menu.resourcePublication'
+    $publicationLine = "- Resource publication: COC current $((Get-CSXPropertyValue $cocPublication 'currentSamples' 0))/$((Get-CSXPropertyValue $cocPublication 'availableSamples' 0)); menu current $((Get-CSXPropertyValue $menuPublication 'currentSamples' 0))/$((Get-CSXPropertyValue $menuPublication 'availableSamples' 0)). Per-transition generation, dimension, completion, deferred-setup, and D3D identity fields are retained in transitions.json/CSV."
     $speedLine = if ($prMode) {
         $cocMedianDelta = Get-CSXPathValue $cocDelta 'median.percent' 'unavailable'
         $cocP95Delta = Get-CSXPathValue $cocDelta 'p95.percent' 'unavailable'
@@ -4634,6 +4658,7 @@ function Update-CSXQualificationReport {
         "- Recovery barriers: first $recoveryOne / $recoveryOneWall ms; second $recoveryTwo / $recoveryTwoWall ms (30,000 ms requested each).",
         "- COC: $cocCompleted/20 stable; wall $((Get-CSXPathValue $raw 'assays.coc.wallClockMs')) ms; total $((Get-CSXPropertyValue $cocStats 'total')) ms; min $((Get-CSXPropertyValue $cocStats 'min')) ms; median $cocMedian ms; mean $((Get-CSXPropertyValue $cocStats 'mean')) ms; SD $((Get-CSXPropertyValue $cocStats 'sampleStandardDeviation')) ms; CV $((Get-CSXPropertyValue $cocStats 'coefficientOfVariation')); p95 $cocP95 ms; max $cocMax ms; rate $((Get-CSXPropertyValue $cocStats 'transitionsPerMinute'))/min.",
         "- COC failures: $cocFailures events in $((Get-CSXPathValue $raw 'assays.coc.failedTransitions' 0)) transitions; Wilson 95% CI [$cocWilsonLower, $cocWilsonUpper].",
+        $publicationLine,
         "- Presentation stretch: mean $stretchMeanFrames frames / $stretchMeanMs ms; max $stretchMaxFrames frames / $stretchMaxMs ms; incomplete stereo at stop $((Get-CSXPathValue $raw 'assays.coc.stretch.incompleteStereoCycleAtStop' 'unknown')).",
         "- CS menu: $menuCompleted/25 stable; wall $((Get-CSXPathValue $raw 'assays.menu.wallClockMs')) ms; total $((Get-CSXPropertyValue $menuStats 'total')) ms; min $((Get-CSXPropertyValue $menuStats 'min')) ms; median $menuMedian ms; mean $((Get-CSXPropertyValue $menuStats 'mean')) ms; SD $((Get-CSXPropertyValue $menuStats 'sampleStandardDeviation')) ms; CV $((Get-CSXPropertyValue $menuStats 'coefficientOfVariation')); p95 $menuP95 ms; max $((Get-CSXPropertyValue $menuStats 'max')) ms; rate $((Get-CSXPropertyValue $menuStats 'transitionsPerMinute'))/min.",
         "- DLSS trace: $traceOutcome; $($traceGroups.Count) scoped sessions; $traceSetConstants constants calls; $traceEvaluates evaluate calls; $traceDropped dropped records.",
@@ -4657,7 +4682,7 @@ Export-ModuleMember -Function Assert-CSXProtocol, Get-CSXQualificationProtocol, 
     Get-CSXPropertyValue, Get-CSXPathValue, Get-CSXLiveGpuFixtureEvidence, ConvertTo-CSXHashtable, Add-CSXExactRuntimeToProfile, Get-CSXFoveationTarget,
     New-CSXCocScenario, New-CSXMenuScenario, New-CSXRecoveryScenario, New-CSXVisualSequenceRequest,
     New-CSXMcpConnection, Invoke-CSXMcpTool, Get-CSXRemainingMilliseconds, Get-CSXBoundedTimeoutSeconds,
-    Get-CSXNearestRankPercentile, Get-CSXMedian, Get-CSXMetricSummary, Get-CSXWilsonInterval, Get-CSXQualificationWaitRecords,
+    Get-CSXNearestRankPercentile, Get-CSXMedian, Get-CSXMetricSummary, Get-CSXWilsonInterval, Get-CSXQualificationWaitRecords, Get-CSXResourcePublicationSummary,
     Test-CSXFoveationEvidence, Test-CSXDLSSCaptureSummary, Test-CSXDLSSScenarioEvidence, Get-CSXPairedComparison,
     Assert-CSXVisualIndexSet, Resolve-CSXEvidencePath, Assert-CSXEvidencePathNoReparse,
     New-CSXAutomatedVisualPromptText, New-CSXAutomatedVisualReview, Test-CSXAutomatedVisualReviewEvidence,

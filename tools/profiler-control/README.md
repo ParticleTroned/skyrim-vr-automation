@@ -5,6 +5,11 @@ profiler, discards a configurable warm-up period, and records resolved GPU/CPU
 timer samples to raw JSON, a summary JSON, and timer CSV. If DevBench expires
 the MCP session during a longer capture, the collector reinitializes it and
 records the reconnect count in the summary without shortening the sample set.
+It also retains read-only resource-publication snapshots immediately before and
+after the measured interval: current, current/completed/published generations,
+expected/published dimensions, `complete`, deferred-setup acknowledgement, and
+D3D device/context matches. An unavailable snapshot is explicit evidence and
+does not invalidate the CPU/GPU capture.
 
 ```powershell
 .\Measure-CSXProfiler.ps1 `

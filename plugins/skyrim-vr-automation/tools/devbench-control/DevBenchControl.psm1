@@ -176,6 +176,82 @@ function Get-DevBenchNamedValue {
     return ([string]$Value).ToLowerInvariant()
 }
 
+function Get-DevBenchResourcePublicationTelemetry {
+    [CmdletBinding()]
+    param($Response)
+
+    function Get-PublicationMember($Value, [string]$Name) {
+        if ($null -eq $Value -or $Value -is [ValueType] -or $Value -is [string]) {
+            return $null
+        }
+        if ($Value -is [Collections.IDictionary]) {
+            return $(if ($Value.Contains($Name)) { $Value[$Name] } else { $null })
+        }
+        $property = $Value.PSObject.Properties[$Name]
+        return $(if ($property) { $property.Value } else { $null })
+    }
+
+    function New-PublicationTelemetry($Publication, [string]$SourcePath) {
+        $fields = @(
+            'current', 'currentGeneration', 'completedGeneration',
+            'publishedGeneration', 'expectedWidth', 'expectedHeight',
+            'publishedWidth', 'publishedHeight', 'complete',
+            'deferredSetupAcknowledged', 'deviceMatches', 'contextMatches'
+        )
+        $missing = [Collections.Generic.List[string]]::new()
+        $values = [ordered]@{}
+        foreach ($field in $fields) {
+            $values[$field] = Get-PublicationMember $Publication $field
+            if ($null -eq $values[$field]) { $missing.Add($field) }
+        }
+        return [pscustomobject][ordered]@{
+            schema = 'csx-resource-publication-telemetry-v1'
+            available = $null -ne $Publication
+            sourcePath = $SourcePath
+            missingFields = @($missing)
+            current = $values.current
+            currentGeneration = $values.currentGeneration
+            completedGeneration = $values.completedGeneration
+            publishedGeneration = $values.publishedGeneration
+            expectedWidth = $values.expectedWidth
+            expectedHeight = $values.expectedHeight
+            publishedWidth = $values.publishedWidth
+            publishedHeight = $values.publishedHeight
+            complete = $values.complete
+            deferredSetupAcknowledged = $values.deferredSetupAcknowledged
+            deviceMatches = $values.deviceMatches
+            contextMatches = $values.contextMatches
+            evaluated = Get-PublicationMember $Publication 'evaluated'
+            present = Get-PublicationMember $Publication 'present'
+            generationMatchesCurrent = Get-PublicationMember $Publication 'generationMatchesCurrent'
+            generationMatchesCompleted = Get-PublicationMember $Publication 'generationMatchesCompleted'
+            dimensionsMatch = Get-PublicationMember $Publication 'dimensionsMatch'
+        }
+    }
+
+    $queue = [Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue([pscustomobject]@{ value = $Response; path = '$'; depth = 0 })
+    while ($queue.Count -gt 0) {
+        $entry = $queue.Dequeue()
+        $publication = Get-PublicationMember $entry.value 'resourcePublication'
+        if ($null -ne $publication) {
+            return New-PublicationTelemetry $publication "$($entry.path).resourcePublication"
+        }
+        if ([int]$entry.depth -ge 3) { continue }
+        foreach ($name in @('value', 'result', 'status', 'observation')) {
+            $child = Get-PublicationMember $entry.value $name
+            if ($null -ne $child) {
+                $queue.Enqueue([pscustomobject]@{
+                        value = $child
+                        path = "$($entry.path).$name"
+                        depth = [int]$entry.depth + 1
+                    })
+            }
+        }
+    }
+    return New-PublicationTelemetry $null $null
+}
+
 function Test-DevBenchUpscalingProfilesEqual {
     [CmdletBinding()]
     param(
@@ -358,6 +434,7 @@ function Test-DevBenchUpscalingStable {
         fsrRuntime = $fsrRuntime
         frame = [uint32]$renderStatus.frame
         signature = $signature
+        resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $RenderScaleStatus
         reasons = @($reasons | Select-Object -Unique)
     }
 }
@@ -381,4 +458,4 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchNamedValue, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations
