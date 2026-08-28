@@ -12,6 +12,8 @@ param(
     [string]$SteamVRSettingsPath = 'C:\Program Files (x86)\Steam\config\steamvr.vrsettings',
     [string]$SteamVRRoot = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR',
     [string]$RuntimePath = $env:CSX_DEVBENCH_RUNTIME_PATH,
+    [string]$EvidenceDirectory,
+    [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
     [switch]$WhatIf,
     [switch]$Compact,
 
@@ -22,6 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $mo2Root = Join-Path $repositoryRoot 'tools\mo2-control'
+$boundedProcessTool = Join-Path $repositoryRoot 'tools\process-control\Invoke-BoundedProcess.ps1'
 Import-Module (Join-Path $mo2Root 'ConfigResolution.psm1') -Force
 
 function New-DoctorCheck([string]$Name, [string]$Status, [string]$Message, $Data = $null) {
@@ -61,8 +64,17 @@ try {
 
         $mo2Validation = $null
         if ($resolution.exists) {
-            $raw = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $mo2Root 'Invoke-MO2Control.ps1') validate -ConfigPath $resolution.path -Compact 2>&1
-            try { $mo2Validation = ($raw -join "`n") | ConvertFrom-Json -Depth 30 } catch { $mo2Validation = [pscustomobject]@{ ok = $false; raw = @($raw) } }
+            $boundedParameters = @{
+                FilePath = (Get-Process -Id $PID).Path
+                ArgumentList = @('-NoProfile', '-File', (Join-Path $mo2Root 'Invoke-MO2Control.ps1'), 'validate', '-ConfigPath', [string]$resolution.path, '-Compact')
+                WorkingDirectory = $repositoryRoot; TimeoutSeconds = $TimeoutSeconds; MaxAttempts = 1; NoExit = $true; Compact = $true
+            }
+            if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $boundedParameters.EvidenceDirectory = $EvidenceDirectory }
+            $boundedValidation = & $boundedProcessTool @boundedParameters | ConvertFrom-Json -Depth 40
+            if ($boundedValidation.ok -and @($boundedValidation.attempts).Count -eq 1) {
+                try { $mo2Validation = ([string]$boundedValidation.attempts[0].stdout) | ConvertFrom-Json -Depth 30 } catch { $mo2Validation = [pscustomobject]@{ ok = $false; raw = @($boundedValidation.attempts[0].stdout); boundedProcess = $boundedValidation } }
+            }
+            else { $mo2Validation = [pscustomobject]@{ ok = $false; boundedProcess = $boundedValidation } }
             $checks.Add((New-DoctorCheck 'mo2-validation' $(if ($mo2Validation.ok) { 'pass' } else { 'fail' }) $(if ($mo2Validation.ok) { 'MO2 configuration validates.' } else { 'MO2 configuration validation failed.' }) $mo2Validation))
             try {
                 $machineConfig = Get-Content -LiteralPath $resolution.path -Raw | ConvertFrom-Json
