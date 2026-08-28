@@ -17,6 +17,9 @@
 - Scenario: one async DevBench scenario with `continueOnError: false`.
 - Setup: one concurrent schema/discovery/reset fan-out; no repeated successful
   preflight calls after positioning.
+- Profiler: when `communityshaders.profiler_api` is exposed, prove embedded
+  errors abort a scenario, preserve its initial enabled state, and enable it
+  before the measured scenario. A `disabled` arm receipt is fatal.
 - Output: append one commit-headed column to
   `docs/development/vr-render-scale-comparison-ledger.csv`.
 
@@ -31,11 +34,31 @@ As soon as health and the exact Build ID are bound, start one direct
 `communityshaders.menu` call with
 `{"action":"prepare_coc","expectedBuildId":"<exact Build ID>"}`. At the same
 time, refresh the live schemas, discover every required or optional telemetry
-lane, and reset each supported lane. Run independent calls concurrently as one
-bounded setup fan-out. Do not poll between them, defer them until after the
-Windhelm positioning COC, or repeat a successful discovery/reset later. Keep
-the reset receipts. Do not start any capture here; in particular, CPU and GPU
-counters start only from transition 1's atomic dispatch.
+lane, and reset each supported lane whose contract defines a reset. Run
+independent calls concurrently as one bounded setup fan-out. Do not poll
+between them, defer them until after the Windhelm positioning COC, or repeat a
+successful discovery/reset later. Keep the reset receipts. Do not start any
+capture here; in particular, CPU and GPU counters start only from transition
+1's atomic dispatch.
+
+When `communityshaders.profiler_api` is exposed, prefer it over the legacy
+profiler tool. During this setup fan-out:
+
+1. Call `registry` and `snapshot` with `contractMajor: 1`, unique
+   `clientId`/`commandId` values, and the exact Build ID. Require registry
+   `capture.requiresEnabled: true`, snapshot `ok: true`,
+   `result.status: "success"`, and `result.available: true`. Preserve
+   `result.enabled` as the initial state.
+2. Run one synchronous, one-step scenario with `continueOnError: false` whose
+   only step calls `communityshaders.profiler_api` `start_capture` with
+   `contractMajor: 1`, unique client/command identity, and the exact Build ID,
+   but omits only the required `frameCount`. Require scenario `ok: false`,
+   `aborted: true`, `stepsRun: 1`, step `ok: false`, and embedded error code
+   `invalid_field`. This is a non-mutating proof that the installed DevBench
+   fails closed on extension-domain errors. If it does not, stop before the
+   positioning COC.
+
+Do not call `set_enabled` or `start_capture` during discovery.
 
 Require `ready: true`, `promptRequired: false`, and `persisted: false`. The
 `after` receipt must prove:
@@ -89,12 +112,26 @@ reported stale state or absence. Required capture lanes are:
   admission/early-exit, shader-cache, SSS/SSGI prewarm, DLSS/FSR/FSR4, D3D,
   total, request-to-prepared, and prepared-to-creator timings.
 
-After exact-cell verification, start stress, trace, lifetime, probe, and
-profiler captures as one concurrent bounded fan-out immediately before
-transition 1. Wait only for those start receipts, not for another discovery or
-reset cycle. Transition 1 must set `startPerformanceTelemetry: true`, which
-starts CPU and GPU telemetry on the same dispatch frame as the first measured
-COC. Later transitions set it to false.
+After exact-cell verification, start stress, trace, lifetime, and probe
+captures as one concurrent bounded fan-out immediately before transition 1.
+In that same fan-out, pre-arm the selected profiler lane:
+
+- For `communityshaders.profiler_api`, call `set_enabled` with
+  `contractMajor: 1`, `enabled: true`, unique client/command identity, and the
+  exact Build ID. Require `ok: true`, `result.enabled: true`, plus a nested
+  snapshot with `status: "success"`, `available: true`, and `enabled: true`.
+  Do not call `start_capture` yet.
+- Only when the versioned API is absent and the legacy
+  `communityshaders.profiler` tool is exposed, call `enable` with the exact
+  Build ID, require `enabled: true`, then call `status` and require
+  `status.enabled: true`.
+
+Wait for and validate every arm receipt before submitting the measured
+scenario; profiler pre-arming is not a step hidden inside that submission. Do
+not run another discovery or reset cycle. Transition 1 must set
+`startPerformanceTelemetry: true`, which starts CPU and GPU telemetry on the
+same dispatch frame as the first measured COC. Later transitions set it to
+false.
 
 Do not call memory trim, apply an upscaling profile, change a preset, or enable
 an unbounded screenshot/readback stream. Those alter the assay rather than
@@ -108,14 +145,26 @@ Build ID and UTC time. For transition IDs 1 through 20, append this block:
 
 1. `qualification_begin` with the exact owner and transition ID;
 2. `{ "wait": 10000 }`;
-3. `qualification_dispatch` with `cocCellEditorId` set to the odd/even
+3. On transition 1 only, when `communityshaders.profiler_api` was selected,
+   call `start_capture` with `contractMajor: 1`, `frameCount: 300`,
+   `clearHistory: true`, unique client/command identity, and the exact Build
+   ID. Require `ok: true`, a nonzero `result.captureId`, and
+   `result.state: "running"`;
+4. `qualification_dispatch` with `cocCellEditorId` set to the odd/even
    destination; use `startPerformanceTelemetry: true` only on transition 1;
-4. `qualification_wait` with the same owner/transition, exact expected editor
+5. `qualification_wait` with the same owner/transition, exact expected editor
    ID, fixed foveation fixture, `milestone: "strict"`, `timeoutMs: 30000`, and
    no `target` field;
-5. render-scale `status` with the exact Build ID. Retain its bounded
+6. render-scale `status` with the exact Build ID. Retain its bounded
    `status.preparation` trace, filtered to the transition epoch returned by the
    waiter. This read occurs after strict completion and is not another waiter.
+
+The profiler API step is omitted when that API was absent. Its `disabled` or
+other `ok: false` result must abort the scenario before
+`qualification_dispatch`; the preflight negative probe proved that this
+installed DevBench honors that boundary. Never reinterpret exposed-but-
+disabled as `unsupported` and never dispatch transition 1 after a failed
+profiler step.
 
 From the strict receipt's render-scale observation, extract current,
 current/completed/published generations, expected/published width and height,
@@ -132,7 +181,8 @@ The dispatch itself issues the only COC for that transition. Never add a
 separate console COC. An exact block therefore produces one timing origin, one
 COC, one strict result, and one post-wait telemetry snapshot. There must be
 exactly 20 dispatch receipts, 20 waiter receipts, and 20 preparation status
-receipts.
+receipts, plus exactly one profiler API capture receipt when that API was
+selected.
 
 Preserve every result, including semantic anomalies. A successful waiter may
 report an unsatisfied milestone; that is measured evidence. Stop future COCs
@@ -145,9 +195,19 @@ After transition 20, while the exact control plane remains responsive:
 
 1. Read health, final scene, upscaling snapshot, render-scale status,
    qualification status, profiler status, and all armed telemetry statuses.
+   For the versioned profiler API, read `capture_status` and `timers` with
+   `contractMajor: 1`, unique client/command identity, the exact Build ID, and
+   the exact transition-1 capture ID; preserve incomplete or failed capture
+   state.
 2. Stop CPU, GPU, stress, trace, texture-lifetime, probe, and profiler captures
    only with the ownership guards returned when they started.
-3. Retain the complete stress record, all 20 qualification results, trace and
+3. Restore the profiler enabled state only when this run changed it. For the
+   versioned API, call `set_enabled` with `contractMajor: 1`, `enabled: false`,
+   unique client/command identity, and the exact Build ID only when the initial
+   snapshot was disabled; require a successful disabled snapshot. Apply the
+   equivalent guarded legacy `disable` only when its initial status was
+   disabled.
+4. Retain the complete stress record, all 20 qualification results, trace and
    lifetime records, and the final health snapshot.
 
 For Dragonsreach, Windhelm, and overall, calculate strict stabilization mean

@@ -105,6 +105,21 @@ try {
         'preparation = [pscustomobject][ordered]@{',
         [StringComparison]::Ordinal
     )) 'profiler summary exposes before and after preparation traces'
+
+    $profilerSkill = Get-Content -LiteralPath (Join-Path $PSScriptRoot `
+        '..\..\skills\profiler-control\SKILL.md') -Raw
+    Assert-Test ($profilerSkill.Contains(
+        '`set_enabled` with `enabled: true`',
+        [StringComparison]::Ordinal
+    )) 'profiler contract enables the versioned API before capture'
+    Assert-Test ($profilerSkill.Contains(
+        'Treat `disabled` from `start_capture` as a failed capture',
+        [StringComparison]::Ordinal
+    )) 'profiler contract fails closed on a disabled capture'
+    Assert-Test ($profilerSkill.Contains(
+        'Restore the initial enabled state',
+        [StringComparison]::Ordinal
+    )) 'profiler contract restores caller-owned state'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

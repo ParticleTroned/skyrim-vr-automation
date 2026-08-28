@@ -23,7 +23,13 @@ comparing data. Use these entry points:
    state, warm-up, sample count, and interval before comparing captures.
 3. A capture enables the CSX profiler. That mutation requires the user's run or
    measurement authority; a request to review existing data does not.
-4. Write to a dedicated evidence directory outside live MO2 overwrite and
+4. When `communityshaders.profiler_api` is exposed, call `snapshot`, preserve
+   the initial enabled state, then call `set_enabled` with `enabled: true` and
+   require its nested snapshot to be available and enabled before
+   `start_capture`. Treat `disabled` from `start_capture` as a failed capture,
+   never as unsupported or a successful arm. Restore the initial enabled state
+   after the bounded capture when control remains responsive.
+5. Write to a dedicated evidence directory outside live MO2 overwrite and
    shader-cache trees. Keep raw JSON; summaries alone cannot be re-analysed.
    Preserve the collector's before/after normalized resource-publication
    telemetry and render-scale preparation trace with the timer data. Keep raw
@@ -31,7 +37,7 @@ comparing data. Use these entry points:
    shader-cache deferral, SSS/SSGI, DLSS/FSR/FSR4, D3D creation, total,
    request-to-prepared, and prepared-to-creator. Missing fields are evidence,
    never inferred.
-5. Compare at least two raw captures and identify the reference explicitly.
+6. Compare at least two raw captures and identify the reference explicitly.
    Treat the total as the active CSX profiler block, not whole-frame cost. Do
    not sum correlated timer deltas into a fictional independent total.
 

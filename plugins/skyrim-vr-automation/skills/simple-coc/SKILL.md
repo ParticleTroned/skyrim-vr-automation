@@ -21,6 +21,11 @@ setup fan-out. In that same interval, refresh schemas, discover telemetry
 lanes, and reset every supported lane. Do not serialize independent calls or
 repeat successful setup after positioning. Do not start CPU or GPU counters;
 transition 1's atomic dispatch remains their sole timing origin.
+If `communityshaders.profiler_api` is exposed, prove scenario semantic
+fail-closed behavior and explicitly enable and verify the API before queuing
+the measured scenario. `start_capture` must never be the first profiler
+mutation. An exposed API returning `disabled` is a failed required lane, not
+`unsupported` evidence.
 It must leave `persisted: false`, enable developer/debug logging, and establish
 only the runtime FOV/TAA `0.3/0.3/0.7` fixture. VR FPS Stabilizer remains the
 exclusive owner of DLSS and upscaling.
