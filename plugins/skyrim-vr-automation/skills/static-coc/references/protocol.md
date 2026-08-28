@@ -23,11 +23,15 @@ tool. Do not substitute client timing, an old waiter, or a second console COC.
 ## Arm phase
 
 At the main loading window, bind the exact Skyrim PID and Build ID to the
-DevBench and managed PyGhidra receipts. Arm one owned ProcDump exception
-collector and preserve its state path and capture directory. Require CDB/WinDbg
-and dump storage. If any receipt is missing, report `not armed`; do not send a
-COC. A new PID, endpoint, compilation, or failed identity check invalidates an
-old arm receipt.
+DevBench and managed native-headless Ghidra MCP receipts. Require the
+controller's `binaryListReady: true` and `programMatchesExpectation: true`
+receipt: it records the imported artifact SHA-256 and confirms the active
+executable path through the read-only `list_binaries` MCP call. Do not require
+PyGhidra or `eval_python` activation. Arm one owned ProcDump exception collector
+and preserve its state path and capture directory. Require CDB/WinDbg and dump
+storage. If any receipt is missing, report `not armed`; do not send a COC. A new
+PID, endpoint, compilation, or failed identity check invalidates an old arm
+receipt.
 
 ## Initial positioning
 

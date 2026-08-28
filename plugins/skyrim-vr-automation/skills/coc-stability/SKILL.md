@@ -35,10 +35,12 @@ so normal COC loads cannot consume its dump quota. Require the
 trusted project `.codex/config.toml` to declare the exact DevBench and Ghidra
 loopback endpoints; do not rely on volatile global registration state. Confirm
 the current Codex window exposes both MCP tool families and make one harmless
-call through each. Require the Ghidra receipt and live MCP call to prove
-`pyGhidraReady: true`, `programMatchesExpectation: true`, and the exact active
-program path; a listening server or project name alone is not proof. If either tool
-family is absent, leave Skyrim at the main menu, preserve the receipts, and ask
+call through each. Require the native-headless Ghidra receipt and live
+`list_binaries` MCP call to prove `binaryListReady: true`,
+`programMatchesExpectation: true`, and the exact active executable path. The
+controller records the imported artifact SHA-256; a listening server or project
+name alone is not proof. Do not require PyGhidra or `eval_python` activation. If
+either tool family is absent, leave Skyrim at the main menu, preserve the receipts, and ask
 the user to restart Codex. After the user returns and explicitly repeats
 `start COC protocol`, repeat only the tool-call checks. Retain the Ghidra and
 ProcDump receipts. Report readiness only after every required receipt and real

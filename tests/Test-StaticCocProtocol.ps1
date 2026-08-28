@@ -40,6 +40,10 @@ foreach ($required in @(
 foreach ($required in @(
     'communityshaders.renderscale',
     '`strict`, `presentation`, and `cleanup`',
+    'native-headless Ghidra MCP receipts',
+    '`binaryListReady: true`',
+    '`list_binaries` MCP call',
+    'Do not require PyGhidra or `eval_python` activation',
     '2 + (20 x 5) = 102 steps',
     'qualification_status',
     'qualification_dispatch',

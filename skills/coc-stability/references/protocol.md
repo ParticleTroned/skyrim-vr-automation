@@ -70,9 +70,10 @@ save or test world is loaded. Do not defer it into the in-game start window.
      exception-triggered, not window-hang-triggered.
 3. Require the Ghidra receipt to report `ok: true`, `state: ready`,
    `managed: true`, `endpointReady: true`, `listenerOwnedBySession: true`,
-   `pyGhidraReady: true`, and `programMatchesExpectation: true`. Its active
-   program path and SHA-256 must match the intended DLL, not merely share its
-   filename or project name. Prefer `listenerOwnershipSource` equal to
+   `binaryListReady: true`, and `programMatchesExpectation: true`. The
+   controller-recorded imported SHA-256 and the active executable path reported
+   by `list_binaries` must match the intended DLL, not merely share its filename
+   or project name. Prefer `listenerOwnershipSource` equal to
    `session-binding`, which verifies the saved listener PID and process start
    time without privileged process-tree access. A legacy session may use one
    ancestry-proven check to capture that binding. Its selected persistent
@@ -80,11 +81,11 @@ save or test world is loaded. Do not defer it into the in-game start window.
 4. Inspect the current Codex tool registry and require both DevBench and Ghidra
    MCP tool families to be attached to this window. An enabled settings toggle
    is not proof.
-5. Make one harmless Ghidra `eval_python` call that reads the active program
-   path/hash and one harmless DevBench health/identity call. The Python call
-   must execute successfully; tool presence alone does not prove that the
-   Ghidra instance was launched through PyGhidra. Require DevBench to identify VR,
-   `SkyrimVR.exe`, the exact PID, and port 8921.
+5. Make one harmless Ghidra `list_binaries` call and one harmless DevBench
+   health/identity call. The binary-list call must execute successfully and
+   report the expected active executable path; tool presence alone is not proof.
+   Do not activate PyGhidra or run `eval_python` during readiness. Require
+   DevBench to identify VR, `SkyrimVR.exe`, the exact PID, and port 8921.
 6. Run one synchronous DevBench scenario containing only a
    `communityshaders.renderscale` `qualification_wait` without an expected
    cell. Do not begin or dispatch a qualification. Require the embedded
@@ -128,8 +129,9 @@ A readiness receipt is reusable only while all of these remain true:
 - the same Codex window still exposes both MCP tool families;
 - the exact DevBench loopback registration is unchanged;
 - the Ghidra receipt still proves the same managed process and owned listener;
-- PyGhidra remains callable and the active program still matches the intended
-  artifact path and SHA-256;
+- the native-headless binary-list probe remains callable and the active program
+  still matches the intended artifact path while its recorded SHA-256 remains
+  unchanged;
 - the owned ProcDump PID and start time still match the state receipt;
 - `coc-evidence-control status` reports a live monitor;
 - DevBench and ProcDump still identify the same exact Skyrim PID.
