@@ -31,6 +31,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
 
+    [ValidateRange(100, 60000)]
+    [int]$TransactionLockTimeoutMilliseconds = 10000,
+
     [switch]$NoExit,
 
     [switch]$Compact
@@ -65,6 +68,16 @@ function Get-LiveProcesses([string[]]$Names) {
         }
     }
     return @($records)
+}
+
+function Assert-NoReparsePointPath([string]$Path, [string]$Purpose) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    while ($null -ne $item) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Purpose traverses a reparse point and is not qualified for mutation: $($item.FullName)"
+        }
+        $item = if ($item -is [IO.FileInfo]) { $item.Directory } else { $item.Parent }
+    }
 }
 
 function Get-ModLineMatches([byte[]]$Bytes, [string]$Name) {
@@ -149,6 +162,8 @@ function Resolve-WinningPlan([byte[]]$Bytes, [string]$TargetName, [string]$Targe
     $resolvedRoot = [IO.Path]::GetFullPath($ModRoot)
     $resolvedTarget = [IO.Path]::GetFullPath($TargetDirectory)
     if (-not $resolvedTarget.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'The target mod is not inside ModsDirectory.' }
+    Assert-NoReparsePointPath -Path $resolvedRoot -Purpose 'ModsDirectory'
+    Assert-NoReparsePointPath -Path $resolvedTarget -Purpose 'Target mod directory'
     $normalizedPaths = @()
     foreach ($path in @($Paths)) {
         if ([string]::IsNullOrWhiteSpace($path) -or [IO.Path]::IsPathRooted($path)) { throw 'WinningPaths must contain non-rooted relative file paths.' }
@@ -163,6 +178,7 @@ function Resolve-WinningPlan([byte[]]$Bytes, [string]$TargetName, [string]$Targe
     foreach ($record in @(Get-ModListRecords -Bytes $Bytes | Where-Object { $_.enabled -and $_.name -cne $TargetName })) {
         $providerRoot = [IO.Path]::GetFullPath((Join-Path $resolvedRoot ([string]$record.name)))
         if (-not $providerRoot.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $providerRoot -PathType Container)) { continue }
+        Assert-NoReparsePointPath -Path $providerRoot -Purpose "Enabled provider '$($record.name)'"
         foreach ($path in $normalizedPaths) {
             $providerFile = [IO.Path]::GetFullPath((Join-Path $providerRoot $path))
             if ($providerFile.StartsWith($providerRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $providerFile -PathType Leaf)) {
@@ -203,6 +219,167 @@ function Write-BytesAtomically([string]$Path, [byte[]]$Bytes) {
     }
 }
 
+function Get-BytesSha256([byte[]]$Bytes) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { return [Convert]::ToHexString($algorithm.ComputeHash($Bytes)) }
+    finally { $algorithm.Dispose() }
+}
+
+function Write-ProfileJsonAtomic([string]$Path, $Value) {
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 12))
+    Write-BytesAtomically -Path $Path -Bytes $bytes
+}
+
+function Invoke-WithProfileTransactionLock([string]$Path, [scriptblock]$Action, [int]$TimeoutMilliseconds = $TransactionLockTimeoutMilliseconds) {
+    $lockPath = "$Path.transaction.lock"
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $stream = $null
+    while ($null -eq $stream) {
+        try {
+            $stream = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Timed out waiting for the profile transaction lock: $lockPath" }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    try { return & $Action }
+    finally { $stream.Dispose() }
+}
+
+function Invoke-ProfileMutationTransaction {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][byte[]]$ExpectedBeforeBytes,
+        [Parameter(Mandatory)][byte[]]$AfterBytes,
+        [Parameter(Mandatory)][string]$EvidenceRoot,
+        [Parameter(Mandatory)][string]$BackupPath,
+        [Parameter(Mandatory)][string]$ReceiptPath,
+        [Parameter(Mandatory)]$Receipt,
+        [Parameter(Mandatory)][scriptblock]$Postcondition
+    )
+
+    $expectedBeforeHash = Get-BytesSha256 $ExpectedBeforeBytes
+    $expectedAfterHash = Get-BytesSha256 $AfterBytes
+    return Invoke-WithProfileTransactionLock -Path $Path -Action {
+        if (-not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null }
+        if (Test-Path -LiteralPath $BackupPath -PathType Leaf) { throw "Refusing to overwrite an existing exact backup: $BackupPath" }
+        if (Test-Path -LiteralPath $ReceiptPath -PathType Leaf) { throw "Refusing to overwrite an existing transaction receipt: $ReceiptPath" }
+
+        $currentHash = Get-Sha256 $Path
+        if ($currentHash -cne $expectedBeforeHash) { throw 'The profile changed after planning and before commit; no live bytes were written.' }
+
+        $transactionId = [guid]::NewGuid().ToString('N')
+        $journalPath = Join-Path $EvidenceRoot "modlist-control.$transactionId.journal.json"
+        $journal = [pscustomobject][ordered]@{
+            contractVersion = '2.0.0'; transactionId = $transactionId; operation = [string]$Receipt.operation
+            phase = 'preparing'; profilePath = $Path; backupPath = $BackupPath; receiptPath = $ReceiptPath
+            beforeSha256 = $expectedBeforeHash; intendedSha256 = $expectedAfterHash
+            preparedUtc = [DateTime]::UtcNow.ToString('o'); liveWriteStartedUtc = $null; committedUtc = $null
+            rollback = $null
+        }
+        [IO.File]::WriteAllBytes($BackupPath, $ExpectedBeforeBytes)
+        if ((Get-Sha256 $BackupPath) -cne $expectedBeforeHash) { throw 'Exact backup verification failed before profile mutation.' }
+        $journal.phase = 'prepared'
+        Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+
+        $liveWritten = $false
+        try {
+            $journal.phase = 'writing-live'
+            $journal.liveWriteStartedUtc = [DateTime]::UtcNow.ToString('o')
+            Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+            Write-BytesAtomically -Path $Path -Bytes $AfterBytes
+            $liveWritten = $true
+            if ((Get-Sha256 $Path) -cne $expectedAfterHash) { throw 'Atomic profile replacement did not produce the intended hash.' }
+            $postconditionResult = & $Postcondition ([IO.File]::ReadAllBytes($Path))
+
+            $Receipt | Add-Member -NotePropertyName contractVersion -NotePropertyValue '2.0.0' -Force
+            $Receipt | Add-Member -NotePropertyName transactionId -NotePropertyValue $transactionId -Force
+            $Receipt | Add-Member -NotePropertyName transactionJournalPath -NotePropertyValue $journalPath -Force
+            $Receipt | Add-Member -NotePropertyName backupPath -NotePropertyValue $BackupPath -Force
+            $Receipt | Add-Member -NotePropertyName beforeSha256 -NotePropertyValue $expectedBeforeHash -Force
+            $Receipt | Add-Member -NotePropertyName resultSha256 -NotePropertyValue $expectedAfterHash -Force
+            $Receipt | Add-Member -NotePropertyName changedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+            if ($null -ne $postconditionResult) { $Receipt | Add-Member -NotePropertyName postcondition -NotePropertyValue $postconditionResult -Force }
+            Write-ProfileJsonAtomic -Path $ReceiptPath -Value $Receipt
+            if (-not (Test-Path -LiteralPath $ReceiptPath -PathType Leaf)) { throw 'Durable profile receipt was not created.' }
+
+            $journal.phase = 'committed'
+            $journal.committedUtc = [DateTime]::UtcNow.ToString('o')
+            Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+            return [pscustomobject]@{ receipt = $Receipt; journalPath = $journalPath; transactionId = $transactionId }
+        }
+        catch {
+            $failure = $_.Exception.Message
+            $rollbackOk = $true
+            $rollbackError = $null
+            if ($liveWritten) {
+                try {
+                    Write-BytesAtomically -Path $Path -Bytes $ExpectedBeforeBytes
+                    $rollbackOk = (Get-Sha256 $Path) -ceq $expectedBeforeHash
+                    if (-not $rollbackOk) { $rollbackError = 'Rollback hash verification failed.' }
+                }
+                catch { $rollbackOk = $false; $rollbackError = $_.Exception.Message }
+            }
+            $journal.phase = if ($rollbackOk) { 'rolled-back' } else { 'recovery-required' }
+            $journal.rollback = [pscustomobject][ordered]@{ attempted = $liveWritten; verified = $rollbackOk; error = $rollbackError; completedUtc = [DateTime]::UtcNow.ToString('o') }
+            try { Write-ProfileJsonAtomic -Path $journalPath -Value $journal } catch { $rollbackError = "${rollbackError}; journal: $($_.Exception.Message)" }
+            if (-not $rollbackOk) { throw "Profile transaction failed and rollback requires recovery. $failure Rollback: $rollbackError" }
+            throw "Profile transaction failed; exact preimage restored. $failure"
+        }
+    }
+}
+
+function Invoke-ProfileRestoreTransaction {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][byte[]]$CurrentBytes,
+        [Parameter(Mandatory)][byte[]]$RestoreBytes,
+        [Parameter(Mandatory)][string]$EvidenceRoot,
+        [Parameter(Mandatory)][string]$ExpectedCurrentHash,
+        [Parameter(Mandatory)][string]$ExpectedRestoreHash
+    )
+
+    return Invoke-WithProfileTransactionLock -Path $Path -Action {
+        if ((Get-Sha256 $Path) -cne $ExpectedCurrentHash) { throw 'Current modlist changed before restore commit; no live bytes were written.' }
+        $transactionId = [guid]::NewGuid().ToString('N')
+        $preimagePath = Join-Path $EvidenceRoot "modlist.restore-before.$transactionId.bin"
+        $journalPath = Join-Path $EvidenceRoot "modlist-restore.$transactionId.journal.json"
+        [IO.File]::WriteAllBytes($preimagePath, $CurrentBytes)
+        $journal = [pscustomobject][ordered]@{
+            contractVersion = '2.0.0'; transactionId = $transactionId; operation = 'restore'; phase = 'prepared'
+            profilePath = $Path; preimagePath = $preimagePath; beforeSha256 = $ExpectedCurrentHash; intendedSha256 = $ExpectedRestoreHash
+            preparedUtc = [DateTime]::UtcNow.ToString('o'); committedUtc = $null; rollback = $null
+        }
+        Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+        $liveWritten = $false
+        try {
+            Write-BytesAtomically -Path $Path -Bytes $RestoreBytes
+            $liveWritten = $true
+            if ((Get-Sha256 $Path) -cne $ExpectedRestoreHash) { throw 'Restore postcondition hash failed.' }
+            $journal.phase = 'committed'; $journal.committedUtc = [DateTime]::UtcNow.ToString('o')
+            Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+            return [pscustomobject]@{ journalPath = $journalPath; transactionId = $transactionId }
+        }
+        catch {
+            $failure = $_.Exception.Message; $rollbackOk = $true; $rollbackError = $null
+            if ($liveWritten) {
+                try {
+                    Write-BytesAtomically -Path $Path -Bytes $CurrentBytes
+                    $rollbackOk = (Get-Sha256 $Path) -ceq $ExpectedCurrentHash
+                    if (-not $rollbackOk) { $rollbackError = 'Restore rollback hash verification failed.' }
+                }
+                catch { $rollbackOk = $false; $rollbackError = $_.Exception.Message }
+            }
+            $journal.phase = if ($rollbackOk) { 'rolled-back' } else { 'recovery-required' }
+            $journal.rollback = [pscustomobject][ordered]@{ attempted = $liveWritten; verified = $rollbackOk; error = $rollbackError; completedUtc = [DateTime]::UtcNow.ToString('o') }
+            try { Write-ProfileJsonAtomic -Path $journalPath -Value $journal } catch { }
+            if (-not $rollbackOk) { throw "Profile restore failed and rollback requires recovery. $failure Rollback: $rollbackError" }
+            throw "Profile restore failed; exact preimage restored. $failure"
+        }
+    }
+}
+
 function Test-ProfileShouldProcess($Caller, [string]$Target, [string]$Action) {
     try {
         return $Caller.ShouldProcess($Target, $Action)
@@ -224,6 +401,7 @@ else {
 if (-not (Test-Path -LiteralPath $resolvedProfile -PathType Leaf)) {
     throw "Profile modlist does not exist. Pass either the profile directory or its modlist.txt: $resolvedProfile"
 }
+Assert-NoReparsePointPath -Path $resolvedProfile -Purpose 'Profile modlist'
 $profileName = [IO.Path]::GetFileName($profileDirectory)
 
 $beforeBytes = [IO.File]::ReadAllBytes($resolvedProfile)
@@ -287,21 +465,23 @@ if ($Command -in @('register', 'register-winning')) {
         $afterBytes = Add-ModLine -Bytes $beforeBytes -Name $ModName -Enabled ([bool]$RegisterEnabled) -LinePlacement $Placement -RelativeName $RelativeToMod
     }
     if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "$Command exact MO2 mod '$ModName' at $effectivePlacement") {
-        if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) { New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null }
-        [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
-        Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
-        $afterLine = Get-ModLineRecord -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -Name $ModName
-        $afterHash = Get-Sha256 $resolvedProfile
-        $winnerProof = if ($Command -eq 'register-winning') { Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths } else { $null }
-        [pscustomobject][ordered]@{
-            contractVersion = '1.4.0'; operation = $Command; profilePath = $resolvedProfile
+        $afterLine = Get-ModLineRecord -Bytes $afterBytes -Name $ModName
+        $winnerProof = if ($Command -eq 'register-winning') { Test-WinningPostcondition -Bytes $afterBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths } else { $null }
+        $receipt = [pscustomobject][ordered]@{
+            operation = $Command; profilePath = $resolvedProfile
             profileName = $profileName; profileDirectory = $profileDirectory; modListPath = $resolvedProfile
-            modName = $ModName; modDirectory = $resolvedModDirectory; backupPath = $backupPath
-            beforeSha256 = $beforeHash; resultSha256 = $afterHash; beforeMarker = $null
+            modName = $ModName; modDirectory = $resolvedModDirectory; beforeMarker = $null
             resultMarker = $afterLine.marker; placement = $effectivePlacement; relativeToMod = $effectiveRelative
             winnerProof = $winnerProof; providerPlan = $winningPlan
-            changedUtc = [DateTime]::UtcNow.ToString('o')
-        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+        }
+        $postcondition = {
+            param([byte[]]$liveBytes)
+            $line = Get-ModLineRecord -Bytes $liveBytes -Name $ModName
+            if ($line.marker -cne $afterLine.marker) { throw 'Registration marker postcondition failed.' }
+            if ($Command -eq 'register-winning') { return Test-WinningPostcondition -Bytes $liveBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths }
+            return [pscustomobject]@{ verified = $true; marker = $line.marker }
+        }
+        $null = Invoke-ProfileMutationTransaction -Path $resolvedProfile -ExpectedBeforeBytes $beforeBytes -AfterBytes $afterBytes -EvidenceRoot $resolvedEvidence -BackupPath $backupPath -ReceiptPath $receiptPath -Receipt $receipt -Postcondition $postcondition
     }
 }
 elseif ($Command -eq 'ensure-winner') {
@@ -313,21 +493,17 @@ elseif ($Command -eq 'ensure-winner') {
     $effectivePlacement = if ([string]::IsNullOrWhiteSpace([string]$winningPlan.placeBeforeMod)) { 'End' } else { 'Before' }
     $effectiveRelative = [string]$winningPlan.placeBeforeMod
     $afterBytes = Add-ModLine -Bytes $withoutTarget -Name $ModName -Enabled $true -LinePlacement $effectivePlacement -RelativeName $effectiveRelative
-    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite an existing exact backup: $backupPath" }
     if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "enable and place '$ModName' before every enabled loose-file provider") {
-        if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) { New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null }
-        [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
-        Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
-        $afterHash = Get-Sha256 $resolvedProfile
-        $winnerProof = Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
-        [pscustomobject][ordered]@{
-            contractVersion = '1.4.0'; operation = 'ensure-winner'; profilePath = $resolvedProfile
+        $winnerProof = Test-WinningPostcondition -Bytes $afterBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+        $receipt = [pscustomobject][ordered]@{
+            operation = 'ensure-winner'; profilePath = $resolvedProfile
             profileName = $profileName; profileDirectory = $profileDirectory; modListPath = $resolvedProfile
-            modName = $ModName; modDirectory = $resolvedModDirectory; backupPath = $backupPath
-            beforeSha256 = $beforeHash; resultSha256 = $afterHash; beforeMarker = $beforeLine.marker
+            modName = $ModName; modDirectory = $resolvedModDirectory; beforeMarker = $beforeLine.marker
             resultMarker = '+'; placement = $effectivePlacement; relativeToMod = $effectiveRelative
-            winnerProof = $winnerProof; providerPlan = $winningPlan; changedUtc = [DateTime]::UtcNow.ToString('o')
-        } | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+            winnerProof = $winnerProof; providerPlan = $winningPlan
+        }
+        $postcondition = { param([byte[]]$liveBytes) Test-WinningPostcondition -Bytes $liveBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths }
+        $null = Invoke-ProfileMutationTransaction -Path $resolvedProfile -ExpectedBeforeBytes $beforeBytes -AfterBytes $afterBytes -EvidenceRoot $resolvedEvidence -BackupPath $backupPath -ReceiptPath $receiptPath -Receipt $receipt -Postcondition $postcondition
     }
 }
 elseif ($Command -in @('enable', 'disable')) {
@@ -350,32 +526,26 @@ elseif ($Command -in @('enable', 'disable')) {
     $afterBytes[$beforeLine.byteOffset] = [byte][char]$targetMarker
 
     if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "$Command exact MO2 mod '$ModName'") {
-        if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Container)) {
-            New-Item -ItemType Directory -Path $resolvedEvidence -Force | Out-Null
-        }
-        [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
-        Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
-        $afterHash = Get-Sha256 $resolvedProfile
-        $afterLine = Get-ModLineRecord -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -Name $ModName
-        if ($afterLine.enabled -ne $targetEnabled -or $afterHash -eq $beforeHash) {
-            $targetState = if ($targetEnabled) { 'enabled' } else { 'disabled' }
-            throw "Postcondition failed: exact mod was not $targetState."
-        }
-        [pscustomobject][ordered]@{
-            contractVersion = '1.4.0'
+        $receipt = [pscustomobject][ordered]@{
             operation = $Command
             profilePath = $resolvedProfile
             profileName = $profileName
             profileDirectory = $profileDirectory
             modListPath = $resolvedProfile
             modName = $ModName
-            backupPath = $backupPath
-            beforeSha256 = $beforeHash
-            resultSha256 = $afterHash
             beforeMarker = $expectedMarker
             resultMarker = $targetMarker
-            changedUtc = [DateTime]::UtcNow.ToString('o')
-        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+        }
+        $postcondition = {
+            param([byte[]]$liveBytes)
+            $line = Get-ModLineRecord -Bytes $liveBytes -Name $ModName
+            if ($line.enabled -ne $targetEnabled -or (Get-BytesSha256 $liveBytes) -ceq $beforeHash) {
+                $targetState = if ($targetEnabled) { 'enabled' } else { 'disabled' }
+                throw "Postcondition failed: exact mod was not $targetState."
+            }
+            return [pscustomobject]@{ verified = $true; enabled = $line.enabled; marker = $line.marker }
+        }
+        $null = Invoke-ProfileMutationTransaction -Path $resolvedProfile -ExpectedBeforeBytes $beforeBytes -AfterBytes $afterBytes -EvidenceRoot $resolvedEvidence -BackupPath $backupPath -ReceiptPath $receiptPath -Receipt $receipt -Postcondition $postcondition
     }
 }
 elseif ($Command -eq 'restore') {
@@ -405,10 +575,7 @@ elseif ($Command -eq 'restore') {
     }
     $restoreBytes = [IO.File]::ReadAllBytes($backupPath)
     if (Test-ProfileShouldProcess -Caller $PSCmdlet -Target $resolvedProfile -Action "Restore exact MO2 modlist bytes for '$ModName'") {
-        Write-BytesAtomically -Path $resolvedProfile -Bytes $restoreBytes
-        if ((Get-Sha256 $resolvedProfile) -ne [string]$receipt.beforeSha256) {
-            throw 'Postcondition failed: exact modlist bytes were not restored.'
-        }
+        $null = Invoke-ProfileRestoreTransaction -Path $resolvedProfile -CurrentBytes $beforeBytes -RestoreBytes $restoreBytes -EvidenceRoot $resolvedEvidence -ExpectedCurrentHash $expectedResultHash -ExpectedRestoreHash ([string]$receipt.beforeSha256)
     }
 }
 
