@@ -36,12 +36,16 @@ this protocol is `BLOCKED`; a scenario that masks an embedded API error cannot
 own a measured apply.
 
 The public snapshot serializes each enum as `{ "value", "name" }`. Preserve
-that raw object in evidence, but build the next `apply.target` from its
-`name` fields only: stable `method.name`, `qualityMode.name`,
+that raw object in evidence, but build the next `apply.target` from the
+effective profile's `name` fields only: `method.name`, `qualityMode.name`,
 `dlssProfile.name`, and `fsrRuntime.name`. Never submit a raw wrapper object,
-numeric enum, defaulted field, or an inferred provider value. Require the
-requested, effective, and stable profiles to be present and identical before
-using the stable profile as the complete active-profile clone.
+numeric enum, defaulted field, or an inferred provider value. At a settled
+boundary, require complete configured and effective profiles with no active
+operation. The controller requested/stable stream is separate physical
+evidence: it must agree for scaled vendor state. For TAA, None, DLAA, and FSR
+Native AA, requested/stable may instead be an inactive native None projection
+only when the API reports no active operation and configured/effective are
+exact. That projection never replaces the public effective target.
 
 Load `matrix.v1.json` relative to this installed skill. Require schema version
 1, adapter vendor `nvidia`, exactly 33 entries with ordinals 1 through 33, a
@@ -56,8 +60,9 @@ and is not measured.
 ## 2. Establish the NVIDIA baseline
 
 Start a short baseline-only stress session, then read one authoritative API
-snapshot. Require a complete stable profile and no active operation. Clone the
-stable profile through its `name` fields, set only `method: dlss`,
+snapshot. Require complete configured and effective profiles, physical stable
+evidence, and no active operation. Clone the effective profile through its
+`name` fields, set only `method: dlss`,
 `qualityMode: hoshipa`, `renderScaleMode: true`, and dormant
 `fsrRuntime: fsr3`, and preserve `dlssProfile`. Run one synchronous
 (`async: false`), fail-closed mutation scenario: `qualification_begin`, then
@@ -96,11 +101,19 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `stateRevision`, profile-presence flags, complete configured/requested/
    applying/effective/stable/persisted profiles, conditions, operation state,
    and physical dimensions.
-2. Require a complete stable active profile. Construct its complete API target
-   from the stable profile's `name` fields; mutate only `method`,
-   `qualityMode`, and `renderScaleMode` from the destination. For FSR entries
-   also set `fsrRuntime: fsr3`. Preserve `dlssProfile` and preserve dormant
-   `fsrRuntime` on None, TAA, DLAA, and DLSS entries.
+2. Require complete configured and effective API profiles and no active
+   operation. Construct its complete API target from the effective profile's
+   `name` fields; mutate only `method`, `qualityMode`, and
+   `renderScaleMode` from the destination. For FSR entries also set
+   `fsrRuntime: fsr3`. Preserve `dlssProfile` and preserve dormant
+   `fsrRuntime` on None, TAA, DLAA, and DLSS entries. For scaled vendor state,
+   require the controller requested/stable profiles to agree with effective.
+   For settled TAA, None, DLAA, and FSR Native AA, an inactive native None
+   controller projection is valid only when there is no active operation,
+   configured/effective match the completed public target, and requested/stable
+   both report None with render scale disabled. It is telemetry, not
+   `pre_snapshot_profile_incoherent`; never use it to construct or replace the
+   API target.
 3. Materialize the snapshot-derived string target and every guarded apply
    argument before submitting one synchronous (`async: false`) server scenario with
    `continueOnError: false`. Its consecutive mutation steps are
@@ -149,8 +162,13 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    Read that apply's operation exactly once after the barrier; require its
    target and effective profile to match, its state to be `completed`, and the
    final snapshot to have no active operation before releasing the timing-only
-   owner with `qualification_cancel`. That expected cancellation closes the
-   timing bracket and is not a render failure.
+   owner with `qualification_cancel`. On the next pre-apply snapshot, preserve
+   a settled native None controller projection as physical telemetry when there
+   is no active operation, its configured/effective API profile matches the
+   completed TAA or None target, and requested/stable are inactive None. Do
+   not relabel it as an incoherent profile or wait for it to become TAA.
+   That expected cancellation closes the timing bracket and is not a render
+   failure.
 7. Read the operation, transition-filtered API events, authoritative API
    snapshot, render-scale status, preparation trace, and applicable DLSS
    trace. Inspect the completed transition before allowing the next apply.
@@ -214,7 +232,10 @@ match the complete target; the authoritative effective method to be exact;
 evidence from the producer; advancing coherent in-world target-correlated
 `upscalingStable`; no
 unresolved physical mutation; and no vendor evaluation treated as the active
-presentation. If the receipt cannot expose an exact native presentation
+presentation. Their requested/stable controller state may remain the inactive
+native None physical projection; record it separately and never require it to
+equal the public effective TAA profile. If the receipt cannot expose an exact
+native presentation
 generation, record that named tooling gap and classify generation proof
 `INCONCLUSIVE`; retain raw dimensions but do not calculate native or
 `dimensionsMatch` booleans.

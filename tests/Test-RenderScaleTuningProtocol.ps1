@@ -104,6 +104,8 @@ foreach ($variant in $variants) {
         '`startPerformanceTelemetry: true`', '`qualification_cancel`',
         'continueOnError: false', 'embedded tool error as step `ok: false`',
         'name` fields only', 'Never submit a raw wrapper object',
+        'effective profile''s `name` fields', 'native None projection',
+        'It is telemetry, not', '`pre_snapshot_profile_incoherent`',
         'No wait, snapshot, client round trip, menu action, or other tool may appear',
         'idempotentReplay: false', '`applied_synchronously`', '`queued`',
         '`no_change`', 'do not call a vendor', 'upscalingStable',
@@ -113,7 +115,7 @@ foreach ($variant in $variants) {
         'recorded transition `FAIL` or `INCONCLUSIVE`',
         'qualification owner is closed', 'Otherwise stop future mutations',
         'vendor_native', 'requested/stable render-scale projections may be `none`',
-        'physical backend of `none` is a failure',
+        '`none` is a failure',
         'Scenario steps cannot interpolate earlier',
         'using its exact returned', 'ownership guard',
         'physicalMutationStarted', 'not merely engine-target creator entry',
@@ -132,6 +134,7 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('CS-menu-origin render-scale', [StringComparison]::Ordinal)) "$($variant.Name) retained the old render-scale mutation primitive."
     Assert-True (-not $protocol.Contains('SteamVR frame-timing', [StringComparison]::OrdinalIgnoreCase)) "$($variant.Name) retained an external timing comparison."
     Assert-True (-not $protocol.Contains('wait up to 30,000 ms for the public operation', [StringComparison]::Ordinal)) "$($variant.Name) can spend two serial 30-second windows."
+    Assert-True (-not $protocol.Contains('Require a complete stable active profile.', [StringComparison]::Ordinal)) "$($variant.Name) still derives public targets from the physical controller projection."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
