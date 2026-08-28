@@ -23,6 +23,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Add opt-in, receipt-bound isolation of exact OpenVR display redirectors;
   refuse registration or manifest drift and restore the byte-identical
   pre-test registration file before returning to normal VR operation.
+- Accept formatting-only OpenVR registration drift through ordinal canonical
+  JSON comparison while deriving the isolated expectation from the exact
+  backup; reject duplicate targets and receipt/backup disagreement.
 - Revalidate the exact MO2 owner through a bounded post-game stability window,
   returning an explicit release-required state if MO2 exits, and add compact
   JSON output to profile control.

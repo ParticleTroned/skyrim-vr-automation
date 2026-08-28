@@ -45,8 +45,13 @@ manifest hash into the apply receipt, removes only that registration, and
 verifies that the remaining inventory is complete and conflict-free. If more
 than one redirector is present, name every exact root in the
 `-ExternalDisplayRedirectorRoot <root1>,<root2>` array. `start` refuses registration drift;
-`restore` refuses to overwrite drift and restores the exact pre-apply bytes only
-when the isolated-state hash and suppressed manifests still match the receipt.
+`restore` refuses to overwrite semantic drift and restores the exact pre-apply
+bytes only when the isolated state and suppressed manifests remain qualified.
+Formatting-only changes are accepted using a canonical semantic hash. The
+expected isolated document is always rebuilt from the exact registration
+backup by removing each unique recorded target exactly once; a receipt semantic
+hash is corroboration, not authority. Duplicate or missing targets and any
+receipt/backup disagreement fail closed.
 The normal fail-closed path remains unchanged when this option is omitted.
 
 Apply and restore are recoverable multi-file transactions. Before changing

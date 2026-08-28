@@ -10,6 +10,21 @@ if ($entry.Count -ne 1) { throw 'Marketplace must contain exactly one skyrim-vr-
 $pluginRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot $entry[0].source.path))
 if (-not (Test-Path -LiteralPath (Join-Path $pluginRoot '.codex-plugin\plugin.json') -PathType Leaf)) { throw 'Marketplace plugin manifest is missing.' }
 
+function Test-DistributionFileEqual([string]$PublishedPath, [string]$RebuiltPath) {
+    $binaryExtensions = @('.dll', '.exe', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.zip', '.7z')
+    if ($binaryExtensions -contains [IO.Path]::GetExtension($PublishedPath).ToLowerInvariant()) {
+        return (Get-FileHash -LiteralPath $PublishedPath -Algorithm SHA256).Hash -eq
+            (Get-FileHash -LiteralPath $RebuiltPath -Algorithm SHA256).Hash
+    }
+
+    # Git normalizes tracked text to LF while Windows worktrees may materialize
+    # either LF or CRLF. Distribution freshness is about content, not checkout
+    # line-ending policy.
+    $published = (Get-Content -LiteralPath $PublishedPath -Raw).Replace("`r`n", "`n")
+    $rebuilt = (Get-Content -LiteralPath $RebuiltPath -Raw).Replace("`r`n", "`n")
+    return $published -ceq $rebuilt
+}
+
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('skyrim-vr-distribution-' + [guid]::NewGuid().ToString('N'))
 try {
     $rebuilt = Join-Path $fixture 'skyrim-vr-automation'
@@ -20,9 +35,9 @@ try {
     $rebuiltFiles = @(Get-ChildItem -LiteralPath $rebuilt -Recurse -File | ForEach-Object { [IO.Path]::GetRelativePath($rebuilt, $_.FullName) } | Sort-Object)
     if (($publishedFiles -join "`n") -ne ($rebuiltFiles -join "`n")) { throw 'Committed marketplace package file set is stale.' }
     foreach ($relative in $rebuiltFiles) {
-        $a = (Get-FileHash -LiteralPath (Join-Path $pluginRoot $relative) -Algorithm SHA256).Hash
-        $b = (Get-FileHash -LiteralPath (Join-Path $rebuilt $relative) -Algorithm SHA256).Hash
-        if ($a -ne $b) { throw "Committed marketplace package is stale: $relative" }
+        if (-not (Test-DistributionFileEqual (Join-Path $pluginRoot $relative) (Join-Path $rebuilt $relative))) {
+            throw "Committed marketplace package is stale: $relative"
+        }
     }
 
     $manifest = Get-Content -LiteralPath (Join-Path $rebuilt '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
