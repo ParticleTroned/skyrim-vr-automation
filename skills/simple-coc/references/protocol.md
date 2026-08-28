@@ -15,6 +15,8 @@
 - Qualification: one strict waiter per transition, 30,000 ms timeout, no
   target profile. VR FPS Stabilizer owns profile selection.
 - Scenario: one async DevBench scenario with `continueOnError: false`.
+- Setup: one concurrent schema/discovery/reset fan-out; no repeated successful
+  preflight calls after positioning.
 - Output: append one commit-headed column to
   `docs/development/vr-render-scale-comparison-ledger.csv`.
 
@@ -27,10 +29,13 @@ dirty flag, configuration, shader-cache ABI, compiler identity, PID, and port.
 
 As soon as health and the exact Build ID are bound, start one direct
 `communityshaders.menu` call with
-`{"action":"prepare_coc","expectedBuildId":"<exact Build ID>"}`. Run the
-remaining read-only producer/capability discovery in parallel with that call.
-Do not defer `prepare_coc` until after the Windhelm positioning COC
-or telemetry arming, and do not call it a second time.
+`{"action":"prepare_coc","expectedBuildId":"<exact Build ID>"}`. At the same
+time, refresh the live schemas, discover every required or optional telemetry
+lane, and reset each supported lane. Run independent calls concurrently as one
+bounded setup fan-out. Do not poll between them, defer them until after the
+Windhelm positioning COC, or repeat a successful discovery/reset later. Keep
+the reset receipts. Do not start any capture here; in particular, CPU and GPU
+counters start only from transition 1's atomic dispatch.
 
 Require `ready: true`, `promptRequired: false`, and `persisted: false`. The
 `after` receipt must prove:
@@ -66,7 +71,9 @@ Do not count this positioning COC among the 20 measured transitions.
 
 ## 3. Arm all relevant render-scale telemetry
 
-Refresh the live tool schemas before the run. Required capture lanes are:
+Use the live schemas and reset receipts obtained during the binding fan-out.
+Refresh or reset an individual lane again only when its earlier call explicitly
+reported stale state or absence. Required capture lanes are:
 
 - render-scale stress events and transition metrics;
 - strict qualification timing and health receipts;
@@ -82,12 +89,12 @@ Refresh the live tool schemas before the run. Required capture lanes are:
   admission/early-exit, shader-cache, SSS/SSGI prewarm, DLSS/FSR/FSR4, D3D,
   total, request-to-prepared, and prepared-to-creator timings.
 
-Reset each supported capture lane before use. Start stress capture before the
-first qualification. Start auxiliary trace, lifetime, probe, and profiler
-lanes immediately before transition 1's dispatch. Transition 1 must set
-`startPerformanceTelemetry: true`, which starts CPU and GPU telemetry on the
-same dispatch frame as the first measured COC. Later transitions set it to
-false.
+After exact-cell verification, start stress, trace, lifetime, probe, and
+profiler captures as one concurrent bounded fan-out immediately before
+transition 1. Wait only for those start receipts, not for another discovery or
+reset cycle. Transition 1 must set `startPerformanceTelemetry: true`, which
+starts CPU and GPU telemetry on the same dispatch frame as the first measured
+COC. Later transitions set it to false.
 
 Do not call memory trim, apply an upscaling profile, change a preset, or enable
 an unbounded screenshot/readback stream. Those alter the assay rather than

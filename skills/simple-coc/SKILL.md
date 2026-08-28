@@ -16,9 +16,11 @@ building, deploying, changing MO2 state, restarting Skyrim, saving settings,
 changing DLSS/upscaling, Ghidra, ProcDump, or deleting evidence.
 
 As soon as DevBench health and the exact producer Build ID are bound, call
-`communityshaders.menu` `prepare_coc` exactly once as part of that same setup
-interval. Run it in parallel with the remaining read-only identity and
-capability discovery; do not defer it until positioning or telemetry arming.
+`communityshaders.menu` `prepare_coc` exactly once as part of one concurrent
+setup fan-out. In that same interval, refresh schemas, discover telemetry
+lanes, and reset every supported lane. Do not serialize independent calls or
+repeat successful setup after positioning. Do not start CPU or GPU counters;
+transition 1's atomic dispatch remains their sole timing origin.
 It must leave `persisted: false`, enable developer/debug logging, and establish
 only the runtime FOV/TAA `0.3/0.3/0.7` fixture. VR FPS Stabilizer remains the
 exclusive owner of DLSS and upscaling.

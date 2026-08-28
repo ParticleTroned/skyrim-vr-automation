@@ -34,7 +34,10 @@ foreach ($pair in @(
 $skill = Get-Content -LiteralPath $sourceSkill -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocol -Raw
 foreach ($required in @(
-    'in parallel with the remaining read-only identity',
+    'one concurrent',
+    'refresh schemas, discover telemetry',
+    'Do not serialize independent calls',
+    'transition 1''s atomic dispatch remains their sole timing origin',
     '`persisted: false`',
     'developer/debug logging',
     'FOV/TAA `0.3/0.3/0.7`',
@@ -49,7 +52,12 @@ foreach ($required in @(
 
 foreach ($required in @(
     '"action":"prepare_coc"',
-    'in parallel with that call',
+    'bounded setup fan-out',
+    'reset each supported lane',
+    'Do not poll between them',
+    'start stress, trace, lifetime, probe, and',
+    'one concurrent bounded fan-out',
+    'not for another discovery or',
     '`developerMode.active: true`',
     'logging at `debug`',
     'foveated vendor dispatch enabled with center area `0.3`',
