@@ -9,16 +9,23 @@ Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourceSkill = Join-Path $repositoryRoot 'skills\simple-coc\SKILL.md'
 $sourceProtocol = Join-Path $repositoryRoot 'skills\simple-coc\references\protocol.md'
+$sourceForensics = Join-Path $repositoryRoot (
+    'skills\simple-coc\scripts\Start-FrozenGhidra.ps1'
+)
 $pluginSkill = Join-Path $repositoryRoot (
     'plugins\skyrim-vr-automation\skills\simple-coc\SKILL.md'
 )
 $pluginProtocol = Join-Path $repositoryRoot (
     'plugins\skyrim-vr-automation\skills\simple-coc\references\protocol.md'
 )
+$pluginForensics = Join-Path $repositoryRoot (
+    'plugins\skyrim-vr-automation\skills\simple-coc\scripts\Start-FrozenGhidra.ps1'
+)
 
 foreach ($pair in @(
     @($sourceSkill, $pluginSkill),
-    @($sourceProtocol, $pluginProtocol)
+    @($sourceProtocol, $pluginProtocol),
+    @($sourceForensics, $pluginForensics)
 )) {
     foreach ($path in $pair) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -43,7 +50,8 @@ foreach ($required in @(
     'FOV/TAA `0.3/0.3/0.7`',
     'exclusive owner of DLSS and upscaling',
     'transition-filtered preparation events',
-    'prepared-to-creator'
+    'prepared-to-creator',
+    'separate explicit command `frozen Ghidra`'
 )) {
     if (-not $skill.Contains($required, [StringComparison]::Ordinal)) {
         throw "Simple COC skill is missing: $required"
@@ -78,10 +86,28 @@ foreach ($required in @(
     '`status.preparation` trace',
     'request-to-prepared',
     'preparation availability',
-    '20 preparation status'
+    '20 preparation status',
+    'scripts/Start-FrozenGhidra.ps1',
+    'cryptographic producer identity',
+    'programMatchesExpectation: true',
+    'with `-pvr`'
 )) {
     if (-not $protocol.Contains($required, [StringComparison]::Ordinal)) {
         throw "Simple COC protocol is missing: $required"
+    }
+}
+
+$forensics = Get-Content -LiteralPath $sourceForensics -Raw
+foreach ($required in @(
+    'Starting Ghidra requires an explicit user request',
+    "RelativeCachePath = 'SKSE\Plugins\CommunityShaders.dll'",
+    "'tools\build_provenance.py'",
+    "'CSX-{0}-{1}'",
+    'ProjectName = $projectName',
+    'programMatchesExpectation'
+)) {
+    if (-not $forensics.Contains($required, [StringComparison]::Ordinal)) {
+        throw "Frozen Ghidra helper is missing: $required"
     }
 }
 

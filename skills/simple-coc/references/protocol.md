@@ -29,6 +29,9 @@ Call DevBench health and require `SkyrimVR.exe`, `vr: true`, a live PID, and a
 loaded player. Read the producer through `communityshaders.upscaling_api`
 `snapshot`. Preserve the full Build ID, full source commit, source description,
 dirty flag, configuration, shader-cache ABI, compiler identity, PID, and port.
+Also retain the deployment-bound artifact SHA-256 when runtime metadata exposes
+it. Its absence does not block the assay, but it blocks later Ghidra artifact
+selection rather than permitting a guess.
 
 As soon as health and the exact Build ID are bound, start one direct
 `communityshaders.menu` call with
@@ -188,6 +191,50 @@ Preserve every result, including semantic anomalies. A successful waiter may
 report an unsatisfied milestone; that is measured evidence. Stop future COCs
 only when DevBench aborts the scenario or reports a transport, PID, build, or
 required-tool failure.
+
+## Frozen-image forensic branch
+
+When an aborted scenario leaves the game frame counter stationary and
+main-thread calls time out, stop all future COCs. Make one ownership-guarded
+cleanup attempt, retain any off-thread status that still responds, and do not
+restart, terminate, suspend, or resume Skyrim. The `simple coc` trigger alone
+does not authorize debugger work. This branch is explicit-only: enter it only
+after the user says `frozen Ghidra` or otherwise explicitly requests Ghidra
+analysis of the current frozen session. A freeze or main-thread timeout by
+itself must never launch, install, open, import into, or attach Ghidra.
+
+Before reading any affected log, preserve and verify it under the configured
+log archive policy. If Ghidra analysis is authorized, invoke the bundled
+`scripts/Start-FrozenGhidra.ps1` once with `-UserAuthorized`, the user's exact
+authorization statement, the bound Build ID and artifact SHA-256, the exact
+active MO2 `modlist.txt` and mods directory, and the trusted Community Shaders
+repository root. Pass configured Ghidra/Java/project paths only when needed by
+the managed controller.
+
+The helper performs one identity decision. It resolves the enabled physical
+`CommunityShaders.dll` provider from the exact profile without reading the MO2
+virtual DLL, verifies the adjacent `CSX.BuildManifest.json` and artifact through
+Community Shaders' canonical provenance verifier, and requires the expected
+Build ID, SHA-256, and byte length. Build ID and artifact SHA-256 are the
+cryptographic producer identity; source description and branch names remain
+display evidence and never select a candidate.
+
+The same helper derives `CSX-<16 Build-ID hex>-<16 artifact-hash hex>` and calls
+the managed Ghidra controller with that project name and physical DLL. Require
+its combined receipt to report `ok: true`, the exact project name, artifact
+path/hash, and `programMatchesExpectation: true`. A `starting` state means
+analysis is still initializing; retain the receipt and do not attach or choose
+another program. Any identity mismatch blocks forensics without changing the
+game.
+
+Use the already-registered CDB path with `-pvr` for a non-invasive,
+non-suspending live stack snapshot; Ghidra maps its addresses through the
+verified program. Preserve the bound PID, module base, runtime address/RVA,
+main-thread OS ID, stack, source line, relevant optimized locals, lock
+ownership, raw debugger output, and helper receipt. Do not arm breakpoints or
+alter target state. If the COC dispatch exists but no destination-cell or
+render-scale event follows, classify the transition as interrupted before
+render-scale measurement and never synthesize timing or retry values.
 
 ## 5. Extract and finalize
 

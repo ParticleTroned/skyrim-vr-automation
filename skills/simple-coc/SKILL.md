@@ -15,6 +15,10 @@ guarded capture cleanup, and the requested CSV update. It does not authorize
 building, deploying, changing MO2 state, restarting Skyrim, saving settings,
 changing DLSS/upscaling, Ghidra, ProcDump, or deleting evidence.
 
+The separate explicit command `frozen Ghidra` authorizes only the frozen-image
+forensic branch in the protocol for the already-bound session. Never infer that
+authorization from a freeze, timeout, or the original `simple coc` command.
+
 As soon as DevBench health and the exact producer Build ID are bound, call
 `communityshaders.menu` `prepare_coc` exactly once as part of one concurrent
 setup fan-out. In that same interval, refresh schemas, discover telemetry
