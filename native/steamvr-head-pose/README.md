@@ -6,10 +6,16 @@ mapped to `/user/head` through SteamVR's `TrackingOverrides` setting. It does
 not expose controllers.
 
 The default standing pose is `(0, 1.68, 0)` metres with identity orientation.
-The driver also publishes a versioned shared-memory control block named
-`Local\CSXVRHeadPose-v1`. The automation controller is the initial writer;
-DevBench can implement the same contract later without becoming a SteamVR
-bootstrap dependency.
+The driver also publishes the version-2 shared-memory control block
+`Local\CSXVRHeadPose-v2`. It is created with an owner-only ACL and a fresh
+driver-instance nonce; a pre-existing mapping is rejected. Writers serialize
+through a named mutex, publish with aligned interlocked sequence fields, and
+receive acknowledgement of the exact command nonce and sequence. DevBench can
+implement the same contract later without becoming a SteamVR bootstrap
+dependency.
+
+The independent probe qualifies both the standing HMD pose and distinct,
+finite per-eye transforms with a plausible eye separation and render target.
 
 Build with:
 

@@ -126,14 +126,18 @@ RootBuilder failures.
 ## Cooperative access lifecycle
 
 `request-access` atomically acquires the one shared MO2 lock and returns an
-`accessId`. If another task owns it, the command returns `access-busy`, the
-current owner label/state, and any advisory release estimate. `-WaitSeconds`
+`accessId` bearer credential plus a distinct public `leaseId`. Retain the
+`accessId` privately. If another task owns the lock, `access-busy` reports only
+the public lease identity, owner label/state, and advisory release estimate;
+it never discloses or echoes an access credential. `-WaitSeconds`
 can perform a bounded retry, but no task is queued indefinitely.
 
 `-EstimatedMinutes` is useful coordination metadata, not a deadline. The tool
 never expires, steals, or transfers a lease because its estimate elapsed.
 `renew-access` refreshes the recorded activity time and can replace the
 estimate. `access-status` reports availability and exact ownership.
+Session owner liveness is bound to both process ID and process start time, so a
+reused PID cannot make an abandoned session appear live.
 
 Every task must call `release-access` as soon as it no longer needs MO2. This
 includes compilation, source editing, result analysis, report writing, and any

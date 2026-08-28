@@ -55,9 +55,21 @@ try {
     $enableInspect = & $script inspect -ProfilePath $profile -ModName 'Enable Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($enableInspect.enabled) { throw 'Inspect did not report the disabled marker.' }
 
+    $heldLock = [IO.File]::Open("$profile.transaction.lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $contentionRejected = $false
+    try {
+        try { $null = & $script disable -ProfilePath $profile -ModName 'Exact Test Mod' -EvidenceDirectory (Join-Path $fixture 'contention-evidence') -BlockingProcessNames $fixtureProcessNames -TransactionLockTimeoutMilliseconds 150 -Confirm:$false }
+        catch { $contentionRejected = $_.Exception.Message -like 'Timed out waiting for the profile transaction lock:*' }
+    }
+    finally { $heldLock.Dispose() }
+    if (-not $contentionRejected -or (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash -ne $originalHash) { throw 'Contended profile mutation did not fail boundedly without changing the live preimage.' }
+
     $disabled = & $script disable -ProfilePath $profile -ModName 'Exact Test Mod' -EvidenceDirectory $evidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($disabled.enabled -or $disabled.sha256 -eq $originalHash) { throw 'Disable did not change exactly the marker state.' }
     if ($disabled.approval.reusableApprovalEligible -or [string]::IsNullOrWhiteSpace([string]$disabled.approval.oneShotReason)) { throw 'Profile mutation was not explicitly classified as a one-shot approval.' }
+    $disableReceipt = Get-Content -LiteralPath (Join-Path $evidence 'modlist-control.receipt.json') -Raw | ConvertFrom-Json
+    $disableJournal = Get-Content -LiteralPath ([string]$disableReceipt.transactionJournalPath) -Raw | ConvertFrom-Json
+    if ($disableReceipt.contractVersion -ne '2.0.0' -or $disableJournal.phase -ne 'committed' -or $disableJournal.transactionId -ne $disableReceipt.transactionId) { throw 'Profile mutation did not retain a committed write-ahead transaction journal.' }
 
     $restored = & $script restore -ProfilePath $profile -ModName 'Exact Test Mod' -EvidenceDirectory $evidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if (-not $restored.enabled -or $restored.sha256 -ne $originalHash) { throw 'Restore did not reproduce the original hash.' }
@@ -78,7 +90,16 @@ try {
     if ($enableRestored.enabled -or $enableRestored.sha256 -ne $originalHash) { throw 'Enable restore did not reproduce the original marker state.' }
     if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$original, [byte[]][IO.File]::ReadAllBytes($profile))) { throw 'Enable restore was not byte-identical.' }
 
-    [pscustomobject]@{ ok = $true; assertions = 25; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
+    $rollbackEvidence = Join-Path $fixture 'rollback-evidence'
+    New-Item -ItemType Directory -Path (Join-Path $rollbackEvidence 'modlist-control.receipt.json') -Force | Out-Null
+    $rollbackObserved = $false
+    try { $null = & $script enable -ProfilePath $profile -ModName 'Enable Test Mod' -EvidenceDirectory $rollbackEvidence -BlockingProcessNames $fixtureProcessNames -Confirm:$false }
+    catch { $rollbackObserved = $_.Exception.Message -like 'Profile transaction failed; exact preimage restored.*' }
+    $rollbackJournalPath = @(Get-ChildItem -LiteralPath $rollbackEvidence -Filter 'modlist-control.*.journal.json' -File)[0].FullName
+    $rollbackJournal = Get-Content -LiteralPath $rollbackJournalPath -Raw | ConvertFrom-Json
+    if (-not $rollbackObserved -or $rollbackJournal.phase -ne 'rolled-back' -or (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash -ne $originalHash) { throw 'Post-write receipt failure did not roll back and journal the exact live preimage.' }
+
+    [pscustomobject]@{ ok = $true; assertions = 28; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
 }
 finally {
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }

@@ -23,7 +23,7 @@ Valve's null display driver does not provide the controlled standing pose this
 automation requires. The separately installed `codex_head_pose` server driver
 supplies one HMD pose and is mapped to `/user/head` with SteamVR
 `TrackingOverrides`. Its default eye height is 1.68 metres; the controller can
-update the pose through `Local\CSXVRHeadPose-v1`. The returned `inputContract`
+update the pose through `Local\CSXVRHeadPose-v2`. The returned `inputContract`
 marks the HMD pose provider ready only after both driver acknowledgement and an
 application-observed OpenVR qualification. Controller input remains
 unavailable, replay readiness remains false, and the broader measurement policy
@@ -45,9 +45,23 @@ manifest hash into the apply receipt, removes only that registration, and
 verifies that the remaining inventory is complete and conflict-free. If more
 than one redirector is present, name every exact root in the
 `-ExternalDisplayRedirectorRoot <root1>,<root2>` array. `start` refuses registration drift;
-`restore` refuses to overwrite drift and restores the exact pre-apply bytes only
-when the isolated-state hash and suppressed manifests still match the receipt.
+`restore` refuses to overwrite semantic drift and restores the exact pre-apply
+bytes only when the isolated state and suppressed manifests remain qualified.
+Formatting-only changes are accepted using a canonical semantic hash. The
+expected isolated document is always rebuilt from the exact registration
+backup by removing each unique recorded target exactly once; a receipt semantic
+hash is corroboration, not authority. Duplicate or missing targets and any
+receipt/backup disagreement fail closed.
 The normal fail-closed path remains unchanged when this option is omitted.
+
+Apply and restore are recoverable multi-file transactions. Before changing
+either SteamVR settings or OpenVR registrations, the controller records each
+exact target, preimage, and expected hash in a write-ahead journal. A failed
+operation restores and verifies every target before reporting rollback; an
+incomplete rollback is reported as `recovery-required`, never as success. The
+next apply or restore resolves any nonterminal journal before beginning new
+work, and a repeated restore recognizes a committed exact baseline as
+`already-restored`.
 
 For a specifically authorized coexistence diagnostic, `start
 -AllowExternalDisplayRedirector` leaves every vendor registration untouched,
@@ -69,6 +83,12 @@ path validates every target executable is inside `SteamVRRoot` before stopping
 it; it does not target Steam, Virtual Desktop, or unrelated same-name binaries.
 Same-name processes outside the configured root are reported as unproven but
 are never used as stop, start, apply, or restore blockers.
+
+Runtime qualification invokes the independent OpenVR pose probe through the
+central bounded-process controller. A probe cannot outlive its timeout. If a
+start or qualification attempt fails, cleanup stops only SteamVR-root-owned
+processes whose creation time belongs to that attempt and reports the verified
+survivor inventory.
 
 ```powershell
 .\Invoke-SteamVRNullControl.ps1 apply -EvidenceDirectory <session-evidence> -Compact

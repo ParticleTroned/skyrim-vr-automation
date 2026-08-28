@@ -4,205 +4,249 @@
 param(
     [Parameter(Mandatory)][string]$Label,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
+    [Parameter(Mandatory)][string]$ContextJson,
     [ValidateRange(3, 10000)][int]$Samples = 120,
     [ValidateRange(0, 100)][int]$WarmupSamples = 5,
     [ValidateRange(50, 60000)][int]$IntervalMs = 250,
-    [string]$RuntimePath = $env:CSX_DEVBENCH_RUNTIME_PATH
+    [ValidateRange(1, 30)][int]$FreshFrameTimeoutSeconds = 5,
+    [string]$RuntimePath = $env:CSX_DEVBENCH_RUNTIME_PATH,
+    [string]$DevBenchControlPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Invoke-McpRequest {
-    param([string]$Endpoint, [hashtable]$Headers, $Payload)
-    $body = $Payload | ConvertTo-Json -Depth 30 -Compress
-    $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $Headers -Body $body -TimeoutSec 15
-    [pscustomobject]@{ response = $response; json = ($response.Content | ConvertFrom-Json -Depth 60) }
+function Write-JsonAtomic([string]$Path, $Value) {
+    $temporary = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 80), [Text.UTF8Encoding]::new($false))
+        $null = Get-Content -LiteralPath $temporary -Raw | ConvertFrom-Json -Depth 80
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
+    }
 }
 
-function Get-Percentile {
-    param([double[]]$Values, [double]$Percentile)
+function ConvertTo-CanonicalValue($Value) {
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [bool] -or $Value -is [ValueType]) { return $Value }
+    if ($Value -is [Collections.IDictionary]) {
+        $ordered = [ordered]@{}
+        $keys = [string[]]@($Value.Keys | ForEach-Object { [string]$_ })
+        [Array]::Sort($keys, [StringComparer]::Ordinal)
+        foreach ($key in $keys) { $ordered[$key] = ConvertTo-CanonicalValue $Value[$key] }
+        return $ordered
+    }
+    if ($Value -is [Collections.IEnumerable]) { return @($Value | ForEach-Object { ConvertTo-CanonicalValue $_ }) }
+    $properties = [ordered]@{}
+    $names = [string[]]@($Value.PSObject.Properties.Name)
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    foreach ($name in $names) { $properties[$name] = ConvertTo-CanonicalValue $Value.$name }
+    return $properties
+}
+
+function Get-CanonicalHash($Value) {
+    $json = (ConvertTo-CanonicalValue $Value) | ConvertTo-Json -Depth 80 -Compress
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($json)))
+}
+
+function Get-Percentile([double[]]$Values, [double]$Percentile) {
     if ($Values.Count -eq 0) { return $null }
     $sorted = @($Values | Sort-Object)
-    $index = [Math]::Max(0, [Math]::Min($sorted.Count - 1, [Math]::Ceiling($Percentile * $sorted.Count) - 1))
-    [double]$sorted[$index]
+    return [double]$sorted[[Math]::Max(0, [Math]::Min($sorted.Count - 1, [Math]::Ceiling($Percentile * $sorted.Count) - 1))]
 }
 
-function Get-MetricSummary {
-    param([double[]]$Values)
-    if ($Values.Count -eq 0) {
-        return [pscustomobject][ordered]@{ count = 0; mean = $null; median = $null; p95 = $null; p99 = $null; min = $null; max = $null }
-    }
+function Get-MetricSummary([double[]]$Values) {
+    if ($Values.Count -eq 0) { return [pscustomobject][ordered]@{ count = 0; mean = $null; median = $null; p95 = $null; p99 = $null; min = $null; max = $null } }
     $measure = $Values | Measure-Object -Average -Minimum -Maximum
-    [pscustomobject][ordered]@{
-        count = $Values.Count
-        mean = [double]$measure.Average
-        median = Get-Percentile -Values $Values -Percentile 0.5
-        p95 = Get-Percentile -Values $Values -Percentile 0.95
-        p99 = Get-Percentile -Values $Values -Percentile 0.99
-        min = [double]$measure.Minimum
-        max = [double]$measure.Maximum
+    return [pscustomobject][ordered]@{
+        count = $Values.Count; mean = [double]$measure.Average
+        median = Get-Percentile $Values 0.5; p95 = Get-Percentile $Values 0.95; p99 = Get-Percentile $Values 0.99
+        min = [double]$measure.Minimum; max = [double]$measure.Maximum
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($RuntimePath)) {
-    throw 'RuntimePath is required. Pass -RuntimePath or set CSX_DEVBENCH_RUNTIME_PATH.'
+function Assert-Finite([double]$Value, [string]$Name) {
+    if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) { throw "Profiler metric '$Name' is not finite." }
 }
+
+if ([string]::IsNullOrWhiteSpace($RuntimePath)) { throw 'RuntimePath is required. Pass -RuntimePath or set CSX_DEVBENCH_RUNTIME_PATH.' }
 if (-not (Test-Path -LiteralPath $RuntimePath -PathType Leaf)) { throw "DevBench runtime metadata does not exist: $RuntimePath" }
-$runtime = Get-Content -LiteralPath $RuntimePath -Raw | ConvertFrom-Json
-$endpoint = "http://127.0.0.1:$([int]$runtime.port)/mcp"
-$baseHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
+$context = $ContextJson | ConvertFrom-Json -AsHashtable -Depth 40
+if (-not $context.ContainsKey('environment') -or -not ($context.environment -is [Collections.IDictionary])) { throw 'ContextJson requires an environment object.' }
+foreach ($required in @('mo2Profile', 'scene', 'hmdMode', 'renderResolution')) {
+    if (-not $context.environment.ContainsKey($required) -or [string]::IsNullOrWhiteSpace([string]$context.environment[$required])) { throw "ContextJson environment requires '$required'." }
+}
+if (-not $context.ContainsKey('treatment')) { $context['treatment'] = [ordered]@{} }
 
-function Initialize-McpSession {
-    $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
-        jsonrpc = '2.0'; id = 1; method = 'initialize'; params = @{
-            protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'CSXProfilerMeasure'; version = '1.1' }
-        }
-    }
-    $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
-    $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
-    if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
-    $script:headers = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
-    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $script:headers -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec 15 | Out-Null
+$control = if ([string]::IsNullOrWhiteSpace($DevBenchControlPath)) { Join-Path (Split-Path -Parent $PSScriptRoot) 'devbench-control\Invoke-DevBenchControl.ps1' } else { [IO.Path]::GetFullPath($DevBenchControlPath) }
+if (-not (Test-Path -LiteralPath $control -PathType Leaf)) { throw "The central DevBench controller is unavailable: $control" }
+$transactionId = [guid]::NewGuid().ToString('N')
+$safeLabel = ($Label -replace '[^A-Za-z0-9_.-]', '_').Trim('_')
+if ([string]::IsNullOrWhiteSpace($safeLabel)) { $safeLabel = 'capture' }
+$runDirectory = Join-Path ([IO.Path]::GetFullPath($EvidenceDirectory)) "profiler-$safeLabel-$transactionId"
+New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
+$receiptPath = Join-Path $runDirectory 'capture.receipt.json'
+$receipt = [ordered]@{
+    schemaVersion = 2; operation = 'measure-profiler'; transactionId = $transactionId; state = 'prepared'
+    label = $Label; runtimePath = [IO.Path]::GetFullPath($RuntimePath); context = $context
+    preparedUtc = [DateTime]::UtcNow.ToString('o'); priorEnabled = $null; finalEnabled = $null
+    stateRestored = $false; restoreErrors = @(); captureError = $null
+}
+Write-JsonAtomic $receiptPath $receipt
+
+function Invoke-ProfilerAction([string]$Action) {
+    $arguments = @{ action = $Action } | ConvertTo-Json -Compress
+    $call = & $control call -Tool 'communityshaders.profiler' -ArgumentsJson $arguments -RuntimePath $RuntimePath -EvidenceDirectory $runDirectory -EvidenceLabel "profiler-$Action" -RequireSuccess -NoExit -Compact | ConvertFrom-Json -Depth 80
+    if (-not $call.ok) { throw "DevBench profiler '$Action' failed: $($call.errors -join '; ')" }
+    $payload = @($call.data.content | Where-Object { $null -ne $_ } | Select-Object -First 1)
+    if ($payload.Count -ne 1) { throw "DevBench profiler '$Action' returned no structured content." }
+    return [pscustomobject][ordered]@{ payload = $payload[0]; runtimeIdentity = $call.runtimeIdentity; evidencePath = $call.invocationEvidencePath }
 }
 
-Initialize-McpSession
-$sessionReconnects = 0
-
-function Invoke-ProfilerAction {
-    param([string]$Action)
-    for ($attempt = 0; $attempt -lt 2; $attempt++) {
-        try {
-            $script:requestId++
-            $rpc = Invoke-McpRequest -Endpoint $endpoint -Headers $script:headers -Payload @{
-                jsonrpc = '2.0'; id = $script:requestId; method = 'tools/call'; params = @{
-                    name = 'communityshaders.profiler'; arguments = @{ action = $Action }
-                }
-            }
-            if ($rpc.json.PSObject.Properties['error']) { throw "Profiler RPC failed: $($rpc.json.error | ConvertTo-Json -Compress)" }
-            if ($rpc.json.result.PSObject.Properties['isError'] -and $rpc.json.result.isError) {
-                throw (($rpc.json.result.content | ForEach-Object { $_.text }) -join "`n")
-            }
-            return ($rpc.json.result.content[0].text | ConvertFrom-Json -Depth 60)
-        }
-        catch {
-            if ($attempt -eq 0) {
-                Initialize-McpSession
-                $script:sessionReconnects++
-                continue
-            }
-            throw
-        }
-    }
+function Get-ProfilerStatus($Envelope) {
+    $payload = $Envelope.payload
+    $status = if ($payload.PSObject.Properties['status']) { $payload.status } else { $payload }
+    if (-not $status.PSObject.Properties['frame_count']) { throw 'Profiler status omitted frame_count.' }
+    return $status
 }
 
-$requestId = 1
-New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
+function Get-ProfilerEnabled($Status) {
+    foreach ($name in @('enabled', 'profilerEnabled', 'active')) {
+        if ($Status.PSObject.Properties[$name]) { return [bool]$Status.$name }
+    }
+    throw 'Profiler status did not report its current enabled state; mutation is not authorized without a restorable preimage.'
+}
+
+$records = [Collections.Generic.List[object]]::new()
+$runtimeIdentity = $null
+$captureFailure = $null
 $startedUtc = [DateTime]::UtcNow
-$enableResult = Invoke-ProfilerAction -Action 'enable'
-for ($warmupIndex = 1; $warmupIndex -le $WarmupSamples; $warmupIndex++) {
-    Invoke-ProfilerAction -Action 'status' | Out-Null
-    Start-Sleep -Milliseconds $IntervalMs
-}
-$records = [System.Collections.Generic.List[object]]::new()
-for ($sampleIndex = 1; $sampleIndex -le $Samples; $sampleIndex++) {
-    $response = Invoke-ProfilerAction -Action 'status'
-    $status = $response.status
-    $records.Add([pscustomobject][ordered]@{
-        sample = $sampleIndex
-        timestampUtc = [DateTime]::UtcNow.ToString('o')
-        frame = [long]$status.frame_count
-        capturedFrame = [long]$status.capturedFrameCount
-        resolvedTotalMs = [double]$status.resolvedTotalMs
-        resolvedCpuTotalMs = [double]$status.resolvedCpuTotalMs
-        acquiredSlots = [int]$status.acquiredSlots
-        slotRefusals = [int]$status.slotRefusals
-        timers = @($status.timers)
-    })
-    if ($sampleIndex -lt $Samples) { Start-Sleep -Milliseconds $IntervalMs }
-}
-$endedUtc = [DateTime]::UtcNow
+try {
+    $initialEnvelope = Invoke-ProfilerAction 'status'
+    $initialStatus = Get-ProfilerStatus $initialEnvelope
+    $runtimeIdentity = $initialEnvelope.runtimeIdentity
+    $priorEnabled = Get-ProfilerEnabled $initialStatus
+    $stableRuntimeIdentity = [ordered]@{
+        listenerPid = $runtimeIdentity.listenerPid
+        processPath = $runtimeIdentity.process.path
+        processStartTimeUtc = $runtimeIdentity.process.startTimeUtc
+        buildId = $runtimeIdentity.build.buildId
+        artifactPath = $runtimeIdentity.artifact.path
+        artifactSha256 = $runtimeIdentity.artifact.sha256
+    }
+    $receipt.priorEnabled = $priorEnabled
+    $receipt.runtimeIdentity = $runtimeIdentity
+    $receipt.stableRuntimeIdentity = $stableRuntimeIdentity
+    $receipt.contextFingerprint = Get-CanonicalHash ([ordered]@{ environment = $context.environment; runtimeIdentity = $stableRuntimeIdentity })
+    $receipt.treatmentFingerprint = Get-CanonicalHash $context.treatment
+    $receipt.state = 'prior-state-recorded'
+    Write-JsonAtomic $receiptPath $receipt
+    if (-not $priorEnabled) { $null = Invoke-ProfilerAction 'enable' }
+    $receipt.state = 'sampling'
+    Write-JsonAtomic $receiptPath $receipt
 
-$timerRows = [System.Collections.Generic.List[object]]::new()
-foreach ($record in $records) {
-    foreach ($timer in $record.timers) {
-        $timerRows.Add([pscustomobject][ordered]@{
-            sample = $record.sample
-            timestampUtc = $record.timestampUtc
-            frame = $record.frame
-            name = [string]$timer.name
-            activeGpu = [bool]$timer.activeGpu
-            activeCpu = [bool]$timer.activeCpu
-            hasGpu = [bool]$timer.hasGpu
-            hasCpu = [bool]$timer.hasCpu
-            gpuMs = [double]$timer.gpuMs
-            topLevelMs = [double]$timer.topLevelMs
-            cpuMs = [double]$timer.cpuMs
+    $lastFrame = [long]-1
+    for ($warmup = 0; $warmup -lt $WarmupSamples; $warmup++) {
+        $warmupStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status')
+        $lastFrame = [Math]::Max($lastFrame, [long]$warmupStatus.frame_count)
+        Start-Sleep -Milliseconds $IntervalMs
+    }
+    for ($sampleIndex = 1; $sampleIndex -le $Samples; $sampleIndex++) {
+        $freshDeadline = [DateTime]::UtcNow.AddSeconds($FreshFrameTimeoutSeconds)
+        do {
+            $envelope = Invoke-ProfilerAction 'status'
+            $status = Get-ProfilerStatus $envelope
+            $frame = [long]$status.frame_count
+            if ($frame -gt $lastFrame) { break }
+            Start-Sleep -Milliseconds ([Math]::Min(50, $IntervalMs))
+        } while ([DateTime]::UtcNow -lt $freshDeadline)
+        if ($frame -le $lastFrame) { throw "Profiler did not advance beyond frame $lastFrame within $FreshFrameTimeoutSeconds seconds." }
+        $resolvedTotal = [double]$status.resolvedTotalMs
+        $resolvedCpuTotal = [double]$status.resolvedCpuTotalMs
+        Assert-Finite $resolvedTotal 'resolvedTotalMs'
+        Assert-Finite $resolvedCpuTotal 'resolvedCpuTotalMs'
+        foreach ($timer in @($status.timers)) {
+            foreach ($metric in @('gpuMs', 'topLevelMs', 'cpuMs')) {
+                if ($timer.PSObject.Properties[$metric]) { Assert-Finite ([double]$timer.$metric) "$($timer.name).$metric" }
+            }
+        }
+        $records.Add([pscustomobject][ordered]@{
+            sample = $sampleIndex; timestampUtc = [DateTime]::UtcNow.ToString('o'); frame = $frame
+            capturedFrame = [long]$status.capturedFrameCount; resolvedTotalMs = $resolvedTotal; resolvedCpuTotalMs = $resolvedCpuTotal
+            acquiredSlots = [int]$status.acquiredSlots; slotRefusals = [int]$status.slotRefusals; timers = @($status.timers)
+            invocationEvidencePath = $envelope.evidencePath
+            contextFingerprint = $receipt.contextFingerprint; treatmentFingerprint = $receipt.treatmentFingerprint
         })
+        $lastFrame = $frame
+        if ($sampleIndex -lt $Samples) { Start-Sleep -Milliseconds $IntervalMs }
     }
 }
-
-$timerSummaries = [System.Collections.Generic.List[object]]::new()
-foreach ($group in ($timerRows | Group-Object name | Sort-Object Name)) {
-    $activeRows = @($group.Group | Where-Object { $_.activeGpu -and $_.hasGpu })
-    $gpuValues = [double[]]@($activeRows | ForEach-Object { $_.gpuMs })
-    $topValues = [double[]]@($activeRows | ForEach-Object { $_.topLevelMs })
-    $cpuValues = [double[]]@($group.Group | Where-Object { $_.activeCpu -and $_.hasCpu } | ForEach-Object { $_.cpuMs })
-    $timerSummaries.Add([pscustomobject][ordered]@{
-        name = $group.Name
-        observedSamples = $group.Count
-        activeGpuSamples = $activeRows.Count
-        gpuMs = Get-MetricSummary -Values $gpuValues
-        topLevelMs = Get-MetricSummary -Values $topValues
-        cpuMs = Get-MetricSummary -Values $cpuValues
-    })
+catch {
+    $captureFailure = $_.Exception.Message
+    $receipt.captureError = $captureFailure
+}
+finally {
+    $restoreErrors = [Collections.Generic.List[string]]::new()
+    if ($null -ne $receipt.priorEnabled) {
+        try {
+            $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status')
+            $finalEnabled = Get-ProfilerEnabled $finalStatus
+            if ($finalEnabled -ne [bool]$receipt.priorEnabled) {
+                $null = Invoke-ProfilerAction $(if ($receipt.priorEnabled) { 'enable' } else { 'disable' })
+                $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status')
+                $finalEnabled = Get-ProfilerEnabled $finalStatus
+            }
+            $receipt.finalEnabled = $finalEnabled
+            $receipt.stateRestored = $finalEnabled -eq [bool]$receipt.priorEnabled
+            if (-not $receipt.stateRestored) { $restoreErrors.Add('Profiler enable state did not return to its exact prior value.') }
+        }
+        catch { $restoreErrors.Add($_.Exception.Message) }
+    }
+    $receipt.restoreErrors = @($restoreErrors)
+    $receipt.state = if ($restoreErrors.Count -gt 0) { 'recovery-required' } elseif ($captureFailure) { 'rolled-back' } else { 'completed' }
+    $receipt.completedUtc = [DateTime]::UtcNow.ToString('o')
+    Write-JsonAtomic $receiptPath $receipt
 }
 
-$summary = [pscustomobject][ordered]@{
-    schemaVersion = 1
-    label = $Label
-    startedUtc = $startedUtc.ToString('o')
-    endedUtc = $endedUtc.ToString('o')
-    durationSeconds = ($endedUtc - $startedUtc).TotalSeconds
-    requestedSamples = $Samples
-    warmupSamples = $WarmupSamples
-    collectedSamples = $records.Count
-    intervalMs = $IntervalMs
-    endpoint = $endpoint
-    sessionReconnects = $sessionReconnects
-    profilerEnableResult = $enableResult
-    resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedTotalMs }))
-    resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedCpuTotalMs }))
-    maxSlotRefusals = [int](($records | Measure-Object slotRefusals -Maximum).Maximum)
-    timers = $timerSummaries
-}
+if ($receipt.restoreErrors.Count -gt 0) { throw "Profiler capture requires state recovery: $($receipt.restoreErrors -join '; '). Receipt: $receiptPath" }
+if ($captureFailure) { throw "$captureFailure Profiler state was restored. Receipt: $receiptPath" }
+if ($records.Count -ne $Samples -or @($records.frame | Sort-Object -Unique).Count -ne $Samples) { throw 'Profiler capture did not produce the requested number of unique fresh frames.' }
 
-$safeLabel = $Label -replace '[^A-Za-z0-9_.-]', '_'
-$rawPath = Join-Path $EvidenceDirectory "$safeLabel.raw.json"
-$summaryPath = Join-Path $EvidenceDirectory "$safeLabel.summary.json"
-$csvPath = Join-Path $EvidenceDirectory "$safeLabel.timers.csv"
-$records | ConvertTo-Json -Depth 60 | Set-Content -LiteralPath $rawPath -Encoding utf8
-$summary | ConvertTo-Json -Depth 60 | Set-Content -LiteralPath $summaryPath -Encoding utf8
-$timerSummaries | ForEach-Object {
+$endedUtc = [DateTime]::UtcNow
+$timerRows = foreach ($record in $records) {
+    foreach ($timer in $record.timers) {
+        [pscustomobject][ordered]@{
+            sample = $record.sample; timestampUtc = $record.timestampUtc; frame = $record.frame; name = [string]$timer.name
+            activeGpu = [bool]$timer.activeGpu; activeCpu = [bool]$timer.activeCpu; hasGpu = [bool]$timer.hasGpu; hasCpu = [bool]$timer.hasCpu
+            gpuMs = [double]$timer.gpuMs; topLevelMs = [double]$timer.topLevelMs; cpuMs = [double]$timer.cpuMs
+        }
+    }
+}
+$timerSummaries = foreach ($group in ($timerRows | Group-Object name | Sort-Object Name)) {
+    $activeGpu = @($group.Group | Where-Object { $_.activeGpu -and $_.hasGpu })
     [pscustomobject][ordered]@{
-        name = $_.name
-        observedSamples = $_.observedSamples
-        activeGpuSamples = $_.activeGpuSamples
-        gpuMeanMs = $_.gpuMs.mean
-        gpuMedianMs = $_.gpuMs.median
-        gpuP95Ms = $_.gpuMs.p95
-        gpuP99Ms = $_.gpuMs.p99
-        gpuMaxMs = $_.gpuMs.max
-        topLevelMeanMs = $_.topLevelMs.mean
-        cpuMeanMs = $_.cpuMs.mean
+        name = $group.Name; observedSamples = $group.Count; activeGpuSamples = $activeGpu.Count
+        gpuMs = Get-MetricSummary ([double[]]@($activeGpu.gpuMs)); topLevelMs = Get-MetricSummary ([double[]]@($activeGpu.topLevelMs))
+        cpuMs = Get-MetricSummary ([double[]]@($group.Group | Where-Object { $_.activeCpu -and $_.hasCpu } | ForEach-Object cpuMs))
     }
+}
+$summary = [pscustomobject][ordered]@{
+    schemaVersion = 2; transactionId = $transactionId; label = $Label; startedUtc = $startedUtc.ToString('o'); endedUtc = $endedUtc.ToString('o')
+    durationSeconds = ($endedUtc - $startedUtc).TotalSeconds; requestedSamples = $Samples; warmupSamples = $WarmupSamples; collectedSamples = $records.Count
+    uniqueFreshFrames = @($records.frame | Sort-Object -Unique).Count; intervalMs = $IntervalMs; runtimeIdentity = $runtimeIdentity
+    context = $context; contextFingerprint = $receipt.contextFingerprint; treatmentFingerprint = $receipt.treatmentFingerprint
+    priorProfilerEnabled = $receipt.priorEnabled; profilerStateRestored = $receipt.stateRestored; receiptPath = $receiptPath
+    resolvedTotalMs = Get-MetricSummary ([double[]]@($records.resolvedTotalMs)); resolvedCpuTotalMs = Get-MetricSummary ([double[]]@($records.resolvedCpuTotalMs))
+    maxSlotRefusals = [int](($records | Measure-Object slotRefusals -Maximum).Maximum); timers = @($timerSummaries)
+}
+$rawPath = Join-Path $runDirectory "$safeLabel.raw.json"
+$summaryPath = Join-Path $runDirectory "$safeLabel.summary.json"
+$csvPath = Join-Path $runDirectory "$safeLabel.timers.csv"
+Write-JsonAtomic $rawPath @($records)
+Write-JsonAtomic $summaryPath $summary
+$timerSummaries | ForEach-Object {
+    [pscustomobject][ordered]@{ name = $_.name; observedSamples = $_.observedSamples; activeGpuSamples = $_.activeGpuSamples; gpuMeanMs = $_.gpuMs.mean; gpuMedianMs = $_.gpuMs.median; gpuP95Ms = $_.gpuMs.p95; gpuP99Ms = $_.gpuMs.p99; gpuMaxMs = $_.gpuMs.max; topLevelMeanMs = $_.topLevelMs.mean; cpuMeanMs = $_.cpuMs.mean }
 } | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
 
-[pscustomobject][ordered]@{
-    ok = $true
-    label = $Label
-    rawPath = $rawPath
-    summaryPath = $summaryPath
-    csvPath = $csvPath
-    summary = $summary
-} | ConvertTo-Json -Depth 60
+[pscustomobject][ordered]@{ ok = $true; label = $Label; transactionId = $transactionId; rawPath = $rawPath; summaryPath = $summaryPath; csvPath = $csvPath; receiptPath = $receiptPath; summary = $summary } | ConvertTo-Json -Depth 80

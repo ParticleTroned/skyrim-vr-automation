@@ -47,9 +47,9 @@ expected behaviour, and suggested implementation must remain distinct.
 
 ```powershell
 & $tool list -Status new,triaged
-& $tool triage -FeedbackId AUTO-... -Actor maintainer -Note 'Reproduced.'
-& $tool accept -FeedbackId AUTO-... -Actor maintainer
-& $tool resolve -FeedbackId AUTO-... -Actor maintainer `
+& $tool triage -FeedbackId AUTO-... -Actor maintainer -ActorRole maintainer -Note 'Reproduced.'
+& $tool accept -FeedbackId AUTO-... -Actor maintainer -ActorRole maintainer
+& $tool resolve -FeedbackId AUTO-... -Actor maintainer -ActorRole maintainer `
   -Resolution 'Added structural Unlock classification and a regression test.' `
   -Commit abc123 -PullRequest 'https://github.com/example/repo/pull/1' `
   -Release 0.7.0
@@ -58,6 +58,10 @@ expected behaviour, and suggested implementation must remain distinct.
 Supported lifecycle operations are `triage`, `accept`, `duplicate`, `defer`,
 `decline`, `resolve`, and `reopen`. Terminal records must be reopened before
 amendment. Duplicate and resolution links are preserved in the event journal.
+Amendments require an actor and explicit `reporter` or `maintainer` role;
+lifecycle transitions require the `maintainer` role. These fields make the
+single-user local audit trail explicit—they are not an operating-system
+authentication boundary and must not be used to authorize remote callers.
 
 ## Export boundary
 

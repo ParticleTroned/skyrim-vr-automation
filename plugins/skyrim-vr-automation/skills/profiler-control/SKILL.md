@@ -21,11 +21,15 @@ comparing data. Use these entry points:
    in scope.
 2. Establish the exact build, MO2 profile, scene, HMD mode, resolution, shader
    state, warm-up, sample count, and interval before comparing captures.
-3. A capture enables the CSX profiler. That mutation requires the user's run or
-   measurement authority; a request to review existing data does not.
+3. Supply `ContextJson` with the exact environment and treatment. A capture may
+   enable the CSX profiler and then must verify restoration of its prior state.
+   That mutation requires the user's run or measurement authority; a request to
+   review existing data does not.
 4. Write to a dedicated evidence directory outside live MO2 overwrite and
    shader-cache trees. Keep raw JSON; summaries alone cannot be re-analysed.
-5. Compare at least two raw captures and identify the reference explicitly.
+5. Compare at least two raw captures with matching context fingerprints and
+   identify the reference explicitly. Reject captures without at least three
+   unique fresh frames or with non-finite metrics.
    Treat the total as the active CSX profiler block, not whole-frame cost. Do
    not sum correlated timer deltas into a fictional independent total.
 

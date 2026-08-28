@@ -36,10 +36,13 @@ try {
     $stateAPath = Join-Path $resolvedTestRoot 'state-a.raw.json'
     $stateBPath = Join-Path $resolvedTestRoot 'state-b.raw.json'
     $summaryPath = Join-Path $resolvedTestRoot 'invalid.summary.json'
+    $emptyPath = Join-Path $resolvedTestRoot 'empty.raw.json'
     $outputPath = Join-Path $resolvedTestRoot 'comparison'
 
     @(
         [pscustomobject]@{
+            frame = 100
+            contextFingerprint = 'same-context'
             resolvedTotalMs = 10.0
             resolvedCpuTotalMs = 1.0
             timers = @(
@@ -48,21 +51,46 @@ try {
             )
         },
         [pscustomobject]@{
+            frame = 101
+            contextFingerprint = 'same-context'
             resolvedTotalMs = 12.0
             resolvedCpuTotalMs = 2.0
             timers = @(
                 (New-Timer 'Upscaling::Synthetic' 6.0),
                 (New-Timer 'VolumetricLighting::Synthetic' 1.0)
             )
+        },
+        [pscustomobject]@{
+            frame = 102
+            contextFingerprint = 'same-context'
+            resolvedTotalMs = 11.0
+            resolvedCpuTotalMs = 1.5
+            timers = @((New-Timer 'Upscaling::Synthetic' 5.0), (New-Timer 'VolumetricLighting::Synthetic' 1.5))
         }
     ) | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $stateAPath -Encoding utf8
 
     @(
-        [pscustomobject]@{ resolvedTotalMs = 0.0; resolvedCpuTotalMs = 0.0; timers = @() },
+        [pscustomobject]@{ frame = 199; contextFingerprint = 'same-context'; resolvedTotalMs = 0.0; resolvedCpuTotalMs = 0.0; timers = @() },
         [pscustomobject]@{
+            frame = 200
+            contextFingerprint = 'same-context'
             resolvedTotalMs = 1.0
             resolvedCpuTotalMs = 0.1
             timers = @((New-Timer 'DeferredComposite' 1.0))
+        },
+        [pscustomobject]@{
+            frame = 201
+            contextFingerprint = 'same-context'
+            resolvedTotalMs = 1.1
+            resolvedCpuTotalMs = 0.1
+            timers = @((New-Timer 'DeferredComposite' 1.1))
+        },
+        [pscustomobject]@{
+            frame = 202
+            contextFingerprint = 'same-context'
+            resolvedTotalMs = 0.9
+            resolvedCpuTotalMs = 0.1
+            timers = @((New-Timer 'DeferredComposite' 0.9))
         }
     ) | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $stateBPath -Encoding utf8
 
@@ -71,6 +99,7 @@ try {
         resolvedTotalMs = [pscustomobject]@{ mean = 10.0 }
         timers = @([pscustomobject]@{ name = 'Upscaling::Synthetic'; activeGpuSamples = 2 })
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $summaryPath -Encoding utf8
+    [IO.File]::WriteAllText($emptyPath, '[]', [Text.UTF8Encoding]::new($false))
 
     $compare = Join-Path $PSScriptRoot 'Compare-CSXProfiler.ps1'
     $result = & $compare -InputPath @($stateAPath, $stateBPath) -OutputDirectory $outputPath -ReferenceLabel 'state-a' | ConvertFrom-Json
@@ -78,7 +107,7 @@ try {
 
     $states = @(Import-Csv -LiteralPath $result.csvPath)
     $stateB = @($states | Where-Object label -eq 'state-b')[0]
-    Assert-Test ([int]$stateB.steadySamples -eq 1) 'comparison excludes timerless warm-up records'
+    Assert-Test ([int]$stateB.steadySamples -eq 3) 'comparison excludes timerless warm-up records and retains the qualified steady set'
 
     $features = @(Import-Csv -LiteralPath $result.featureCsvPath)
     $upscalingA = @($features | Where-Object { $_.state -eq 'state-a' -and $_.feature -eq 'Upscaling' })[0]
@@ -94,8 +123,39 @@ try {
     }
     catch { $schemaError = $_.Exception.Message }
     Assert-Test ($schemaError -like 'Profiler comparison requires per-sample *.raw.json input*') 'aggregated summary input fails with a specific schema error'
+
+    $emptyError = $null
+    try { & $compare -InputPath $emptyPath -OutputDirectory (Join-Path $resolvedTestRoot 'empty-output') | Out-Null }
+    catch { $emptyError = $_.Exception.Message }
+    Assert-Test ($emptyError -like 'Profiler input*has 0 steady samples*') 'zero-sample input fails qualification instead of producing null-derived deltas'
+
+    $fakeControl = Join-Path $resolvedTestRoot 'Invoke-FakeDevBenchControl.ps1'
+    $runtimePath = Join-Path $resolvedTestRoot 'runtime.json'
+    $statePath = Join-Path $resolvedTestRoot 'profiler-state.json'
+    [IO.File]::WriteAllText($runtimePath, '{}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($fakeControl, @'
+param([string]$Command,[string]$Tool,[string]$ArgumentsJson,[string]$RuntimePath,[string]$EvidenceDirectory,[string]$EvidenceLabel,[switch]$RequireSuccess,[switch]$NoExit,[switch]$Compact)
+$state = Get-Content -LiteralPath $env:CSX_PROFILER_TEST_STATE -Raw | ConvertFrom-Json -AsHashtable
+$action = ($ArgumentsJson | ConvertFrom-Json).action
+if ($action -eq 'enable') { $state.enabled = $true }
+elseif ($action -eq 'disable') { $state.enabled = $false }
+elseif ($action -eq 'status') { $state.frame = [int]$state.frame + 1 }
+$state | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:CSX_PROFILER_TEST_STATE -Encoding utf8
+$timer = [pscustomobject]@{name='Synthetic';activeGpu=$true;activeCpu=$true;hasGpu=$true;hasCpu=$true;gpuMs=1.0;topLevelMs=1.0;cpuMs=0.1}
+$status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.1;acquiredSlots=1;slotRefusals=0;timers=@($timer)}
+[pscustomobject]@{ok=$true;runtimeIdentity=[pscustomobject]@{complete=$true;listenerPid=123;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");data=[pscustomobject]@{content=@([pscustomobject]@{ok=$true;status=$status})};errors=@()} | ConvertTo-Json -Depth 20 -Compress
+'@, [Text.UTF8Encoding]::new($false))
+    $env:CSX_PROFILER_TEST_STATE = $statePath
+    $measure = Join-Path $PSScriptRoot 'Measure-CSXProfiler.ps1'
+    $contextJson = @{ environment = @{ mo2Profile = 'fixture'; scene = 'still'; hmdMode = 'null'; renderResolution = '100x100' }; treatment = @{ shaderState = 'enabled' } } | ConvertTo-Json -Compress
+    $measurement = & $measure -Label fixture -EvidenceDirectory (Join-Path $resolvedTestRoot 'measure') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | ConvertFrom-Json
+    $finalProfilerState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Assert-Test ($measurement.ok -and $measurement.summary.uniqueFreshFrames -eq 3 -and $measurement.summary.profilerStateRestored) 'measurement uses fresh frames and records verified state restoration'
+    Assert-Test (-not $finalProfilerState.enabled) 'measurement restores the exact prior profiler enable state'
 }
 finally {
+    Remove-Item Env:CSX_PROFILER_TEST_STATE -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {
         Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
     }

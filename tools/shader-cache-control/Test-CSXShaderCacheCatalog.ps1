@@ -129,6 +129,8 @@ try {
     Assert-Test ($prepare.ok -and $prepare.data.task.action -eq 'seed-selected') 'task preparation snapshots the current tree and seeds the best known-working cache'
     $seeded = & $transactionTool inspect -CachePath $liveCache -NoExit | ConvertFrom-Json -Depth 30
     Assert-Test ([string]$seeded.data.treeSha256 -ieq [string]$baselineTransaction.data.inventory.treeSha256) 'task preparation verifies the seeded live tree'
+    $prepareAgain = Invoke-Catalog $prepareArgs
+    Assert-Test ($prepareAgain.ok -and $prepareAgain.state -eq 'already-prepared') 'task preparation retry reconciles the existing exact plan without reseeding'
 
     [IO.File]::WriteAllBytes((Join-Path $liveCache 'compiled-during-task.bin'), [byte[]](7, 7, 7, 7, 7))
     $taskResult = & $transactionTool inspect -CachePath $liveCache -NoExit | ConvertFrom-Json -Depth 30
@@ -165,6 +167,12 @@ try {
     Assert-Test ([string]$complete.data.task.workingTree.inventory.treeSha256 -ieq [string]$taskResult.data.treeSha256) 'task completion records the exact compiled result before restoration'
     Assert-Test (Test-Path -LiteralPath $complete.data.task.workingTree.preservedPath -PathType Container) 'task completion retains the displaced compiled result as evidence'
     Assert-Test ($complete.data.task.promoted.state -eq 'captured') 'known-working task output receives a distinct immutable snapshot manifest'
+    $completeAgain = Invoke-Catalog @{
+        Command = 'complete'; CatalogRoot = $catalogRoot; CachePath = $liveCache; EvidenceDirectory = $taskEvidence
+        Promote = $true; WorkingSetStatus = 'known-working'; Label = 'fixture completed task'; BlockingProcessNames = $blockers
+        Confirm = $false; Compact = $true; NoExit = $true
+    }
+    Assert-Test ($completeAgain.ok -and $completeAgain.state -eq 'already-complete') 'task completion retry returns the immutable existing completion'
 
     $finalList = Invoke-Catalog @{ Command = 'list'; CatalogRoot = $catalogRoot; Compact = $true; NoExit = $true }
     Assert-Test (@($finalList.data.snapshots).Count -eq 3 -and @($finalList.data.issues).Count -eq 0) 'catalog retains all known-working compatibility records and validates every manifest'

@@ -61,6 +61,14 @@ try {
     Assert-Test ($restore.ok -and $verified.ok -and $verified.data.matches) 'transaction restores and verifies the exact baseline'
     Assert-Test (Test-Path -LiteralPath $restore.data.displacedPath -PathType Container) 'transaction retains the displaced cache tree'
 
+    'rollback-original' | Set-Content -LiteralPath (Join-Path $liveCache 'rollback.txt') -Encoding utf8
+    $rollbackOriginal = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    $failedRestore = & $transaction restore -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -InternalTestFailurePoint restore-after-activate -Confirm:$false -NoExit | ConvertFrom-Json
+    $rollbackAfter = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    Assert-Test (-not $failedRestore.ok -and $failedRestore.errors[0] -match 'exact original cache was restored') 'restore failure reports verified rollback rather than success'
+    Assert-Test ($rollbackAfter.data.treeSha256 -eq $rollbackOriginal.data.treeSha256) 'restore failure removes the uncommitted replacement and restores the exact displaced tree'
+    Remove-Item -LiteralPath (Join-Path $liveCache 'rollback.txt') -Force
+
     $snapshotSeed = & $transaction seed -CachePath $liveCache -EvidenceDirectory $evidence `
         -SourceCachePath (Join-Path $evidence 'cache.before') -ExpectedSourceTreeSha256 $snap.data.inventory.treeSha256 `
         -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json

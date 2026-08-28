@@ -8,6 +8,7 @@ $mapName = "Local\CSXVRHeadPose-test-$([guid]::NewGuid().ToString('N'))"
 $mapping = $null
 $view = $null
 $passed = 0
+$fixture = Join-Path ([IO.Path]::GetTempPath()) "csx-head-pose-test-$([guid]::NewGuid().ToString('N'))"
 
 function Assert-Test([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Assertion failed: $Message" }
@@ -24,36 +25,78 @@ try {
     }
     Assert-Test (Test-Path -LiteralPath (Join-Path $bundleRoot 'licenses\OpenVR-LICENSE.txt') -PathType Leaf) 'bundled OpenVR runtime license is present'
 
-    $mapping = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateNew($mapName, 88)
-    $view = $mapping.CreateViewAccessor(0, 88, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite)
+    $mapping = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateNew($mapName, 128)
+    $view = $mapping.CreateViewAccessor(0, 128, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite)
     $view.Write(0, [uint32]0x48505343)
-    $view.Write(4, [uint16]1)
-    $view.Write(6, [uint16]88)
+    $view.Write(4, [uint16]2)
+    $view.Write(6, [uint16]128)
     $view.Write(8, [uint64]2)
     $view.Write(16, [uint64]2)
     $view.Write(24, [uint32]1)
     $view.Write(28, [uint32]1)
     $view.Write(32, [double]0); $view.Write(40, [double]1.68); $view.Write(48, [double]0)
     $view.Write(56, [double]1); $view.Write(64, [double]0); $view.Write(72, [double]0); $view.Write(80, [double]0)
+    $view.Write(88, [uint64]101)
+    $view.Write(96, [uint64]101)
+    $view.Write(104, [uint64]202)
+    $view.Write(112, [uint32]$PID)
+    $view.Write(120, [uint64][DateTime]::UtcNow.ToFileTimeUtc())
     $view.Flush()
 
     $inspect = & $entry inspect -MapName $mapName -Compact -NoExit | ConvertFrom-Json
     Assert-Test ($inspect.ok -and $inspect.state -eq 'provider-running' -and $inspect.data.pose.eyeHeightMeters -eq 1.68) 'inspect reads the versioned pose map'
 
     $qualify = & $entry qualify -MapName $mapName -SkipOpenVRProbe -Compact -NoExit | ConvertFrom-Json
-    Assert-Test ($qualify.ok -and $qualify.state -eq 'head-pose-qualified') 'qualify accepts an acknowledged standing pose'
+    Assert-Test (-not $qualify.ok -and $qualify.state -eq 'head-pose-not-qualified' -and $qualify.data.pose.qualified -and $qualify.data.applicationPose.skipped) 'skipping the independent stereo probe remains explicitly unqualified'
 
     $set = & $entry set -MapName $mapName -EyeHeightMeters 1.72 -YawDegrees 15 -NoWait -Compact -NoExit | ConvertFrom-Json
-    Assert-Test ($set.ok -and $set.state -eq 'pose-submitted' -and ($view.ReadUInt64(8) % 2) -eq 0) 'set publishes an atomic even pose sequence'
+    Assert-Test ($set.ok -and $set.state -eq 'pose-submitted' -and $set.data.writerNonce -ne 0 -and ($view.ReadUInt64(8) % 2) -eq 0) 'set publishes an atomic even pose sequence with a unique writer nonce'
     Assert-Test ([Math]::Abs($view.ReadDouble(40) - 1.72) -lt 0.000001) 'set writes the requested eye height'
 
-    $view.Write(16, $view.ReadUInt64(8)); $view.Write(24, [uint32]1); $view.Flush()
+    $view.Write(16, $view.ReadUInt64(8)); $view.Write(96, $view.ReadUInt64(88)); $view.Write(24, [uint32]1); $view.Flush()
     $requalified = & $entry qualify -MapName $mapName -SkipOpenVRProbe -Compact -NoExit | ConvertFrom-Json
-    Assert-Test ($requalified.ok -and [Math]::Abs($requalified.data.pose.eyeHeightMeters - 1.72) -lt 0.000001) 'provider acknowledgement requalifies the updated pose'
+    Assert-Test (-not $requalified.ok -and $requalified.data.pose.qualified -and [Math]::Abs($requalified.data.pose.eyeHeightMeters - 1.72) -lt 0.000001) 'exact nonce acknowledgement requalifies the shared pose while skipped stereo evidence remains unqualified'
+
+    $view.Write(96, [uint64]($view.ReadUInt64(88) + 1)); $view.Flush()
+    $wrongNonce = & $entry inspect -MapName $mapName -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $wrongNonce.data.pose.acknowledged -and -not $wrongNonce.data.pose.qualified) 'an acknowledgement for a different writer nonce cannot satisfy the transaction'
+
+    New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    $writerRuns = @(
+        foreach ($height in @(1.73, 1.74)) {
+            $stdout = Join-Path $fixture "writer-$height.stdout.json"
+            $stderr = Join-Path $fixture "writer-$height.stderr.log"
+            $process = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList @('-NoProfile', '-File', $entry, 'set', '-MapName', $mapName, '-EyeHeightMeters', [string]$height, '-NoWait', '-Compact', '-NoExit') -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            [pscustomobject]@{ process = $process; stdout = $stdout; stderr = $stderr }
+        }
+    )
+    foreach ($run in $writerRuns) {
+        if (-not $run.process.WaitForExit(10000)) { $run.process.Kill($true); throw 'Concurrent writer test exceeded its bounded deadline.' }
+        if ($run.process.ExitCode -ne 0) { throw "Concurrent writer failed: $([IO.File]::ReadAllText($run.stderr))" }
+    }
+    $writerResults = @($writerRuns | ForEach-Object { [IO.File]::ReadAllText($_.stdout) | ConvertFrom-Json })
+    Assert-Test (@($writerResults.data.requestedSequence | Sort-Object -Unique).Count -eq 2 -and @($writerResults.data.writerNonce | Sort-Object -Unique).Count -eq 2) 'concurrent writers serialize to distinct sequences and command nonces'
+
+    $installRoot = Join-Path $fixture 'installed\codex_head_pose'
+    $oldDll = Join-Path $installRoot 'bin\win64\driver_codex_head_pose.dll'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $oldDll) -Force | Out-Null
+    [IO.File]::WriteAllText($oldDll, 'owned-old-driver', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $installRoot '.csx-vr-automation-driver.json'), '{"schemaVersion":1,"driverName":"codex_head_pose"}', [Text.UTF8Encoding]::new($false))
+    $oldHash = (Get-FileHash -LiteralPath $oldDll -Algorithm SHA256).Hash
+    $openVrPaths = Join-Path $fixture 'openvrpaths.vrpath'
+    [ordered]@{ version = 1; external_drivers = @($installRoot) } | ConvertTo-Json | Set-Content -LiteralPath $openVrPaths -Encoding utf8
+    $openVrBefore = [IO.File]::ReadAllBytes($openVrPaths)
+    $evidence = Join-Path $fixture 'evidence'
+    $failedUpgrade = & $entry install -DriverPackagePath $bundleRoot -InstallRoot $installRoot -VRPathRegPath $entry -OpenVRPathsPath $openVrPaths -EvidenceDirectory $evidence -Upgrade -InternalTestFailurePoint install-after-replacement -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $failedUpgrade.ok -and $failedUpgrade.errors[0] -match 'exact previous install.*restored') 'injected upgrade failure reports verified rollback'
+    Assert-Test ((Get-FileHash -LiteralPath $oldDll -Algorithm SHA256).Hash -eq $oldHash) 'upgrade rollback restores the exact original driver DLL'
+    Assert-Test ([Convert]::ToHexString([IO.File]::ReadAllBytes($openVrPaths)) -eq [Convert]::ToHexString($openVrBefore)) 'upgrade rollback restores the exact OpenVR registration preimage'
+    Assert-Test (@(Get-ChildItem -LiteralPath (Split-Path -Parent $installRoot) -Directory -Filter 'codex_head_pose.uncommitted-*').Count -eq 1) 'upgrade rollback quarantines the uncommitted replacement'
 
     [pscustomobject]@{ ok = $true; passed = $passed } | ConvertTo-Json -Compress
 }
 finally {
     if ($view) { $view.Dispose() }
     if ($mapping) { $mapping.Dispose() }
+    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
 }

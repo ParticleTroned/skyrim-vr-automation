@@ -10,6 +10,7 @@ try {
     if (-not $dry.ok -or $dry.state -ne 'dry-run' -or (Test-Path -LiteralPath $target)) { throw 'Doctor init dry-run failed.' }
     $created = (& (Get-Process -Id $PID).Path -NoProfile -File $script init -UserConfigPath $target | ConvertFrom-Json)
     if (-not $created.ok -or -not (Test-Path -LiteralPath $target)) { throw 'Doctor init did not create the target.' }
+    if ((Get-Content -LiteralPath $script -Raw) -notmatch 'Invoke-BoundedProcess\.ps1') { throw 'Doctor validation does not use the bounded process controller.' }
     $inspected = & (Get-Process -Id $PID).Path -NoProfile -File $script inspect -ConfigPath $target -UserConfigPath $target -NoExit | ConvertFrom-Json
     $fixtureCheck = @($inspected.checks | Where-Object name -eq 'verified-fixture-manifest')
     if ($fixtureCheck.Count -ne 1 -or $fixtureCheck[0].status -ne 'warn' -or [string]::IsNullOrWhiteSpace([string]$fixtureCheck[0].data.exampleManifestPath)) { throw 'Doctor did not report the configured verified-fixture manifest state.' }

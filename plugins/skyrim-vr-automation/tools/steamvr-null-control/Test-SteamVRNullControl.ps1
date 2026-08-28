@@ -31,6 +31,7 @@ try {
     $profilePath = Join-Path $fixture 'null.json'
     $evidence = Join-Path $fixture 'evidence'
     $isolationEvidence = Join-Path $fixture 'evidence-isolation'
+    $failureEvidence = Join-Path $fixture 'evidence-failure'
     $steamVrRoot = Join-Path $fixture 'SteamVR'
     $startupPath = Join-Path $steamVrRoot 'bin\win64\vrstartup.exe'
     $serverLogPath = Join-Path $fixture 'vrserver.txt'
@@ -43,6 +44,7 @@ try {
     [ordered]@{ version = 1; external_drivers = @($headPoseDriverRoot) } | ConvertTo-Json | Set-Content -LiteralPath $openVrPathsPath -Encoding utf8
     New-Item -ItemType Directory -Path $evidence | Out-Null
     New-Item -ItemType Directory -Path $isolationEvidence | Out-Null
+    New-Item -ItemType Directory -Path $failureEvidence | Out-Null
     New-Item -ItemType Directory -Path (Split-Path -Parent $startupPath) -Force | Out-Null
     [IO.File]::WriteAllBytes($startupPath, [byte[]]@(0))
     $originalText = "{`r`n  `"steamvr`": { `"enableHomeApp`": true },`r`n  `"unrelated`": { `"value`": 7 }`r`n}`r`n"
@@ -54,7 +56,7 @@ try {
         driver_codex_head_pose = [ordered]@{ enable = $true; serialNumber = 'CSX-NULL-HMD-POSE-1'; modelNumber = 'Fixture Pose'; positionX = 0.0; eyeHeightMeters = 1.68; positionZ = 0.0; yawDegrees = 0.0; pitchDegrees = 0.0; rollDegrees = 0.0 }
         TrackingOverrides = [ordered]@{ '/devices/codex_head_pose/CSX-NULL-HMD-POSE-1' = '/user/head' }
         headPoseProviderContract = [ordered]@{ driverName = 'codex_head_pose'; registeredDevicePath = '/devices/codex_head_pose/CSX-NULL-HMD-POSE-1'; semanticTarget = '/user/head'; sharedMemoryName = "Local\CSXVRHeadPose-fixture-$([guid]::NewGuid().ToString('N'))"; sharedMemoryVersion = 1; minimumQualifiedEyeHeightMeters = 1.0; maximumQualifiedEyeHeightMeters = 2.5 }
-        automationInputContract = [ordered]@{ hmdPoseProvider = 'codex-head-pose-v1'; hmdPoseControl = 'shared-memory-v1'; controllerInput = 'unavailable'; dashboardInput = 'disabled'; replayReady = $false; measurementReady = $false; qualificationRequired = 'fixture qualification' }
+        automationInputContract = [ordered]@{ hmdPoseProvider = 'codex-head-pose-v2'; hmdPoseControl = 'shared-memory-v2'; controllerInput = 'unavailable'; dashboardInput = 'disabled'; replayReady = $false; measurementReady = $false; qualificationRequired = 'fixture qualification' }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $profilePath -Encoding utf8
 
     $inspectBefore = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
@@ -75,10 +77,21 @@ try {
     Assert-Test ($appliedJson['dashboard']['enableDashboard'] -eq $false) 'apply disables the dashboard generic-HMD input route'
     Assert-Test ($appliedJson['driver_codex_head_pose']['eyeHeightMeters'] -eq 1.68 -and $appliedJson['TrackingOverrides']['/devices/codex_head_pose/CSX-NULL-HMD-POSE-1'] -eq '/user/head') 'apply configures the synthetic head pose and semantic override'
     Assert-Test (Test-Path -LiteralPath (Join-Path $evidence 'steamvr-null-receipt.json')) 'apply writes hash receipt'
+    $appliedText = [IO.File]::ReadAllText($settingsPath)
+
+    $otherSettingsPath = Join-Path $fixture 'other-steamvr.vrsettings'
+    [IO.File]::WriteAllText($otherSettingsPath, $originalText, [Text.UTF8Encoding]::new($false))
+    $wrongPathRestore = & $entry restore -SettingsPath $otherSettingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $evidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $wrongPathRestore.ok -and $wrongPathRestore.state -eq 'blocked' -and $wrongPathRestore.errors[0] -match 'settings path') 'restore refuses a settings path different from its apply receipt'
+
+    [IO.File]::AppendAllText($settingsPath, "`n")
+    $settingsDriftRestore = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $evidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $settingsDriftRestore.ok -and $settingsDriftRestore.state -eq 'blocked' -and $settingsDriftRestore.errors[0] -match 'settings.*changed|settings.*drift') 'restore refuses SteamVR settings drift after apply'
+    [IO.File]::WriteAllText($settingsPath, $appliedText, [Text.UTF8Encoding]::new($false))
 
     $inspectConfigured = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
     Assert-Test ($inspectConfigured.ok -and $inspectConfigured.state -eq 'null-configured-runtime-stopped' -and -not $inspectConfigured.data.runtime.active) 'inspect distinguishes configured settings from a proven runtime'
-    Assert-Test (-not $inspectConfigured.data.inputContract.replayReady -and $inspectConfigured.data.inputContract.controllerInput -eq 'unavailable' -and $inspectConfigured.data.inputContract.hmdPoseControl -eq 'shared-memory-v1') 'inspect exposes controlled HMD pose while keeping controller replay unavailable'
+    Assert-Test (-not $inspectConfigured.data.inputContract.replayReady -and $inspectConfigured.data.inputContract.controllerInput -eq 'unavailable' -and $inspectConfigured.data.inputContract.hmdPoseControl -eq 'shared-memory-v2') 'inspect exposes controlled HMD pose while keeping controller replay unavailable'
 
     $startDry = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $evidence -WhatIf -Compact | ConvertFrom-Json
     Assert-Test ($startDry.ok -and $startDry.state -eq 'dry-run' -and $startDry.data.startupPath -eq $startupPath) 'start dry-run validates the configured transaction and exact startup path'
@@ -103,6 +116,7 @@ try {
 
     $isolatedApply = & $entry apply -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -IsolateExternalDisplayRedirectors -Compact | ConvertFrom-Json
     Assert-Test ($isolatedApply.ok -and $isolatedApply.state -eq 'null-applied' -and $isolatedApply.data.externalDriverIsolation.enabled) 'apply transaction isolates the exact external display redirector'
+    Assert-Test (-not [string]::IsNullOrWhiteSpace([string]$isolatedApply.data.externalDriverIsolation.semanticSha256Before) -and -not [string]::IsNullOrWhiteSpace([string]$isolatedApply.data.externalDriverIsolation.semanticSha256Isolated)) 'isolation receipt records exact and semantic registration hashes'
     if (-not $isolatedApply.ok) { throw "Fixture isolation apply failed: $($isolatedApply.errors -join '; ')" }
     $isolatedPaths = Get-Content -LiteralPath $openVrPathsPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-Test (@($isolatedPaths['external_drivers']).Count -eq 1 -and [IO.Path]::GetFullPath([string]$isolatedPaths['external_drivers'][0]) -eq [IO.Path]::GetFullPath($headPoseDriverRoot)) 'isolation retains the non-redirecting head-pose driver only'
@@ -113,7 +127,37 @@ try {
     $isolatedStartDry = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact | ConvertFrom-Json
     Assert-Test ($isolatedStartDry.ok -and $isolatedStartDry.state -eq 'dry-run' -and $isolatedStartDry.data.externalDriverIsolation.enabled -and -not $isolatedStartDry.data.inputContract.measurementReady) 'isolated start validates its receipt while runtime readiness remains fail-closed'
 
-    $isolatedText = [IO.File]::ReadAllText($openVrPathsPath)
+    $isolatedText = (Get-Content -LiteralPath $openVrPathsPath -Raw | ConvertFrom-Json -AsHashtable | ConvertTo-Json -Depth 8 -Compress) + "`r`n"
+    [IO.File]::WriteAllText($openVrPathsPath, $isolatedText, [Text.UTF8Encoding]::new($false))
+    $formatStart = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test ($formatStart.ok -and $formatStart.state -eq 'dry-run' -and $formatStart.data.externalDriverIsolationValidation.formattingOnlyDriftAccepted -and $formatStart.data.externalDriverIsolationValidation.expectationSource -eq 'exact-backup-minus-unique-targets') 'start accepts formatting-only drift using a backup-derived expectation'
+
+    $isolationReceiptPath = Join-Path $isolationEvidence 'steamvr-null-receipt.json'
+    $isolationReceipt = Get-Content -LiteralPath $isolationReceiptPath -Raw | ConvertFrom-Json -AsHashtable
+    $recordedSemanticHash = [string]$isolationReceipt['externalDriverIsolation']['semanticSha256Isolated']
+    $isolationReceipt['externalDriverIsolation']['semanticSha256Isolated'] = '00'
+    $isolationReceipt | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $isolationReceiptPath -Encoding utf8
+    $tamperedSemanticStart = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $tamperedSemanticStart.ok -and $tamperedSemanticStart.errors[0] -match 'receipt semantic hash') 'receipt semantic hash is corroboration, never the authoritative expected state'
+
+    $isolationReceipt['externalDriverIsolation']['semanticSha256Isolated'] = $recordedSemanticHash
+    $originalIsolationTargets = @($isolationReceipt['externalDriverIsolation']['targets'])
+    $isolationReceipt['externalDriverIsolation']['targets'] = @($originalIsolationTargets[0], $originalIsolationTargets[0])
+    $isolationReceipt | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $isolationReceiptPath -Encoding utf8
+    $duplicateTargetStart = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $duplicateTargetStart.ok -and $duplicateTargetStart.errors[0] -match 'duplicate normalized target') 'duplicate receipt targets cannot satisfy backup reconstruction'
+
+    $isolationReceipt['externalDriverIsolation']['targets'] = @($originalIsolationTargets)
+    $isolationReceipt['externalDriverIsolation'].Remove('semanticSha256Before')
+    $isolationReceipt['externalDriverIsolation'].Remove('semanticSha256Isolated')
+    $isolationReceipt | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $isolationReceiptPath -Encoding utf8
+    $legacyFormatStart = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test ($legacyFormatStart.ok -and $legacyFormatStart.data.externalDriverIsolationValidation.formattingOnlyDriftAccepted) 'legacy byte-only receipt reconstructs the isolated semantic state from its exact backup'
+
+    $failedRestore = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -InternalTestFailurePoint restore-after-settings -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $failedRestore.ok -and $failedRestore.errors[0] -match 'exact applied state was restored') 'two-file restore failure reports verified rollback to the applied state'
+    Assert-Test ([IO.File]::ReadAllText($settingsPath) -ceq $appliedText -and [IO.File]::ReadAllText($openVrPathsPath) -ceq $isolatedText) 'two-file restore failure leaves neither target partially restored'
+
     $drift = Get-Content -LiteralPath $openVrPathsPath -Raw | ConvertFrom-Json -AsHashtable
     $drift['unrelated_test_drift'] = $true
     $drift | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $openVrPathsPath -Encoding utf8
@@ -126,9 +170,16 @@ try {
     $isolatedRestoreDry = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact | ConvertFrom-Json
     Assert-Test ($isolatedRestoreDry.ok -and $isolatedRestoreDry.data.externalDriverIsolation.enabled -and $isolatedRestoreDry.data.wouldRestoreOpenVRPaths) 'restore dry-run reports exact external-driver restoration'
     $isolatedRestore = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -Compact | ConvertFrom-Json
-    Assert-Test ($isolatedRestore.ok -and $isolatedRestore.state -eq 'restored' -and $isolatedRestore.data.openVRPathsRestoredSha256) 'restore reinstates the exact external-driver registration transaction'
+    Assert-Test ($isolatedRestore.ok -and $isolatedRestore.state -eq 'restored' -and $isolatedRestore.data.openVRPathsRestoredSha256 -and $isolatedRestore.data.externalDriverIsolationValidation.formattingOnlyDriftAccepted) 'restore reinstates the exact external-driver registration transaction after formatting-only drift'
     Assert-Test ([IO.File]::ReadAllText($settingsPath) -ceq $originalText) 'isolation restore keeps SteamVR settings exact-byte identical'
     Assert-Test ([IO.File]::ReadAllText($openVrPathsPath) -ceq $openVrTextBeforeIsolation) 'isolation restore keeps OpenVR registrations exact-byte identical'
+
+    $isolatedRestoreAgain = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -Compact | ConvertFrom-Json
+    Assert-Test ($isolatedRestoreAgain.ok -and $isolatedRestoreAgain.state -eq 'already-restored') 'restore retry recognizes the committed exact baseline without rewriting it'
+
+    $failedApply = & $entry apply -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $failureEvidence -IsolateExternalDisplayRedirectors -InternalTestFailurePoint apply-after-openvr -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $failedApply.ok -and $failedApply.errors[0] -match 'every exact backup was restored') 'two-file apply failure reports verified rollback to the original state'
+    Assert-Test ([IO.File]::ReadAllText($settingsPath) -ceq $originalText -and [IO.File]::ReadAllText($openVrPathsPath) -ceq $openVrTextBeforeIsolation) 'two-file apply failure leaves neither target partially mutated'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedFixture) { Remove-Item -LiteralPath $resolvedFixture -Recurse -Force }

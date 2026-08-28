@@ -4,7 +4,8 @@
 param(
     [Parameter(Mandatory)][string[]]$InputPath,
     [Parameter(Mandatory)][string]$OutputDirectory,
-    [string]$ReferenceLabel
+    [string]$ReferenceLabel,
+    [ValidateRange(3, 10000)][int]$MinimumSteadySamples = 3
 )
 
 Set-StrictMode -Version Latest
@@ -16,6 +17,10 @@ function Get-Percentile {
     $sorted = @($Values | Sort-Object)
     $index = [Math]::Max(0, [Math]::Min($sorted.Count - 1, [Math]::Ceiling($Percentile * $sorted.Count) - 1))
     [double]$sorted[$index]
+}
+
+function Assert-Finite([double]$Value, [string]$Name, [string]$Path) {
+    if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) { throw "Profiler input '$Path' has non-finite metric '$Name'." }
 }
 
 function Get-MetricSummary {
@@ -45,6 +50,15 @@ foreach ($path in $InputPath) {
         throw "Profiler comparison requires per-sample *.raw.json input; '$path' contains aggregated timer rows."
     }
     $steady = @($records | Where-Object { @($_.timers).Count -gt 0 })
+    if ($steady.Count -lt $MinimumSteadySamples) { throw "Profiler input '$path' has $($steady.Count) steady samples; at least $MinimumSteadySamples unique fresh frames are required." }
+    if (@($steady | Where-Object { -not $_.PSObject.Properties['frame'] }).Count -gt 0) { throw "Profiler input '$path' lacks frame identity required for freshness proof." }
+    if (@($steady.frame | Sort-Object -Unique).Count -ne $steady.Count) { throw "Profiler input '$path' contains repeated frames and is not a fresh sample set." }
+    $contextFingerprints = @($steady.contextFingerprint | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+    if ($contextFingerprints.Count -ne 1) { throw "Profiler input '$path' must contain exactly one non-empty context fingerprint." }
+    foreach ($record in $steady) {
+        Assert-Finite ([double]$record.resolvedTotalMs) 'resolvedTotalMs' $path
+        Assert-Finite ([double]$record.resolvedCpuTotalMs) 'resolvedCpuTotalMs' $path
+    }
     $timerRows = foreach ($record in $steady) {
         foreach ($timer in @($record.timers)) {
             if ([bool]$timer.activeGpu -and [bool]$timer.hasGpu) {
@@ -65,11 +79,14 @@ foreach ($path in $InputPath) {
         requestedSamples = $records.Count
         steadySamples = $steady.Count
         discardedWarmupSamples = $records.Count - $steady.Count
+        contextFingerprint = $contextFingerprints[0]
         resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($steady | ForEach-Object resolvedTotalMs))
         resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($steady | ForEach-Object resolvedCpuTotalMs))
         timers = @($timers)
     })
 }
+
+if (@($states.contextFingerprint | Sort-Object -Unique).Count -ne 1) { throw 'Profiler inputs were captured under different environment/runtime context fingerprints and cannot be compared.' }
 
 if ([string]::IsNullOrWhiteSpace($ReferenceLabel)) { $ReferenceLabel = $states[0].label }
 $reference = @($states | Where-Object label -eq $ReferenceLabel)

@@ -56,6 +56,11 @@ try {
     Import-Module (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'mo2-control\MO2Control.psm1') -Force
     $config = Read-MO2ControlConfig -ConfigPath $configPath
     $access = Invoke-MO2RequestAccess -Config $config -Label fixture; $accessId = [string]$access.data.access.accessId
+    $escapedSource = Join-Path $mo2 'outside'
+    New-Item -ItemType Directory -Path $escapedSource -Force | Out-Null
+    '+Loader' | Set-Content -LiteralPath (Join-Path $escapedSource 'modlist.txt') -Encoding utf8
+    $escapedStatus = & $entry fixture-status -ConfigPath $configPath -SourceProfile '..\outside' -Compact -NoExit | ConvertFrom-Json
+    if ($escapedStatus.ok -or $escapedStatus.errors[0] -notmatch 'direct child|malformed') { throw 'SourceProfile traversal was not rejected as malformed.' }
     $fixtureStatusRaw = & $entry fixture-status -ConfigPath $configPath -Compact
     if ($fixtureStatusRaw -match "`r|`n") { throw 'Compact workspace output was not one line.' }
     $fixtureStatus = $fixtureStatusRaw | ConvertFrom-Json
@@ -107,7 +112,9 @@ try {
         if (-not (Test-Path -LiteralPath $copied -PathType Leaf) -or (Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $sourceSave -Algorithm SHA256).Hash) { throw "Verified fixture did not copy exact save file: $name" }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $verified.data.profilePath 'saves\ordinary.ess') -PathType Leaf)) { throw 'Verified fixture workspace did not retain the complete source save set.' }
-    $newMod = Join-Path $mods 'Owned Test Mod'; New-Item -ItemType Directory -Path $newMod -Force | Out-Null
+    $createdMod = & $entry create-mod -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName 'Owned Test Mod' -Confirm:$false | ConvertFrom-Json
+    if (-not $createdMod.ok -or $createdMod.state -ne 'mod-created') { throw 'Workspace did not create a separately owned mod directory.' }
+    $newMod = [string]$createdMod.data.modDirectory
     New-Item -ItemType Directory -Path (Join-Path $newMod 'SKSE\Plugins') -Force | Out-Null
     'task-provider' | Set-Content -LiteralPath (Join-Path $newMod 'SKSE\Plugins\Example.dll') -Encoding utf8
     $registered = & $entry register-mod -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName 'Owned Test Mod' -ModDirectory $newMod -WinningPaths 'SKSE\Plugins\Example.dll' -Confirm:$false | ConvertFrom-Json
@@ -135,7 +142,7 @@ try {
     $resumedVerified = & $entry resume -ConfigPath $configPath -AccessId $nextAccessId -TaskId $taskId -WorkspaceId $verified.data.workspaceId -Confirm:$false | ConvertFrom-Json
     if (-not $resumedVerified.ok) { throw 'Second retained workspace could not be explicitly resumed.' }
     $releasedVerified = & $entry retire -ConfigPath $configPath -AccessId $nextAccessId -TaskId $taskId -WorkspaceId $verified.data.workspaceId -Confirm:$false | ConvertFrom-Json
-    if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace retirement failed.' }
+    if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw "Verified fixture workspace retirement failed: $($releasedVerified | ConvertTo-Json -Depth 12 -Compress)" }
     $resumedAgain = & $entry resume -ConfigPath $configPath -AccessId $nextAccessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -Confirm:$false | ConvertFrom-Json
     if (-not $resumedAgain.ok) { throw 'Original retained workspace could not be reselected after another workspace.' }
     $released = & $entry retire -ConfigPath $configPath -AccessId $nextAccessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -CleanupOwnedMods -Confirm:$false | ConvertFrom-Json
