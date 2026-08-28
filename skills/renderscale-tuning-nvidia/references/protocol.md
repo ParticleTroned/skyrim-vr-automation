@@ -130,7 +130,12 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `native_aa=0`, `hoshipa=1`, `ultra_quality=2`, `quality=3`, `balanced=4`,
    `performance=5`, and `ultra_performance=6`. Include configured
    `fsrRuntime: fsr3` only for FSR. Include the preserved `dlssProfile.name`
-   for DLSS and DLAA. Physical backend proof remains separate.
+   for DLSS and DLAA. A `vendor_native` target (DLAA or FSR Native AA) has a
+   native API render-scale state but must still prove active vendor evaluation.
+   Its exact effective API profile is the public target; the controller's
+   requested/stable render-scale projections may be `none` and are retained as
+   telemetry, not used to reject that API target. Physical backend proof
+   remains separate and `none` is a failure.
 6. For None and TAA, do not call a vendor qualification waiter or manufacture
    a DLSS/FSR target. Call DevBench `upscalingStable` in Dragonsreach exactly
    once with only the shared deadline's remaining budget and the complete
@@ -190,12 +195,18 @@ solely by pre-mutation replacement admission is a transition `FAIL`.
 
 ## 4. Completion and evidence rules
 
-For DLSS, DLAA, FSR render scale, and FSR Native AA require requested, API,
-and physical profiles to agree; correct native or scaled dimensions; coherent
-both-eye presentation; exact provider generation and resource ownership; and
-strict completion. Record first physical-profile match, first coherent stereo
-presentation, `presentationStable`, `cleanupDrained`, and strict completion
-separately. Cleanup may follow presentation and must not replace its timing.
+For scaled DLSS and FSR, require requested, effective, stable, and physical
+profiles to agree; scaled dimensions; coherent both-eye presentation; exact
+provider generation and resource ownership; and strict completion. For
+`vendor_native` DLAA and FSR Native AA, require the exact effective public API
+profile plus an active physical DLSS or FSR contract at native dimensions. The
+controller requested/stable render-scale projections may be `none`; retain
+them as telemetry, but do not compare them with the effective vendor profile.
+In every vendor case, require coherent vendor presentation, lifecycle and
+two-eye fidelity proof. A physical backend of `none` is a failure. Record first
+physical-profile match, first coherent stereo presentation,
+`presentationStable`, `cleanupDrained`, and strict completion separately.
+Cleanup may follow presentation and must not replace its timing.
 
 For None and TAA require the public operation target and effective profile to
 match the complete target; the authoritative effective method to be exact;

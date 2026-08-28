@@ -112,6 +112,8 @@ foreach ($variant in $variants) {
         'must not be compared with the effective',
         'recorded transition `FAIL` or `INCONCLUSIVE`',
         'qualification owner is closed', 'Otherwise stop future mutations',
+        'vendor_native', 'requested/stable render-scale projections may be `none`',
+        'physical backend of `none` is a failure',
         'Scenario steps cannot interpolate earlier',
         'using its exact returned', 'ownership guard',
         'physicalMutationStarted', 'not merely engine-target creator entry',
@@ -151,6 +153,11 @@ foreach ($variant in $variants) {
         if ($destination.completionClass -eq 'vendor_scaled') {
             Assert-True ($destination.renderScaleMode -eq $true) "$($variant.Name) scaled destination is not enabled: $($property.Name)"
             Assert-True ($destination.qualityMode -ne 'native_aa') "$($variant.Name) scaled destination uses native AA: $($property.Name)"
+        }
+        if ($destination.completionClass -eq 'vendor_native') {
+            Assert-True ($destination.renderScaleMode -eq $false) "$($variant.Name) native vendor destination is scaled: $($property.Name)"
+            Assert-True ($destination.qualityMode -eq 'native_aa') "$($variant.Name) native vendor destination is not native AA: $($property.Name)"
+            Assert-True ($destination.method -in @('dlss', 'fsr')) "$($variant.Name) native vendor destination has no vendor method: $($property.Name)"
         }
     }
 }
