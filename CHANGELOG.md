@@ -23,6 +23,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Add opt-in, receipt-bound isolation of exact OpenVR display redirectors;
   refuse registration or manifest drift and restore the byte-identical
   pre-test registration file before returning to normal VR operation.
+- Record canonical OpenVR registration fingerprints so SteamVR-owned JSON
+  formatting rewrites no longer strand an isolation transaction, while changed
+  registration values and suppressed-driver manifests remain fail-closed.
 - Revalidate the exact MO2 owner through a bounded post-game stability window,
   returning an explicit release-required state if MO2 exits, and add compact
   JSON output to profile control.

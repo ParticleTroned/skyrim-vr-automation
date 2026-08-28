@@ -46,7 +46,13 @@ verifies that the remaining inventory is complete and conflict-free. If more
 than one redirector is present, name every exact root in the
 `-ExternalDisplayRedirectorRoot <root1>,<root2>` array. `start` refuses registration drift;
 `restore` refuses to overwrite drift and restores the exact pre-apply bytes only
-when the isolated-state hash and suppressed manifests still match the receipt.
+when the isolated registration remains semantically identical and the
+suppressed manifests still match the receipt. The receipt retains both exact
+byte hashes and canonical JSON semantic hashes. SteamVR-owned whitespace or
+property-order normalization is accepted and reported as formatting-only drift;
+changes to registration values remain fail-closed. Earlier byte-only receipts
+are supported by reconstructing the expected isolated semantic state from the
+exact backup and recorded suppression targets.
 The normal fail-closed path remains unchanged when this option is omitted.
 
 For a specifically authorized coexistence diagnostic, `start

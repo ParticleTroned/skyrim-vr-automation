@@ -116,16 +116,104 @@ function Read-JsonHashtable {
     return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
 }
 
+function ConvertTo-CanonicalJsonValue {
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [Collections.IDictionary]) {
+        $canonical = [ordered]@{}
+        foreach ($key in @($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)) {
+            $canonical[$key] = ConvertTo-CanonicalJsonValue -Value $Value[$key]
+        }
+        return $canonical
+    }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        $canonical = [Collections.Generic.List[object]]::new()
+        foreach ($item in $Value) {
+            $canonical.Add((ConvertTo-CanonicalJsonValue -Value $item))
+        }
+        return ,$canonical.ToArray()
+    }
+    return $Value
+}
+
+function Get-JsonSemanticSha256 {
+    param(
+        [string]$Path,
+        [AllowNull()]$Value
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+        $Value = Read-JsonHashtable -Path $Path
+    }
+    $canonical = ConvertTo-CanonicalJsonValue -Value $Value
+    $json = $canonical | ConvertTo-Json -Depth 64 -Compress
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [Convert]::ToHexString($algorithm.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($json)))
+    }
+    finally { $algorithm.Dispose() }
+}
+
+function Get-IsolatedRegistrationSemanticSha256 {
+    param(
+        [Parameter(Mandatory)][string]$BackupPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Targets
+    )
+    $document = Read-JsonHashtable -Path $BackupPath
+    $registered = @($document['external_drivers'])
+    $targetRoots = @($Targets | ForEach-Object { Get-NormalizedPath ([string]$_['root']) })
+    $removed = [Collections.Generic.List[string]]::new()
+    $retained = [Collections.Generic.List[string]]::new()
+    foreach ($rootValue in $registered) {
+        if ([string]::IsNullOrWhiteSpace([string]$rootValue)) { continue }
+        $normalized = Get-NormalizedPath ([string]$rootValue)
+        if ($normalized -in $targetRoots) { $removed.Add($normalized) } else { $retained.Add([string]$rootValue) }
+    }
+    if ($removed.Count -ne $targetRoots.Count) {
+        throw 'The exact registration backup cannot reproduce the isolated semantic state recorded by the apply receipt.'
+    }
+    $document['external_drivers'] = @($retained)
+    return Get-JsonSemanticSha256 -Value $document
+}
+
+function Get-IsolationValidation {
+    param(
+        [Parameter(Mandatory)]$Isolation,
+        [Parameter(Mandatory)][string]$BackupPath,
+        [Parameter(Mandatory)][string]$CurrentPath
+    )
+    $currentSha256 = Get-HashOrNull $CurrentPath
+    $expectedSha256 = [string]$Isolation['sha256Isolated']
+    $exactMatch = $currentSha256 -eq $expectedSha256
+    $expectedSemanticSha256 = if ($Isolation.ContainsKey('semanticSha256Isolated') -and -not [string]::IsNullOrWhiteSpace([string]$Isolation['semanticSha256Isolated'])) {
+        [string]$Isolation['semanticSha256Isolated']
+    }
+    else {
+        Get-IsolatedRegistrationSemanticSha256 -BackupPath $BackupPath -Targets @($Isolation['targets'])
+    }
+    $currentSemanticSha256 = Get-JsonSemanticSha256 -Path $CurrentPath
+    $semanticMatch = $currentSemanticSha256 -eq $expectedSemanticSha256
+    return [pscustomobject][ordered]@{
+        exactMatch = $exactMatch
+        semanticMatch = $semanticMatch
+        formattingOnlyDriftAccepted = -not $exactMatch -and $semanticMatch
+        currentSha256 = $currentSha256
+        expectedSha256 = $expectedSha256
+        currentSemanticSha256 = $currentSemanticSha256
+        expectedSemanticSha256 = $expectedSemanticSha256
+    }
+}
+
 function Get-ExternalDriverInventory {
     param([string]$Path)
     $drivers = [Collections.Generic.List[object]]::new()
     $errors = [Collections.Generic.List[string]]::new()
     if ([string]::IsNullOrWhiteSpace($Path)) {
-        return [pscustomobject][ordered]@{ path = $null; exists = $false; sha256 = $null; drivers = @(); conflicts = @(); errors = @('The OpenVR paths file could not be resolved because LOCALAPPDATA is unavailable.') }
+        return [pscustomobject][ordered]@{ path = $null; exists = $false; sha256 = $null; semanticSha256 = $null; drivers = @(); conflicts = @(); errors = @('The OpenVR paths file could not be resolved because LOCALAPPDATA is unavailable.') }
     }
     $resolvedPath = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
-        return [pscustomobject][ordered]@{ path = $resolvedPath; exists = $false; sha256 = $null; drivers = @(); conflicts = @(); errors = @() }
+        return [pscustomobject][ordered]@{ path = $resolvedPath; exists = $false; sha256 = $null; semanticSha256 = $null; drivers = @(); conflicts = @(); errors = @() }
     }
     try {
         $paths = Read-JsonHashtable -Path $resolvedPath
@@ -166,6 +254,7 @@ function Get-ExternalDriverInventory {
         path = $resolvedPath
         exists = $true
         sha256 = Get-HashOrNull $resolvedPath
+        semanticSha256 = Get-JsonSemanticSha256 -Path $resolvedPath
         drivers = @($drivers)
         conflicts = $conflicts
         errors = @($errors)
@@ -634,15 +723,19 @@ try {
             if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw "Apply receipt is missing: $receiptPath" }
             $applyReceipt = Read-JsonHashtable -Path $receiptPath
             $isolation = if ($applyReceipt.ContainsKey('externalDriverIsolation')) { $applyReceipt['externalDriverIsolation'] } else { $null }
-            $isolationDrift = $null -ne $isolation -and [bool]$isolation['enabled'] -and (Get-HashOrNull ([string]$isolation['openVRPathsPath'])) -ne [string]$isolation['sha256Isolated']
+            $isolationValidation = if ($null -ne $isolation -and [bool]$isolation['enabled']) {
+                Get-IsolationValidation -Isolation $isolation -BackupPath ([string]$isolation['backupPath']) -CurrentPath ([string]$isolation['openVRPathsPath'])
+            }
+            else { $null }
+            $isolationDrift = $null -ne $isolationValidation -and -not [bool]$isolationValidation.semanticMatch
             $startupPath = Join-Path $SteamVRRoot 'bin\win64\vrstartup.exe'
             if (-not (Test-Path -LiteralPath $startupPath -PathType Leaf)) { throw "SteamVR startup executable does not exist: $startupPath" }
             if ($isolationDrift) {
-                $result = New-Result -Ok $false -State 'external-driver-isolation-drift' -Data @{ effective = $effective; runtime = $runtime; externalDrivers = $externalDrivers; externalDriverIsolation = $isolation } -Errors @('The OpenVR registration file no longer matches the isolated apply receipt. Refusing startup until the drift is classified or the exact transaction is restored.')
+                $result = New-Result -Ok $false -State 'external-driver-isolation-drift' -Data @{ effective = $effective; runtime = $runtime; externalDrivers = $externalDrivers; externalDriverIsolation = $isolation; externalDriverIsolationValidation = $isolationValidation } -Errors @('The OpenVR registration file is semantically different from the isolated apply receipt. Refusing startup until the registration drift is classified or the exact transaction is restored.')
             }
             elseif ($WhatIf) {
                 $inputContract = Get-RuntimeInputContract -BaseContract $profile['automationInputContract'] -Effective $effective -Runtime $runtime -ExternalDrivers $externalDrivers -DiagnosticDisplayOverride ([bool]$AllowExternalDisplayRedirector)
-                $result = New-Result -Ok $true -State 'dry-run' -Data @{ startupPath = $startupPath; effective = $effective; runtime = $runtime; externalDrivers = $externalDrivers; externalDisplayRedirectorAllowed = [bool]$AllowExternalDisplayRedirector; externalDriverIsolation = $isolation; inputContract = $inputContract }
+                $result = New-Result -Ok $true -State 'dry-run' -Data @{ startupPath = $startupPath; effective = $effective; runtime = $runtime; externalDrivers = $externalDrivers; externalDisplayRedirectorAllowed = [bool]$AllowExternalDisplayRedirector; externalDriverIsolation = $isolation; externalDriverIsolationValidation = $isolationValidation; inputContract = $inputContract }
             }
             else {
                 $startedUtc = [DateTime]::UtcNow
@@ -668,6 +761,7 @@ try {
                     runtime = $runtime
                     externalDrivers = $externalDrivers
                     externalDisplayRedirectorAllowed = [bool]$AllowExternalDisplayRedirector
+                    externalDriverIsolationValidation = $isolationValidation
                 }
                 Write-JsonAtomic -Path $runtimeReceiptPath -Value $runtimeReceipt
                 $inputContract = Get-RuntimeInputContract -BaseContract $profile['automationInputContract'] -Effective $effective -Runtime $runtime -ExternalDrivers $externalDrivers -DiagnosticDisplayOverride ([bool]$AllowExternalDisplayRedirector)
@@ -675,7 +769,7 @@ try {
                     $result = New-Result -Ok $false -State 'head-pose-provider-not-ready' -Data @{ effective = $effective; runtime = $runtime; runtimeReceiptPath = $runtimeReceiptPath; inputContract = $inputContract } -Errors @('SteamVR activated the Valve null display, but the synthetic standing head pose was not loaded and acknowledged.')
                 }
                 elseif ($runtime.active) {
-                    $result = New-Result -Ok $true -State $(if ($AllowExternalDisplayRedirector) { 'null-runtime-started-head-pose-ready-unqualified-display-route' } else { 'null-runtime-started-head-pose-ready' }) -Data @{ effective = $effective; runtime = $runtime; runtimeReceiptPath = $runtimeReceiptPath; inputContract = $inputContract; externalDrivers = $externalDrivers; externalDisplayRedirectorAllowed = [bool]$AllowExternalDisplayRedirector; externalDriverIsolation = $isolation }
+                    $result = New-Result -Ok $true -State $(if ($AllowExternalDisplayRedirector) { 'null-runtime-started-head-pose-ready-unqualified-display-route' } else { 'null-runtime-started-head-pose-ready' }) -Data @{ effective = $effective; runtime = $runtime; runtimeReceiptPath = $runtimeReceiptPath; inputContract = $inputContract; externalDrivers = $externalDrivers; externalDisplayRedirectorAllowed = [bool]$AllowExternalDisplayRedirector; externalDriverIsolation = $isolation; externalDriverIsolationValidation = $isolationValidation }
                 }
                 else {
                     $result = New-Result -Ok $false -State 'startup-incomplete' -Data @{ effective = $effective; runtime = $runtime; processes = $processes; runtimeReceiptPath = $runtimeReceiptPath } -Errors @('SteamVR started, but current-session Valve null-driver and active-HMD log proof was not observed before the timeout.')
@@ -724,11 +818,14 @@ try {
                 $beforeHash = Get-HashOrNull $backupPath
                 $openVRPathsBeforeHash = $null
                 $openVRPathsIsolatedHash = $null
+                $openVRPathsBeforeSemanticHash = $null
+                $openVRPathsIsolatedSemanticHash = $null
                 $isolationMutation = $null
                 if ($IsolateExternalDisplayRedirectors) {
                     if (-not (Test-Path -LiteralPath $OpenVRPathsPath -PathType Leaf)) { throw "OpenVR registration file does not exist: $OpenVRPathsPath" }
                     Copy-Item -LiteralPath $OpenVRPathsPath -Destination $openVRPathsBackupPath
                     $openVRPathsBeforeHash = Get-HashOrNull $openVRPathsBackupPath
+                    $openVRPathsBeforeSemanticHash = Get-JsonSemanticSha256 -Path $openVRPathsBackupPath
                 }
                 try {
                     if ($IsolateExternalDisplayRedirectors) {
@@ -743,6 +840,7 @@ try {
                             }
                         }
                         $openVRPathsIsolatedHash = Get-HashOrNull $OpenVRPathsPath
+                        $openVRPathsIsolatedSemanticHash = Get-JsonSemanticSha256 -Path $OpenVRPathsPath
                     }
                     foreach ($section in @('steamvr', 'dashboard', 'driver_null', 'driver_codex_head_pose', 'TrackingOverrides')) {
                         if (-not $settings.ContainsKey($section)) { $settings[$section] = [ordered]@{} }
@@ -767,6 +865,8 @@ try {
                             backupPath = if ($IsolateExternalDisplayRedirectors) { $openVRPathsBackupPath } else { $null }
                             sha256Before = $openVRPathsBeforeHash
                             sha256Isolated = $openVRPathsIsolatedHash
+                            semanticSha256Before = $openVRPathsBeforeSemanticHash
+                            semanticSha256Isolated = $openVRPathsIsolatedSemanticHash
                             targets = $isolationTargets
                             mutation = $isolationMutation
                         }
@@ -799,13 +899,15 @@ try {
             if ($backupHash -ne $receipt['settingsSha256Before']) { throw 'The exact backup hash does not match the apply receipt.' }
             $isolation = if ($receipt.ContainsKey('externalDriverIsolation')) { $receipt['externalDriverIsolation'] } else { $null }
             $restoreExternalDrivers = $null -ne $isolation -and [bool]$isolation['enabled']
+            $isolationValidation = $null
             if ($restoreExternalDrivers) {
                 if ([IO.Path]::GetFullPath([string]$isolation['openVRPathsPath']) -ne [IO.Path]::GetFullPath($OpenVRPathsPath)) {
                     throw 'The requested OpenVR registration path does not match the apply receipt.'
                 }
                 if (-not (Test-Path -LiteralPath $openVRPathsBackupPath -PathType Leaf)) { throw "Exact OpenVR registration backup is missing: $openVRPathsBackupPath" }
                 if ((Get-HashOrNull $openVRPathsBackupPath) -ne [string]$isolation['sha256Before']) { throw 'The exact OpenVR registration backup hash does not match the apply receipt.' }
-                if ((Get-HashOrNull $OpenVRPathsPath) -ne [string]$isolation['sha256Isolated']) { throw 'The OpenVR registration file changed after isolation. Refusing to overwrite unclassified registration drift.' }
+                $isolationValidation = Get-IsolationValidation -Isolation $isolation -BackupPath $openVRPathsBackupPath -CurrentPath $OpenVRPathsPath
+                if (-not [bool]$isolationValidation.semanticMatch) { throw 'The OpenVR registration file changed semantically after isolation. Refusing to overwrite unclassified registration drift.' }
                 foreach ($target in @($isolation['targets'])) {
                     if ((Get-HashOrNull ([string]$target['manifestPath'])) -ne [string]$target['manifestSha256']) {
                         throw "Suppressed driver manifest changed after apply: $($target['manifestPath'])"
@@ -819,6 +921,7 @@ try {
                     expectedSha256 = $backupHash
                     backupRetained = $true
                     externalDriverIsolation = $isolation
+                    externalDriverIsolationValidation = $isolationValidation
                     wouldRestoreOpenVRPaths = if ($restoreExternalDrivers) { $openVRPathsBackupPath } else { $null }
                 }
             }
@@ -834,6 +937,7 @@ try {
                     backupPath = $backupPath
                     backupRetained = $true
                     externalDriverIsolation = $isolation
+                    externalDriverIsolationValidation = $isolationValidation
                     openVRPathsRestoredSha256 = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }
                 }
             }
