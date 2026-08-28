@@ -797,6 +797,14 @@ try {
             $receipt = Read-JsonHashtable -Path $receiptPath
             $backupHash = Get-HashOrNull $backupPath
             if ($backupHash -ne $receipt['settingsSha256Before']) { throw 'The exact backup hash does not match the apply receipt.' }
+            if (-not $receipt.ContainsKey('settingsPath') -or [string]::IsNullOrWhiteSpace([string]$receipt['settingsPath'])) { throw 'The apply receipt does not identify its SteamVR settings path.' }
+            if (-not [string]::Equals([IO.Path]::GetFullPath([string]$receipt['settingsPath']), [IO.Path]::GetFullPath($SettingsPath), [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The requested SteamVR settings path does not match the apply receipt.'
+            }
+            if (-not $receipt.ContainsKey('settingsSha256Null') -or [string]::IsNullOrWhiteSpace([string]$receipt['settingsSha256Null'])) { throw 'The apply receipt does not identify the applied SteamVR settings hash.' }
+            if ((Get-HashOrNull $SettingsPath) -ne [string]$receipt['settingsSha256Null']) {
+                throw 'SteamVR settings changed after apply; refusing to overwrite unclassified settings drift.'
+            }
             $isolation = if ($receipt.ContainsKey('externalDriverIsolation')) { $receipt['externalDriverIsolation'] } else { $null }
             $restoreExternalDrivers = $null -ne $isolation -and [bool]$isolation['enabled']
             if ($restoreExternalDrivers) {

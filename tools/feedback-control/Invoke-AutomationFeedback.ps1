@@ -213,17 +213,41 @@ function Get-EvidenceRecord([string]$Path) {
     }
 }
 
-function Get-FeedbackItemPath([string]$Root, [string]$Id) { Join-Path (Join-Path $Root 'items') ($Id + '.json') }
+function Assert-FeedbackId([string]$Id) {
+    Require-Value -Name 'FeedbackId' -Value $Id
+    if ($Id -cnotmatch '^AUTO-\d{8}-\d{9}-[A-F0-9]{8}$') {
+        throw 'FeedbackId is malformed. Expected AUTO-YYYYMMDD-HHMMSSfff-XXXXXXXX.'
+    }
+}
+
+function Get-FeedbackItemPath([string]$Root, [string]$Id) {
+    Assert-FeedbackId -Id $Id
+    $itemsRoot = [IO.Path]::GetFullPath((Join-Path $Root 'items')).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $path = [IO.Path]::GetFullPath((Join-Path $itemsRoot ($Id + '.json')))
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($path), $itemsRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'FeedbackId did not resolve to a direct item child.'
+    }
+    return $path
+}
+
+function Get-FeedbackEventRoot([string]$Root, [string]$Id) {
+    Assert-FeedbackId -Id $Id
+    $eventsRoot = [IO.Path]::GetFullPath((Join-Path $Root 'events')).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $path = [IO.Path]::GetFullPath((Join-Path $eventsRoot $Id))
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($path), $eventsRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'FeedbackId did not resolve to a direct event child.'
+    }
+    return $path
+}
 
 function Read-FeedbackBase([string]$Root, [string]$Id) {
-    Require-Value -Name 'FeedbackId' -Value $Id
     $path = Get-FeedbackItemPath -Root $Root -Id $Id
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Feedback item does not exist: $Id" }
     return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 40)
 }
 
 function Get-FeedbackEvents([string]$Root, [string]$Id) {
-    $eventRoot = Join-Path (Join-Path $Root 'events') $Id
+    $eventRoot = Get-FeedbackEventRoot -Root $Root -Id $Id
     if (-not (Test-Path -LiteralPath $eventRoot -PathType Container)) { return @() }
     return @(Get-ChildItem -LiteralPath $eventRoot -File -Filter '*.json' | Sort-Object Name | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 40 })
 }
@@ -263,7 +287,7 @@ function Get-AllCurrentFeedback([string]$Root) {
 }
 
 function Write-FeedbackEvent([string]$Root, [string]$Id, [hashtable]$Event) {
-    $eventRoot = Join-Path (Join-Path $Root 'events') $Id
+    $eventRoot = Get-FeedbackEventRoot -Root $Root -Id $Id
     $name = '{0}-{1}.json' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ'), ([guid]::NewGuid().ToString('N'))
     Write-JsonAtomic -Path (Join-Path $eventRoot $name) -Value $Event
     return (Get-CurrentFeedback -Root $Root -Id $Id)

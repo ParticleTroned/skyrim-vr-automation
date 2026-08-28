@@ -521,6 +521,11 @@ try {
         $headers = $session.headers
         $tools = @($session.tools)
         $runtimeIdentity = $session.runtimeIdentity
+        if (-not $SkipRuntimeIdentityVerification) {
+            if ($Command -eq 'call' -and -not $runtimeIdentity.complete) {
+                throw "Mutation-capable DevBench calls require complete runtime identity. Missing: $($runtimeIdentity.missing -join ', ')."
+            }
+        }
         $evidencePath = Write-RuntimeEvidence $runtimeIdentity
     }
 
@@ -726,7 +731,7 @@ try {
         $semantic.outcome = 'unverified'
         $semantic.reasons = @($semantic.reasons) + 'RequireSuccess was requested, but the response did not provide a verified semantic outcome.'
     }
-    $semanticFailure = if ($RequireSuccess) { -not $semantic.known -or -not $semantic.ok } else { $semantic.known -and -not $semantic.ok -and $Command -eq 'wait' }
+    $semanticFailure = if ($Command -eq 'call') { -not $semantic.known -or -not $semantic.ok } elseif ($RequireSuccess) { -not $semantic.known -or -not $semantic.ok } else { $semantic.known -and -not $semantic.ok -and $Command -eq 'wait' }
     $result = [pscustomobject][ordered]@{
         ok = -not $semanticFailure
         transportOk = $true

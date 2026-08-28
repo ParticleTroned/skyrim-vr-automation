@@ -67,6 +67,21 @@ function Get-SafeName([string]$Value) {
     return $safe
 }
 
+function Resolve-DirectProfilePath([string]$ProfilesRoot, [string]$ProfileName) {
+    if ([string]::IsNullOrWhiteSpace($ProfileName) -or $ProfileName -in @('.', '..')) {
+        throw 'SourceProfile is missing or malformed.'
+    }
+    if ($ProfileName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $ProfileName.Contains([IO.Path]::DirectorySeparatorChar) -or $ProfileName.Contains([IO.Path]::AltDirectorySeparatorChar)) {
+        throw 'SourceProfile is malformed; it must be one direct profile-directory name.'
+    }
+    $resolvedRoot = [IO.Path]::GetFullPath($ProfilesRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $resolvedPath = [IO.Path]::GetFullPath((Join-Path $resolvedRoot $ProfileName))
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($resolvedPath), $resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SourceProfile must resolve to a direct child of the configured profiles directory.'
+    }
+    return $resolvedPath
+}
+
 function Get-ProfileSnapshot([string]$Path) {
     $records = @()
     foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Sort-Object FullName)) {
@@ -424,7 +439,13 @@ function Move-OverwriteShaderCachesToStableMod($Config, [string]$SourceName, [st
             if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) { New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null }
             [IO.Directory]::Move([string]$move.sourcePath, [string]$move.destinationPath)
         }
-        $registration = & $profileTool register -ProfilePath $modListPath -ModName $modName -ModDirectory $modDirectory -Placement End -RegisterEnabled -EvidenceDirectory $profileEvidence -BlockingProcessNames @('ModOrganizer', 'SkyrimVR', 'sksevr_loader') -Confirm:$false | ConvertFrom-Json
+        $blockingProcessNames = @(
+            @($Config.mo2.processNames)
+            @($Config.mo2.gameProcessNames)
+            @($Config.mo2.runtimeProcessNames)
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique
+        if ($blockingProcessNames.Count -eq 0) { $blockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader') }
+        $registration = & $profileTool register -ProfilePath $modListPath -ModName $modName -ModDirectory $modDirectory -Placement End -RegisterEnabled -EvidenceDirectory $profileEvidence -BlockingProcessNames $blockingProcessNames -Confirm:$false | ConvertFrom-Json
         if (-not $registration.enabled) { throw 'Stable source profile did not enable the migrated shader-cache mod.' }
         $remaining = @(Get-OverwriteShaderCacheDirectories -Config $Config)
         if ($remaining.Count -ne 0) { throw "Overwrite shader-cache postcondition failed; remaining: $($remaining.FullName -join ', ')" }
@@ -491,7 +512,7 @@ try {
     }
     elseif ($Command -in @('fixture-status', 'refresh-fixture')) {
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for fixture control.' }
-        $sourcePath = [IO.Path]::GetFullPath((Join-Path $profilesRoot $sourceName))
+        $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
         if ($Command -eq 'refresh-fixture') { $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName }
         $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
@@ -544,8 +565,8 @@ try {
     }
     elseif ($Command -eq 'prepare-source') {
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for source preparation.' }
+        $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName -AllowOverwriteShaderCaches
-        $sourcePath = [IO.Path]::GetFullPath((Join-Path $profilesRoot $sourceName))
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
         $preparation = if ($PSCmdlet.ShouldProcess([string]$config.mo2.overwriteDirectory, "move every ShaderCache folder into a new enabled mod in stable profile '$sourceName'")) {
             Move-OverwriteShaderCachesToStableMod -Config $config -SourceName $sourceName -SourcePath $sourcePath -ModsRoot $modsRoot
@@ -558,8 +579,8 @@ try {
     elseif ($Command -eq 'create') {
         $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
         $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required; test workspaces never infer a stable source from the ordinary session default.' }
+        $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         $validation = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName
-        $sourcePath = Join-Path $profilesRoot $sourceName
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
         $unmanagedCaches = @(Get-OverwriteShaderCacheDirectories -Config $config)
         if ($unmanagedCaches.Count -gt 0) { throw "Overwrite contains ShaderCache folders. Run prepare-source for '$sourceName' before creating a task workspace: $($unmanagedCaches.FullName -join ', ')" }
