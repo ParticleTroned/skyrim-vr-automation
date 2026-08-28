@@ -19,13 +19,37 @@ Require the bound active D3D adapter to be AMD. Require the live
 producer, capability, session, and Build-ID receipts. Never select the lane
 from an unbound inventory entry.
 
+Require `communityshaders.upscaling_api` to be executable as a DevBench
+scenario `tool` step, not merely callable as a top-level client tool. All
+scenarios in this protocol use `async: false`. A missing scenario registration
+or a non-synchronous scenario receipt is `BLOCKED`; the dispatch and apply
+cannot otherwise share one serialized server sequence.
+
+Require public capabilities to expose FSR and every matrix quality mode before
+any baseline. A missing method or quality is `BLOCKED`; do not substitute a
+nearby supported state.
+
+Before any COC or mutation, run the one-step negative scenario required by
+Simple COC. It must report the embedded tool error as step `ok: false`,
+`aborted: true`, and `stepsRun: 1` with `continueOnError: false`. Otherwise
+this protocol is `BLOCKED`; a scenario that masks an embedded API error cannot
+own a measured apply.
+
+The public snapshot serializes each enum as `{ "value", "name" }`. Preserve
+that raw object in evidence, but build the next `apply.target` from its
+`name` fields only: stable `method.name`, `qualityMode.name`,
+`dlssProfile.name`, and `fsrRuntime.name`. Never submit a raw wrapper object,
+numeric enum, defaulted field, or an inferred provider value. Require the
+requested, effective, and stable profiles to be present and identical before
+using the stable profile as the complete active-profile clone.
+
 Load `matrix.v1.json` relative to this installed skill. Require schema version
 1, adapter vendor `amd`, exactly three named lanes, exactly 31 entries with
 ordinals 1 through 31, a 5,000 ms pace, and a 30,000 ms completion upper bound.
 Do not reorder, deduplicate, replace, or infer entries.
 
-Position once with a server scenario containing `coc WhiterunDragonsreach`
-and a 10,000 ms wait. Require the exact editor ID, loaded player, advancing
+Position once with an `async: false` server scenario containing
+`coc WhiterunDragonsreach` and a 10,000 ms wait. Require the exact editor ID, loaded player, advancing
 in-world frames, no blocking menu, and the same Build ID. This is the only COC
 and is not measured.
 
@@ -54,15 +78,20 @@ blocked lane does not prevent another independently valid lane from running.
 
 Start a short baseline-only stress session, then read one authoritative API
 snapshot. Require a complete stable profile and no active operation. Clone the
-complete stable profile; set only `method: fsr`,
+stable profile through its `name` fields; set only `method: fsr`,
 `qualityMode: hoshipa`, `renderScaleMode: true`, and the lane's configured
-`fsrRuntime`; preserve `dlssProfile`. Begin a baseline qualification and
-dispatch it immediately before applying the profile with the snapshot's exact
+`fsrRuntime`; preserve `dlssProfile`. Run one synchronous (`async: false`),
+fail-closed mutation scenario: `qualification_begin`, then
+`qualification_dispatch` with
+`startPerformanceTelemetry: false`, then the public API `apply` as the
+immediately following step. Bind the apply to the snapshot's exact
 `stateRevision`, exact Build ID, unique lane-baseline client and command IDs,
 `purpose: direct`, and `persistence: runtime_only`.
 
-Wait for the operation and a strict FSR Hoshipa qualification to complete,
-returning immediately on success with 30,000 ms only as the deadline. Require
+Use one 30,000 ms monotonic deadline from baseline dispatch. Pass only that
+deadline's remaining QPC budget to the strict FSR Hoshipa waiter; it must
+return upon the first successful receipt. Do not add an independent operation
+wait. Require
 coherent FSR evaluation in both eyes, correct scaled dimensions, exact
 generation/resource ownership, the lane's physical backend, clean mutation
 and lifecycle state, and no terminal failure. Stop the baseline-only stress
@@ -72,53 +101,81 @@ Now arm one fresh measured Simple CSM telemetry set for that lane in a bounded
 fan-out: stress, texture lifetime, load presentation, provider lifecycle,
 resource publication, preparation, CPU, GPU, profiler, fidelity, stereo,
 retry, failure, memory, and queue evidence. Reset and require CPU/GPU capture
-to be inactive and pre-arm only the profiler. Start CPU, GPU, and profiler
-timing immediately before that lane's measured transition 1 and stop only that
-lane's owned sessions after transition 31. Do not combine capture windows
-across lanes.
+to be inactive and pre-arm only the profiler. In the first measured mutation
+scenario, start the profiler immediately before dispatch; dispatch then starts
+CPU/GPU capture on its QPC/frame. Stop only that lane's owned sessions after
+transition 31. Do not combine capture windows across lanes.
 
 ## 4. Exact public-API transition primitive
 
 For each matrix entry, use IDs unique across the entire AMD run and preserve
 every response even when it is anomalous.
+Use the same caller-generated `transitionId` and `ownerId` for that entry's
+begin, dispatch, wait, and any cancellation; never reuse either pair.
 
-1. Wait exactly 5,000 ms server-side.
-2. Read the authoritative API snapshot and record its Build ID, session ID,
+1. Run a synchronous (`async: false`), server-owned 5,000 ms settling scenario. It contains no
+   mutation. Read the authoritative API snapshot immediately after it and
+   record its Build ID, session ID,
    `stateRevision`, profile-presence flags, complete configured/requested/
    applying/effective/stable/persisted profiles, conditions, operation state,
    and physical dimensions.
-3. Require a complete stable active profile. Clone it; mutate only `method`,
+2. Require a complete stable active profile. Construct its complete API target
+   from the stable profile's `name` fields; mutate only `method`,
    `qualityMode`, and `renderScaleMode` from the destination. For FSR entries
    also set the lane's configured `fsrRuntime`. Preserve `dlssProfile` and
    preserve the lane runtime as dormant state on None and TAA entries.
-4. Call `qualification_begin` for timing ownership. This does not select a
-   profile and does not create a vendor target.
-5. On lane transition 1 only, start the pre-armed profiler immediately before
-   `qualification_dispatch`. Dispatch every transition immediately before the
-   API apply; set `startPerformanceTelemetry: true` only on transition 1 so
-   CPU/GPU counters and the transition QPC/frame share that timing origin.
-6. Call only `communityshaders.upscaling_api` action `apply` with the cloned
-   complete target, the immediately preceding snapshot `stateRevision`, exact
-   Build ID, unique `clientId` and `commandId`, `purpose: direct`, and
-   `persistence: runtime_only`.
-7. Treat a stale revision, producer mismatch, rejected disposition, embedded
-   error, restart requirement, or non-retryable admission failure as a failed
-   step. Do not send a recovery apply or the next matrix entry.
-8. For FSR destinations, call `qualification_wait` in Dragonsreach with the
+3. Materialize the snapshot-derived string target and every guarded apply
+   argument before submitting one synchronous (`async: false`) server scenario with
+   `continueOnError: false`. Its consecutive mutation steps are
+   `qualification_begin`, the lane-transition-1 profiler start when applicable,
+   `qualification_dispatch`, and `communityshaders.upscaling_api` `apply`.
+   No wait, snapshot, client round trip, menu action, or other tool may appear
+   between dispatch and apply. Scenario steps cannot interpolate earlier
+   results, so no snapshot-dependent value may be deferred to scenario
+   execution. Set `startPerformanceTelemetry: true` only on
+   lane transition 1 so CPU/GPU counters and the transition QPC/frame share the
+   actual apply's timing origin. Set it false on every other transition.
+4. Apply only the constructed target with the immediately preceding snapshot
+   `stateRevision`, exact Build ID, unique `clientId` and `commandId`,
+   `purpose: direct`, and `persistence: runtime_only`. Require API status and
+   result status `success`, `idempotentReplay: false`, admitted state revision
+   equal to the snapshot revision, normalized target exact, and disposition
+   exactly `applied_synchronously` or `queued`. `rejected`, `no_change`, a
+   stale revision, producer mismatch, embedded error, restart requirement, or
+   non-retryable admission failure is a control failure: cancel the owner only
+   if needed, preserve receipts, and stop further mutations. Never retry,
+   recover, or substitute a matrix row.
+5. Start one shared 30,000 ms monotonic deadline at the dispatch QPC. For FSR
+   destinations, call `qualification_wait` in Dragonsreach with only the
+   current remaining QPC budget and return upon its first successful receipt. Use the
    exact FSR target, lane runtime, fixed foveation fixture,
    `milestone: strict`, and `timeoutMs: 30000`. Map quality strings to values
    `native_aa=0`, `hoshipa=1`, `ultra_quality=2`, `quality=3`, `balanced=4`,
    `performance=5`, and `ultra_performance=6`. Configured runtime matching and
    physical backend matching are separate requirements.
-9. For None and TAA, wait up to 30,000 ms for the public operation to complete
-   and the existing DevBench `upscalingStable` barrier in Dragonsreach to
-   return. Both waits return as soon as satisfied. Do not call a vendor
-   qualification waiter or manufacture an FSR target. Then release the
-   timing-only qualification owner with `qualification_cancel`; its expected
-   cancellation receipt closes the bracket and is not a render failure.
-10. Read the operation, transition-filtered API events, authoritative API
-    snapshot, render-scale status, preparation trace, and provider-lifecycle
-    evidence. Inspect the completed transition before allowing the next apply.
+6. For None and TAA, do not call a vendor qualification waiter or manufacture
+   an FSR target. Use the existing DevBench `upscalingStable` barrier in
+   Dragonsreach once, with only the shared deadline's remaining budget. Do not
+   poll `operation` or start a second 30-second window. Require the final
+   operation read to be complete and the final snapshot to have no active
+   operation before releasing the timing-only owner with
+   `qualification_cancel`. That expected cancellation closes the timing bracket
+   and is not a render failure.
+7. Read the operation, transition-filtered API events, authoritative API
+   snapshot, render-scale status, preparation trace, and provider-lifecycle
+   evidence. Inspect the completed transition before allowing the next apply.
+
+A semantic strict timeout, unsatisfied milestone, or native-stability timeout
+is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
+row or retry it. Continue with the next matrix row only when the game remains
+responsive, the qualification owner is closed, the final snapshot has no active
+operation or unresolved physical mutation, and exact PID/build ownership still
+holds. Otherwise stop future mutations without attempting repair.
+
+On every stop path, preserve the terminal receipt first. Then stop only a
+task-owned trace, profiler, or telemetry session, using its exact returned
+ownership guard. A cleanup failure is a separately recorded anomaly and never
+authorizes another apply, retry, recovery, or matrix substitution.
 
 Every entry has exactly one begin, one dispatch, one apply, and one terminal
 qualification receipt: a strict waiter receipt for an FSR destination or an
@@ -126,6 +183,25 @@ expected timing-owner cancellation after None/TAA stability. The public API is
 the sole mutation path. Do not open the CS menu and do not
 call `communityshaders.renderscale` action `apply`. No external frame-timing
 source is used.
+
+For every entry, distinguish the pre-mutation interval from destructive
+mutation using the producer's `physicalMutationStarted` evidence, whose first
+true observation is provider invalidation, dirtying, teardown, or destruction
+(not merely engine-target creator entry). Before it becomes true, a queued,
+deferred, rejected, or preparing replacement must retain the exact proven old
+stereo presentation: current generation, provider resource, D3D device, and
+both-eye path must remain exact, or a completed stereo output must retain
+explicit ownership and immutability proof. In an ordinary world frame, a
+queued or refused replacement alone must not select black keepalive or stretch.
+
+Once destructive mutation begins or a new contract is published, the old
+provider and completed output are no longer admissible without continuing
+ownership and immutability proof. Require both eyes to converge on the newly
+published generation before a normal vendor presentation passes. Recovery,
+stretch, quarantine, or keepalive is permitted only as a protected fail-closed
+outcome. A mixed eye, mixed generation, wrong resource/device/generation,
+stale old-provider dispatch after mutation, or ordinary-world fallback caused
+solely by pre-mutation replacement admission is a transition `FAIL`.
 
 ## 5. Completion and evidence rules
 
@@ -137,10 +213,12 @@ completion. Record first physical match, first coherent stereo presentation,
 
 For None and TAA require the public operation to complete; exact authoritative
 method; `qualityMode: native_aa`; `renderScaleMode: false`; native dimensions;
-advancing coherent in-world `upscalingStable`; no unresolved physical
+producer-native physical-contract evidence; advancing coherent in-world
+`upscalingStable`; no unresolved physical
 mutation; and no FSR evaluation treated as active presentation. If exact native
 presentation generation is unavailable, retain that tooling gap and classify
-generation proof `INCONCLUSIVE`; never calculate or fabricate it.
+generation proof `INCONCLUSIVE`; retain raw dimensions but do not calculate
+native or `dimensionsMatch` booleans.
 
 None, TAA, and FSR Native AA are distinct contracts: None has neither FSR nor
 TAA, TAA is native non-vendor TAA, and FSR Native AA performs native-resolution
@@ -166,6 +244,11 @@ Every transition record must retain direct raw paths for:
   state;
 - per-lane CPU/GPU telemetry and profiler capture, plus all stress, fidelity,
   stereo, lifetime, load-presentation, and trace session identities.
+
+Perform one bounded DLSS trace capability lifecycle before the first AMD lane:
+status, reset, start, stop, and read. Require zero DLSS dispatch records. A
+missing trace action is `unsupported`; an exposed action that fails is a
+control failure. Do not start a DLSS trace during AMD matrix transitions.
 
 Unsupported preparation providers are `n/a`, never zero. Preserve raw values
 before summarizing. Archive any log before reading it under the repository's

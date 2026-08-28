@@ -27,6 +27,14 @@ function Assert-Profile(
 }
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+$legacyRoots = @(
+    (Join-Path $repositoryRoot 'skills\renderscale-tuning'),
+    (Join-Path $repositoryRoot 'plugins\skyrim-vr-automation\skills\renderscale-tuning')
+)
+foreach ($legacyRoot in $legacyRoots) {
+    Assert-True (-not (Test-Path -LiteralPath $legacyRoot)) "Legacy generic tuning protocol remains: $legacyRoot"
+}
+
 $variants = @(
     [pscustomobject]@{
         Name = 'renderscale-tuning-nvidia'
@@ -88,14 +96,27 @@ foreach ($variant in $variants) {
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
         '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
         '`expectedStateRevision`', '`clientId`', '`commandId`',
-        '`persistence: runtime_only`', 'Wait exactly 5,000 ms server-side.',
-        '`timeoutMs: 30000`', 'return as soon as satisfied',
+        '`persistence: runtime_only`', 'server-owned 5,000 ms settling scenario',
+        '`timeoutMs: 30000`', 'one shared 30,000 ms monotonic deadline',
+        'remaining QPC budget', 'return upon its first successful receipt',
+        '`async: false`', 'scenario `tool` step', 'poll `operation`',
         '`qualification_begin`', '`qualification_dispatch`',
         '`startPerformanceTelemetry: true`', '`qualification_cancel`',
-        'Do not call a vendor', 'upscalingStable',
+        'continueOnError: false', 'embedded tool error as step `ok: false`',
+        'name` fields only', 'Never submit a raw wrapper object',
+        'No wait, snapshot, client round trip, menu action, or other tool may appear',
+        'idempotentReplay: false', '`applied_synchronously`', '`queued`',
+        '`no_change`', 'do not call a vendor', 'upscalingStable',
+        'recorded transition `FAIL` or `INCONCLUSIVE`',
+        'qualification owner is closed', 'Otherwise stop future mutations',
+        'Scenario steps cannot interpolate earlier',
+        'using its exact returned', 'ownership guard',
+        'physicalMutationStarted', 'not merely engine-target creator entry',
+        'ordinary world frame', 'mixed eye, mixed generation',
         'CPU', 'GPU', 'profiler', 'current/completed/published publication generations',
         'deferred-setup acknowledgement', 'D3D device/context',
-        'without protocol-side arithmetic', 'shader-cache waits', 'SSS/SSGI prewarm',
+        'without protocol-side arithmetic', 'do not calculate',
+        'shader-cache waits', 'SSS/SSGI prewarm',
         'DLSS, FSR,', 'request-to-prepared', 'prepared-to-creator',
         'replacement admission state and all reasons', 'consecutive stretch frames',
         'No external', 'Never average'
@@ -105,6 +126,7 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('communityshaders.menu open', [StringComparison]::Ordinal)) "$($variant.Name) retained menu mutation."
     Assert-True (-not $protocol.Contains('CS-menu-origin render-scale', [StringComparison]::Ordinal)) "$($variant.Name) retained the old render-scale mutation primitive."
     Assert-True (-not $protocol.Contains('SteamVR frame-timing', [StringComparison]::OrdinalIgnoreCase)) "$($variant.Name) retained an external timing comparison."
+    Assert-True (-not $protocol.Contains('wait up to 30,000 ms for the public operation', [StringComparison]::Ordinal)) "$($variant.Name) can spend two serial 30-second windows."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
@@ -140,6 +162,15 @@ foreach ($property in $nvidia.destinations.PSObject.Properties | Where-Object { 
     Assert-True ($property.Value.fsrRuntime -eq 'fsr3') "NVIDIA FSR destination does not explicitly request FSR3: $($property.Name)"
     Assert-True ((@($property.Value.expectedBackends) -join ',') -eq 'fsr_host,fsr_runtime') "NVIDIA FSR backend contract is wrong: $($property.Name)"
 }
+$nvidiaProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-nvidia\references\protocol.md') -Raw
+foreach ($token in @(
+    'Before each DLSS or DLAA transition', 'owned bounded',
+    'eErrorDuplicatedConstants` is a transition `FAIL`',
+    'continue later matrix rows to preserve the error history',
+    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`'
+)) {
+    Assert-Contains $nvidiaProtocol $token 'NVIDIA adversarial guard'
+}
 
 $amd = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-amd\references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
 Assert-True ($amd.adapterVendor -eq 'amd') 'AMD matrix vendor is wrong.'
@@ -150,6 +181,15 @@ Assert-True (($lanes.id -join ',') -eq 'explicit_fsr4,explicit_fsr3,fsr4_to_fsr3
 Assert-True ($lanes[0].configuredFsrRuntime -eq 'fsr4' -and (@($lanes[0].expectedBackends) -join ',') -eq 'fsr4_runtime') 'Explicit FSR4 lane is wrong.'
 Assert-True ($lanes[1].configuredFsrRuntime -eq 'fsr3' -and (@($lanes[1].expectedBackends) -join ',') -eq 'fsr_host,fsr_runtime') 'Explicit FSR3 lane is wrong.'
 Assert-True ($lanes[2].configuredFsrRuntime -eq 'fsr4' -and $lanes[2].requiresDocumentedFsr4UnavailableCondition -and (@($lanes[2].expectedBackends) -join ',') -eq 'fsr_host,fsr_runtime') 'FSR4 fallback lane is wrong.'
+$amdProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-amd\references\protocol.md') -Raw
+foreach ($token in @(
+    'blocked lane does not prevent',
+    'fallback flag',
+    'one bounded DLSS trace capability lifecycle', 'Require zero DLSS dispatch records.',
+    'Never corrupt resources'
+)) {
+    Assert-Contains $amdProtocol $token 'AMD adversarial guard'
+}
 
 # Guard the separate protocol explicitly: this change must not absorb or alter
 # Simple CSM's canonical 25-step contract.
