@@ -29,12 +29,19 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
    `wait -Condition toolAvailable -Tool <exact-name>` with an explicit bounded
    timeout and optional explicit `-ProgressLogPath`. Use `serviceReady` plus a
    read-only `-ArgumentsJson` action when registration alone is insufficient.
+   If arguments are omitted, accept only the controller's schema-derived empty
+   or registry/capabilities probe; never substitute guessed required fields.
 9. Use `-ExpectedErrorCode` for deliberate guard tests such as
    `producer_mismatch`; do not reinterpret an unrequested API failure as a pass.
 10. Treat replay scheduler completion as execution evidence only. Require
     explicit postconditions, outcome checks, assertions, or equivalent semantic
     evidence before reporting that an interaction succeeded. Use
     `-RequireSuccess` so a scheduler-only receipt is rejected by orchestration.
+11. Preserve `invocationEvidencePath` for failed calls. Never run `tfc 1`
+    unless the user explicitly authorizes a crash-risk experiment.
+12. For direct or nested scenario `game` mutations, pass the exact managed
+    `-WorkspaceManifestPath`. Do not use `-AllowUnprovenGameMutation` unless the
+    user has explicitly authorized bypassing workspace save policy.
 
 The entry point is:
 

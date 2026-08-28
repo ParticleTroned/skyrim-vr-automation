@@ -10,8 +10,11 @@ Use the bundled controller rather than editing `steamvr.vrsettings` directly.
 ## Load the contract
 
 Before acting, read `../../tools/steamvr-null-control/README.md` completely and
+`../../tools/steamvr-head-pose-control/README.md` completely, then
 inspect the parameter block in
-`../../tools/steamvr-null-control/Invoke-SteamVRNullControl.ps1`. Treat the
+`../../tools/steamvr-null-control/Invoke-SteamVRNullControl.ps1` and
+`../../tools/steamvr-head-pose-control/Invoke-SteamVRHeadPoseControl.ps1`.
+Treat the
 repository-root `AGENTS.md` as binding operational policy. The bundled default
 profile is `../../profiles/steamvr-null.profile.json`.
 
@@ -22,6 +25,11 @@ particular drive letter for the plugin itself.
 
 1. State in commentary that this skill is governing the null-HMD operation.
 2. Run `inspect -Compact` first and retain the JSON result as the before-state.
+   If it reports `external-driver-conflict`, do not start SteamVR; report the
+   exact redirecting driver inventory. For an authorized measurement run,
+   preview and apply `-IsolateExternalDisplayRedirectors`; when more than one
+   redirector exists, specify every exact root in the
+   `-ExternalDisplayRedirectorRoot` array.
 3. Before `apply` or `restore`, prove SteamVR is closed. Use `stop -Compact`
    first; if it does not close, review the returned exact process inventory
    before using `stop -Force -Compact`.
@@ -29,9 +37,18 @@ particular drive letter for the plugin itself.
    `apply` or `restore` with `-WhatIf`, then perform the authorized operation
    using the same `-EvidenceDirectory`.
 5. Parse the JSON postcondition. After `apply`, require `state` to be
-   `null-applied` and the effective profile checks to match. After `restore`,
-   require the restored settings hash to match the exact backup.
-6. Run `inspect -Compact` again and preserve the before/after results, exact
+   `null-applied` and the effective profile checks to match. If isolation was
+   requested, also require a conflict-free inventory and a receipt containing
+   the exact registration and manifest hashes. After `restore`, require both
+   the settings and OpenVR registration hashes to match their exact backups.
+6. Require `headPoseProvider.state` to be `ready` and independently run the
+   head-pose controller's `qualify` command. Qualification requires both the
+   driver's shared-memory acknowledgement and a valid standing HMD pose seen
+   by a separate OpenVR application. Treat any unqualified runtime as rendering
+   availability only; do not replay input or collect measurements. Controllers
+   remain explicitly unavailable. Treat a resident `vrdashboard.exe` as
+   telemetry; `dashboard.enableDashboard=false` is the dashboard contract.
+7. Run `inspect -Compact` again and preserve the before/after results, exact
    backup, receipt, hashes, and evidence-directory identity.
 
 ## Safety and recovery
@@ -43,9 +60,12 @@ particular drive letter for the plugin itself.
 - `apply` must create a new exact backup and receipt. Never replace an existing
   backup; use a new evidence directory for a new transaction.
 - `restore` must use the evidence directory from its corresponding apply and
-  must verify the receipt and backup hash. Retain both afterward.
+  must verify the receipt and backup hashes. Isolation restore must fail closed
+  on registration or suppressed-manifest drift. Retain all backups afterward.
 - Use `-SettingsPath` and `-SteamVRRoot` for nonstandard installations. Never
   silently fall back to the default installation paths.
+- Invoke the controller with PowerShell 7 `pwsh.exe`. Do not work around its
+  explicit Windows PowerShell compatibility rejection.
 - A launch failure or CTD is evidence. Record the runtime state and analyze the
   result before another attempt.
 

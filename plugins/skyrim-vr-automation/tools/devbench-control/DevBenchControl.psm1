@@ -236,4 +236,70 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchRuntimeExpectations
+function Resolve-DevBenchServiceProbeArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$ToolDefinition,
+        [Parameter(Mandatory)][Collections.IDictionary]$Arguments,
+        [Parameter(Mandatory)][bool]$ArgumentsSupplied,
+        [Parameter(Mandatory)][string]$ToolName
+    )
+
+    if ($ArgumentsSupplied) {
+        return [pscustomobject][ordered]@{ arguments = $Arguments; source = 'explicit'; synthesizedAction = $null }
+    }
+
+    $schemaProperty = $ToolDefinition.PSObject.Properties['inputSchema']
+    if (-not $schemaProperty -or $null -eq $schemaProperty.Value) {
+        throw "serviceReady cannot safely probe '$ToolName' without -ArgumentsJson because tools/list did not publish an inputSchema."
+    }
+    $schema = $schemaProperty.Value
+    $requiredProperty = $schema.PSObject.Properties['required']
+    [string[]]$required = @()
+    if ($requiredProperty -and $null -ne $requiredProperty.Value) {
+        $required = @($requiredProperty.Value | ForEach-Object { [string]$_ })
+    }
+    if ($required.Count -eq 0) {
+        return [pscustomobject][ordered]@{ arguments = $Arguments; source = 'schema-empty-valid'; synthesizedAction = $null }
+    }
+
+    $missing = @($required | Where-Object { -not $Arguments.Contains($_) })
+    if ($missing.Count -eq 0) {
+        return [pscustomobject][ordered]@{ arguments = $Arguments; source = 'schema-satisfied'; synthesizedAction = $null }
+    }
+    $supportedEnvelope = @('contractMajor', 'clientId', 'commandId', 'action')
+    $unknownRequired = @($missing | Where-Object { $_ -notin $supportedEnvelope })
+    if ($unknownRequired.Count -gt 0) {
+        throw "serviceReady cannot synthesize a safe probe for '$ToolName'. Supply -ArgumentsJson; required field(s) are not part of the registry envelope: $($unknownRequired -join ', ')."
+    }
+
+    $propertiesProperty = $schema.PSObject.Properties['properties']
+    $properties = if ($propertiesProperty) { $propertiesProperty.Value } else { $null }
+    $action = $null
+    if ($missing -contains 'action') {
+        $actionSchema = if ($properties) { $properties.PSObject.Properties['action'] } else { $null }
+        $enumProperty = if ($actionSchema) { $actionSchema.Value.PSObject.Properties['enum'] } else { $null }
+        $allowedActions = if ($enumProperty) { @($enumProperty.Value | ForEach-Object { [string]$_ }) } else { @() }
+        if ($allowedActions.Count -eq 0 -or $allowedActions -contains 'registry') { $action = 'registry' }
+        elseif ($allowedActions -contains 'capabilities') { $action = 'capabilities' }
+        else {
+            throw "serviceReady cannot synthesize a non-mutating probe for '$ToolName'. Supply -ArgumentsJson; action supports neither registry nor capabilities."
+        }
+    }
+
+    $resolved = [ordered]@{}
+    foreach ($key in $Arguments.Keys) { $resolved[[string]$key] = $Arguments[$key] }
+    if ($missing -contains 'contractMajor') {
+        $contractSchema = if ($properties) { $properties.PSObject.Properties['contractMajor'] } else { $null }
+        $constProperty = if ($contractSchema) { $contractSchema.Value.PSObject.Properties['const'] } else { $null }
+        $defaultProperty = if ($contractSchema) { $contractSchema.Value.PSObject.Properties['default'] } else { $null }
+        $resolved['contractMajor'] = if ($constProperty) { [int]$constProperty.Value } elseif ($defaultProperty) { [int]$defaultProperty.Value } else { 1 }
+    }
+    if ($missing -contains 'clientId') { $resolved['clientId'] = 'devbench-control-service-ready' }
+    if ($missing -contains 'commandId') { $resolved['commandId'] = "service-ready-$([guid]::NewGuid().ToString('N'))" }
+    if ($missing -contains 'action') { $resolved['action'] = $action }
+
+    return [pscustomobject][ordered]@{ arguments = $resolved; source = 'schema-registry-envelope'; synthesizedAction = $action }
+}
+
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments

@@ -1,0 +1,13 @@
+{
+  "driver_codex_head_pose": {
+    "enable": false,
+    "serialNumber": "CSX-NULL-HMD-POSE-1",
+    "modelNumber": "CSX Synthetic Head Pose",
+    "positionX": 0.0,
+    "eyeHeightMeters": 1.68,
+    "positionZ": 0.0,
+    "yawDegrees": 0.0,
+    "pitchDegrees": 0.0,
+    "rollDegrees": 0.0
+  }
+}
