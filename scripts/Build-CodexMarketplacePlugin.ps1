@@ -23,12 +23,14 @@ foreach ($relative in $rootFiles) {
     if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination (Join-Path $destination $relative) }
 }
 
-foreach ($tree in @('.codex-plugin', 'skills', 'tools', 'profiles', 'docs')) {
+foreach ($tree in @('.codex-plugin', 'skills', 'tools', 'profiles', 'docs', 'native', 'drivers')) {
     $sourceRoot = Join-Path $repositoryRoot $tree
+    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) { continue }
     foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File) {
         $relative = [IO.Path]::GetRelativePath($sourceRoot, $file.FullName)
         if ($file.Name -like '*.local.json' -or
             $relative -match '(^|[\\/])sessions([\\/]|$)' -or
+            ($tree -eq 'native' -and $relative -match '(^|[\\/])build(?:-[^\\/]+)?([\\/]|$)') -or
             $relative -match '(^|[\\/])[.]fixture-refresh-[^\\/]+([\\/]|$)') { continue }
         $target = Join-Path (Join-Path $destination $tree) $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null

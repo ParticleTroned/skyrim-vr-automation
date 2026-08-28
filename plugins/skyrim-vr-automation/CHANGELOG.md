@@ -4,18 +4,25 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add a native, fixed-standing SteamVR head-pose provider for Valve null-HMD,
+  a versioned shared-memory control/acknowledgement contract, independent
+  application-facing OpenVR qualification, transactional installation, and
+  null-runtime readiness enforcement. Controllers remain unavailable.
 - Synthesize schema-valid, non-mutating registry envelopes when a versioned
   DevBench `serviceReady` wait omits arguments; preserve explicit arguments.
 - Disable SteamVR dashboard input in the null-HMD transaction, report the
-  deliberately unavailable controller/controlled-pose contract, detect a
-  surviving dashboard process, and reject Windows PowerShell with an explicit
-  PowerShell 7 migration result.
+  deliberately unavailable controller/controlled-pose contract, retain a
+  surviving dashboard process as telemetry, and reject Windows PowerShell with
+  an explicit PowerShell 7 migration result.
 - Persist DevBench invocation journals before dispatch, preserve failed-call
   evidence across target exit, guard the known-crashing Skyrim VR `tfc 1`
   command, and enforce workspace save policy for direct and scenario game
   mutations.
 - Inventory external OpenVR driver manifests before null-HMD startup and refuse
   display redirectors such as Virtual Desktop with exact path and hash evidence.
+- Add opt-in, receipt-bound isolation of exact OpenVR display redirectors;
+  refuse registration or manifest drift and restore the byte-identical
+  pre-test registration file before returning to normal VR operation.
 - Revalidate the exact MO2 owner through a bounded post-game stability window,
   returning an explicit release-required state if MO2 exits, and add compact
   JSON output to profile control.

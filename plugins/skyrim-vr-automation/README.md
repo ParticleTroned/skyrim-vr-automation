@@ -20,7 +20,11 @@ optional integration rather than the identity or boundary of the toolkit.
   unique task profiles cloned from that explicit source, with a verified copy
   of its complete saves tree and strict ownership of newly created mods.
 - `tools/steamvr-null-control` — transactional null-HMD apply/restore and
-  bounded SteamVR shutdown.
+  bounded SteamVR shutdown, with a required application-observed standing
+  head-pose qualification and opt-in exact-driver isolation for conflicting
+  OpenVR display redirectors.
+- `tools/steamvr-head-pose-control` — install, inspect, update, and independently
+  qualify the bundled SteamVR head-pose provider used by null-HMD sessions.
 - `tools/devbench-control` — a small MCP client for the DevBench endpoint
   exposed by a running CSX build, with listener/process/build/artifact binding
   and normalized semantic results.
@@ -34,7 +38,10 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/build-test-control` — CTest-aware branch testing with a direct-test
   fallback when a configured build contains test binaries but registers none.
 
-The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
+The preserved null-HMD profile is `profiles/steamvr-null.profile.json`. The
+provider is a native SteamVR server driver because SteamVR needs a valid head
+pose before Skyrim and CSX DevBench exist. DevBench may later update its
+versioned shared-memory pose contract, but it is not the bootstrap provider.
 
 ## Codex plugin
 
@@ -101,7 +108,9 @@ then uses its own cloned workspace profile and may remove only mods that its
 workspace proved were new;
 tasks release MO2 access whenever
 they can continue without it. Null-HMD apply takes an exact backup and
-restore verifies its receipt; profile edits are exact-marker transactions;
+restore verifies its receipt; optional display-driver isolation also preserves
+and hash-verifies the exact OpenVR registration file and refuses drift before
+restoration. Profile edits are exact-marker transactions;
 cache restoration retains the displaced tree and verifies both sides before
 cleanup. Nothing here deletes unclassified MO2 overwrite content or shader
 caches.
