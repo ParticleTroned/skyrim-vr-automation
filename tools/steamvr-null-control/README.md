@@ -49,6 +49,15 @@ than one redirector is present, name every exact root in the
 when the isolated-state hash and suppressed manifests still match the receipt.
 The normal fail-closed path remains unchanged when this option is omitted.
 
+Apply and restore are recoverable multi-file transactions. Before changing
+either SteamVR settings or OpenVR registrations, the controller records each
+exact target, preimage, and expected hash in a write-ahead journal. A failed
+operation restores and verifies every target before reporting rollback; an
+incomplete rollback is reported as `recovery-required`, never as success. The
+next apply or restore resolves any nonterminal journal before beginning new
+work, and a repeated restore recognizes a committed exact baseline as
+`already-restored`.
+
 For a specifically authorized coexistence diagnostic, `start
 -AllowExternalDisplayRedirector` leaves every vendor registration untouched,
 records the exact conflict inventory and override in the runtime receipt, and
@@ -69,6 +78,12 @@ path validates every target executable is inside `SteamVRRoot` before stopping
 it; it does not target Steam, Virtual Desktop, or unrelated same-name binaries.
 Same-name processes outside the configured root are reported as unproven but
 are never used as stop, start, apply, or restore blockers.
+
+Runtime qualification invokes the independent OpenVR pose probe through the
+central bounded-process controller. A probe cannot outlive its timeout. If a
+start or qualification attempt fails, cleanup stops only SteamVR-root-owned
+processes whose creation time belongs to that attempt and reports the verified
+survivor inventory.
 
 ```powershell
 .\Invoke-SteamVRNullControl.ps1 apply -EvidenceDirectory <session-evidence> -Compact
