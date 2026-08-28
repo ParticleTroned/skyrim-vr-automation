@@ -108,6 +108,44 @@ function Resolve-DumpRoot([string[]]$EvidenceRoots) {
     throw 'DumpRoot is required. Pass -DumpRoot or set CSX_COC_DUMP_ROOT.'
 }
 
+function Test-DumpRootWriteAccess([string]$Root) {
+    $probeDirectory = $null
+    $probeFile = $null
+    try {
+        $resolvedRoot = [IO.Directory]::CreateDirectory(
+            [IO.Path]::GetFullPath($Root)
+        ).FullName
+        $probeDirectory = Join-Path $resolvedRoot (
+            '.coc-evidence-write-probe-' + [Guid]::NewGuid().ToString('N')
+        )
+        [IO.Directory]::CreateDirectory($probeDirectory) | Out-Null
+        $probeFile = Join-Path $probeDirectory 'probe.txt'
+        [IO.File]::WriteAllText($probeFile, 'coc-evidence-write-probe')
+        if (-not (Test-Path -LiteralPath $probeFile -PathType Leaf)) {
+            throw 'The write probe did not create its expected file.'
+        }
+        return [pscustomobject]@{
+            ok = $true
+            code = $null
+            error = $null
+        }
+    } catch {
+        return [pscustomobject]@{
+            ok = $false
+            code = 'evidence-output-not-writable'
+            error = $_.Exception.Message
+        }
+    } finally {
+        if ($probeFile -and (Test-Path -LiteralPath $probeFile -PathType Leaf)) {
+            [IO.File]::Delete($probeFile)
+        }
+        if ($probeDirectory -and
+            (Test-Path -LiteralPath $probeDirectory -PathType Container)) {
+            [IO.Directory]::Delete($probeDirectory, $false)
+        }
+    }
+}
+
 function Get-ExecutableRecord([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     $item = Get-Item -LiteralPath $Path
@@ -125,16 +163,21 @@ function Get-LocalReadiness {
     $driveRoot = [IO.Path]::GetPathRoot($resolvedDumpRoot)
     $drive = [IO.DriveInfo]::new($driveRoot)
     $freeGiB = [math]::Round($drive.AvailableFreeSpace / 1GB, 2)
+    $dumpWriteAccess = Test-DumpRootWriteAccess $resolvedDumpRoot
     $checks = [Collections.Generic.List[object]]::new()
     $checks.Add([pscustomobject]@{
         name = 'procdump'
         ok = -not [string]::IsNullOrWhiteSpace($paths.procDump)
         value = $paths.procDump
+        code = $null
+        error = $null
     })
     $checks.Add([pscustomobject]@{
         name = 'cdb'
         ok = -not [string]::IsNullOrWhiteSpace($paths.cdb)
         value = $paths.cdb
+        code = $null
+        error = $null
     })
     $checks.Add([pscustomobject]@{
         name = 'dump-space'
@@ -145,6 +188,15 @@ function Get-LocalReadiness {
             freeGiB = $freeGiB
             requiredGiB = $MinimumFreeGiB
         }
+        code = $null
+        error = $null
+    })
+    $checks.Add([pscustomobject]@{
+        name = 'dump-write'
+        ok = [bool]$dumpWriteAccess.ok
+        value = [pscustomobject]@{ root = $resolvedDumpRoot }
+        code = $dumpWriteAccess.code
+        error = $dumpWriteAccess.error
     })
 
     $failed = @($checks | Where-Object { -not $_.ok })
@@ -152,7 +204,9 @@ function Get-LocalReadiness {
         ok = $failed.Count -eq 0
         checks = @($checks)
         errors = @($failed | ForEach-Object {
-            "Readiness check failed: $($_.name)"
+            $detail = if ($_.error) { ": $($_.error)" } else { '' }
+            $code = if ($_.code) { " ($($_.code))" } else { '' }
+            "Readiness check failed: $($_.name)$code$detail"
         })
         paths = [pscustomobject][ordered]@{
             procDump = $paths.procDump

@@ -46,6 +46,8 @@ foreach ($required in @(
     'Do not require PyGhidra or `eval_python` activation',
     'explicit DevBench runtime metadata',
     'reimports the supplied candidate',
+    'dump-write',
+    'do not retry it',
     '2 + (20 x 5) = 102 steps',
     'qualification_status',
     'qualification_dispatch',

@@ -28,8 +28,10 @@ When Skyrim reaches its main menu/load window, and before loading into the test
 world, establish the analysis environment. In parallel, use Community Shaders'
 `tools/ghidra-mcp-control.ps1` to start or verify the managed Ghidra server
 against the candidate DLL path and SHA-256 from the explicit DevBench runtime
-metadata, and run
-`coc-evidence-control inspect` plus `arm` against the exact Skyrim PID.
+metadata, and run `coc-evidence-control inspect` against the exact Skyrim PID.
+Arm only after its `dump-write` check proves the configured output can create,
+write, and remove a controller-owned probe. A failed check blocks readiness:
+preserve it, do not retry arm, and ask the user to repair the output path.
 Require CDB/WinDbg, ProcDump, dump storage, and an owned crash collector. It is
 exception-triggered; use `capture-hang` only after a visually confirmed freeze
 so normal COC loads cannot consume its dump quota. Require the

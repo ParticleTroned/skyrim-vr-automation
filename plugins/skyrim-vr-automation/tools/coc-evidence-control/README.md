@@ -7,6 +7,11 @@ It verifies:
 
 - ProcDump and CDB/WinDbg are available;
 - the dump drive has at least 100 GiB free by default.
+- the exact dump root can create, write, and remove a controller-owned probe.
+
+`inspect` performs the write probe before any monitor launch. A failed
+`dump-write` check is a configuration block: preserve that receipt, do not arm
+or retry ProcDump, and ask the operator to repair the configured output path.
 
 The arm command starts one hidden ProcDump monitor for SkyrimVR.exe. It records
 full dumps for unhandled exceptions, caps the run at two dumps, and does not

@@ -35,8 +35,11 @@ controller's `binaryListReady: true` and `programMatchesExpectation: true`
 receipt: it records the imported artifact SHA-256 and confirms the active
 executable path through the read-only `list_binaries` MCP call. Do not require
 PyGhidra or `eval_python` activation. Arm one owned ProcDump exception collector
-and preserve its state path and capture directory. Require CDB/WinDbg and dump
-storage. If any receipt is missing, report `not armed`; do not send a COC. A new
+and preserve its state path and capture directory only after the exact dump root
+passes `dump-write`: a unique controller-owned probe must create, write, and
+remove successfully. Require CDB/WinDbg and dump storage. A failed `dump-write`
+receipt blocks the arm; do not retry it. If any receipt is missing, report `not
+armed`; do not send a COC. A new
 PID, endpoint, compilation, or failed identity check invalidates an old arm
 receipt.
 

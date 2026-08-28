@@ -71,11 +71,18 @@ save or test world is loaded. Do not defer it into the in-game start window.
      gracefully stops only that managed session, waits for its listener to
      vacate, and reimports the supplied candidate. Do not manually choose,
      stop, or retarget a Ghidra snapshot;
-   - run `coc-evidence-control inspect` and require CDB/WinDbg, ProcDump, and
-     free-space readiness;
-   - arm ProcDump with `-TargetPid <exact Skyrim PID>`, unless an existing owned
-     waiting collector has attached to that same PID. The automatic monitor is
-     exception-triggered, not window-hang-triggered.
+   - run `coc-evidence-control inspect` and require CDB/WinDbg, ProcDump,
+     free-space, and `dump-write` readiness. The write check creates, writes,
+     and removes a unique controller-owned probe below the exact configured
+     dump root;
+   - arm ProcDump with `-TargetPid <exact Skyrim PID>` only after that
+     `dump-write` receipt passes, unless an existing owned waiting collector has
+     attached to that same PID. The automatic monitor is exception-triggered,
+     not window-hang-triggered.
+
+If `dump-write` fails, preserve the inspect receipt, do not issue or retry an
+arm command, and ask the user to repair the configured evidence output. No
+collector is expected in that blocked state.
 3. Require the Ghidra receipt to report `ok: true`, `state: ready`,
    `managed: true`, `endpointReady: true`, `listenerOwnedBySession: true`,
    `binaryListReady: true`, and `programMatchesExpectation: true`. The
