@@ -10,6 +10,10 @@ Apply Simple COC identity binding, schema discovery, fail-closed scenario
 probe, evidence paths, and the single runtime-only `prepare_coc` action. The
 receipt must prove debug logging and the FOV/TAA `0.3/0.3/0.7` fixture without
 changing any upscaling or VR FPS Stabilizer setting.
+Use the exact Simple COC order: `prepare_coc` is the first stateful call and
+runs alone; only independent read-only discovery may run concurrently; the
+fail-closed proof runs alone; and every supported binding-phase telemetry reset
+runs once, in serialized order.
 
 Require the bound active D3D adapter to be AMD. Require the live
 `communityshaders.upscaling_api` description to expose `registry`,
@@ -104,15 +108,18 @@ session.
 
 Now arm one fresh measured Simple CSM telemetry set for that lane with
 stateful telemetry actions serialized in its short ownership sequence: stress,
-texture lifetime, load presentation, CPU/GPU reset, and profiler pre-arm.
-Require and retain each receipt before starting the next stateful action;
-provider lifecycle, resource publication, preparation, fidelity, stereo, retry,
-failure, memory, and queue remain status evidence. Only read-only
-discovery/status calls may run in parallel. Reset and require CPU/GPU capture
-to be inactive and pre-arm only the profiler. In the first measured mutation
-scenario, start the profiler immediately before dispatch; dispatch then starts
-CPU/GPU capture on its QPC/frame. Stop only that lane's owned sessions after
-transition 31. Do not combine capture windows across lanes.
+texture lifetime, load presentation, and profiler pre-arm. Require and retain
+each receipt before starting the next stateful action; provider lifecycle,
+resource publication, preparation, fidelity, stereo, retry, failure, memory,
+and queue remain status evidence. Only read-only discovery/status calls may run
+in parallel. For the first lane, reuse the binding-phase CPU/GPU reset receipts,
+require both captures to be inactive, and do not issue another reset. Before
+each later lane, after the preceding lane's guarded stop receipt, serialize
+exactly one CPU reset and one GPU reset to clear its measurements and require
+both captures inactive. In the first measured mutation scenario, start the
+profiler immediately before dispatch; dispatch then starts CPU/GPU capture on
+its QPC/frame. Stop only that lane's owned sessions after transition 31. Do not
+combine capture windows across lanes.
 
 ## 4. Exact public-API transition primitive
 
@@ -131,10 +138,12 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    interruption, not a profile result. Use only the controller's short bounded
    retry budget for that exact snapshot. While unavailable, do not launch a
    scenario, cancel, or apply. If it does not recover, record
-   `pre_snapshot_transport_unavailable`, stop future mutations, clean up only
-   task-owned sessions, and ask the user to repair or restart the control
-   plane. Do not consume the 30-second completion deadline or add another
-   extended wait.
+   `pre_snapshot_transport_unavailable`, stop future mutations, preserve the
+   exact error receipt and task-owned session IDs, send no further DevBench
+   calls, and ask the user immediately to repair or restart the control plane.
+   Do not attempt cleanup until the user explicitly directs it and the control
+   plane responds. Do not consume the 30-second completion deadline or add
+   another extended wait.
 2. Require complete configured and effective API profiles and no active
    operation. Construct its complete API target from the effective profile's
    `name` fields; mutate only `method`, `qualityMode`, and
@@ -212,10 +221,11 @@ responsive, the qualification owner is closed, the final snapshot has no active
 operation or unresolved physical mutation, and exact PID/build ownership still
 holds. Otherwise stop future mutations without attempting repair.
 
-On every stop path, preserve the terminal receipt first. Then stop only a
-task-owned trace, profiler, or telemetry session, using its exact returned
-ownership guard. A cleanup failure is a separately recorded anomaly and never
-authorizes another apply, retry, recovery, or matrix substitution.
+Except for the pre-snapshot transport-unavailable path, which asks the user
+before any further call, preserve the terminal receipt first on every stop
+path. Then stop only a task-owned trace, profiler, or telemetry session using
+its exact returned ownership guard. A cleanup failure is a separately recorded
+anomaly and never authorizes another apply, retry, recovery, or substitution.
 
 Every entry has exactly one begin, one dispatch, one apply, and one terminal
 qualification receipt: a strict waiter receipt for an FSR destination or an

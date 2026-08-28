@@ -41,9 +41,10 @@ foreach ($pair in @(
 $skill = Get-Content -LiteralPath $sourceSkill -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocol -Raw
 foreach ($required in @(
-    'one concurrent',
-    'refresh schemas, discover telemetry',
-    'Do not serialize independent calls',
+    '`prepare_coc` exactly once as the first stateful call',
+    'only independent read-only calls may run concurrently',
+    'reset each supported lane once',
+    'Never overlap stateful calls',
     'transition 1''s atomic dispatch remains their sole timing origin',
     '`persisted: false`',
     'developer/debug logging',
@@ -60,11 +61,13 @@ foreach ($required in @(
 
 foreach ($required in @(
     '"action":"prepare_coc"',
-    'bounded setup fan-out',
-    'reset each supported lane',
-    'Do not poll',
-    'start stress, trace, lifetime, and probe',
+    'as the first',
+    'Only independent read-only calls may run concurrently',
+    'stateful reset calls one at a time',
+    'each exposed trace, lifetime, and probe capture, then pre-arm',
     'short ownership sequence',
+    'binding-phase CPU/GPU reset receipts',
+    'do not issue another CPU/GPU reset',
     'never fan out `start`, `reset`, or `set_enabled` calls',
     'run another discovery or reset cycle',
     'capture.requiresEnabled: true',
@@ -97,10 +100,14 @@ foreach ($required in @(
         throw "Simple COC protocol is missing: $required"
     }
 }
-if ($protocol.Contains('one concurrent bounded fan-out', [StringComparison]::Ordinal)) {
-    throw 'Simple COC still permits concurrent stateful telemetry arming.'
+foreach ($forbidden in @(
+    'bounded setup fan-out',
+    'reset CPU/GPU telemetry'
+)) {
+    if ($protocol.Contains($forbidden, [StringComparison]::Ordinal)) {
+        throw "Simple COC retains a redundant or concurrent setup rule: $forbidden"
+    }
 }
-
 
 $forensics = Get-Content -LiteralPath $sourceForensics -Raw
 foreach ($required in @(

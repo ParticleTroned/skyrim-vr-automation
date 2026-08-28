@@ -20,10 +20,12 @@ forensic branch in the protocol for the already-bound session. Never infer that
 authorization from a freeze, timeout, or the original `simple coc` command.
 
 As soon as DevBench health and the exact producer Build ID are bound, call
-`communityshaders.menu` `prepare_coc` exactly once as part of one concurrent
-setup fan-out. In that same interval, refresh schemas, discover telemetry
-lanes, and reset every supported lane. Do not serialize independent calls or
-repeat successful setup after positioning. Do not start CPU or GPU counters;
+`communityshaders.menu` `prepare_coc` exactly once as the first stateful call
+and validate its receipt before making another stateful call. Then refresh
+schemas and discover telemetry lanes; only independent read-only calls may run
+concurrently. After the fail-closed proof below, reset each supported lane once,
+serially, and retain every receipt. Never overlap stateful calls or repeat
+successful setup after positioning. Do not start CPU or GPU counters;
 transition 1's atomic dispatch remains their sole timing origin.
 If `communityshaders.profiler_api` is exposed, prove scenario semantic
 fail-closed behavior and explicitly enable and verify the API before queuing

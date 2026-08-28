@@ -65,10 +65,11 @@ transitions.
 Apply Simple COC section 3 after exact-cell verification. Stateful telemetry
 actions are serialized in its short ownership sequence: start the single fresh
 stress session, then texture-lifetime, load-presentation, and each other
-supported capture; reset CPU/GPU telemetry; then pre-arm but do not start the
-profiler capture. Do not start CPU or GPU counters in that sequence; transition
-1's dispatch remains their sole timing origin. Preserve the profiler initial
-state and pre-arm it exactly as Simple COC requires.
+supported capture; then pre-arm but do not start the profiler capture. Reuse
+the binding-phase CPU/GPU reset receipts, require both captures to be inactive,
+and do not issue another reset. Do not start CPU or GPU counters in that
+sequence; transition 1's dispatch remains their sole timing origin. Preserve
+the profiler initial state and pre-arm it exactly as Simple COC requires.
 
 Replace only the base protocol's session-wide DLSS trace ownership:
 

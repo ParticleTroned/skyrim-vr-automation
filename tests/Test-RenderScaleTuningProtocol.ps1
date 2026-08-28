@@ -117,8 +117,11 @@ foreach ($variant in $variants) {
         'vendor_native', 'requested/stable render-scale projections may be `none`',
         '`none` is a failure',
         'Scenario steps cannot interpolate earlier',
-        'short ownership sequence',
+        'short ownership sequence', 'binding-phase CPU/GPU reset',
         'short bounded retry budget', 'pre_snapshot_transport_unavailable',
+        'send no further DevBench', 'ask the user immediately',
+        'Do not attempt cleanup until',
+        'Except for the pre-snapshot transport-unavailable path',
         'Native-generation evidence is optional',
         'do not relabel a core `PASS`',
         'using its exact returned', 'ownership guard',
@@ -140,6 +143,8 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('wait up to 30,000 ms for the public operation', [StringComparison]::Ordinal)) "$($variant.Name) can spend two serial 30-second windows."
     Assert-True (-not $protocol.Contains('Require a complete stable active profile.', [StringComparison]::Ordinal)) "$($variant.Name) still derives public targets from the physical controller projection."
     Assert-True (-not $protocol.Contains('bounded fan-out', [StringComparison]::Ordinal)) "$($variant.Name) still permits concurrent stateful telemetry arming."
+    Assert-True (-not $protocol.Contains('stop future mutations, clean up only', [StringComparison]::Ordinal)) "$($variant.Name) still attempts cleanup before prompting on transport loss."
+    Assert-True (-not $protocol.Contains('load presentation, CPU/GPU reset', [StringComparison]::Ordinal)) "$($variant.Name) still repeats CPU/GPU reset during initial measured arming."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
@@ -185,7 +190,8 @@ foreach ($token in @(
     'Before each DLSS or DLAA transition', 'owned bounded',
     'eErrorDuplicatedConstants` is a transition `FAIL`',
     'continue later matrix rows to preserve the error history',
-    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`'
+    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`',
+    'do not issue another'
 )) {
     Assert-Contains $nvidiaProtocol $token 'NVIDIA adversarial guard'
 }
@@ -203,6 +209,8 @@ $amdProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\rende
 foreach ($token in @(
     'blocked lane does not prevent',
     'fallback flag',
+    'For the first lane, reuse the', 'Before each later lane',
+    'exactly one CPU reset and one GPU reset',
     'one bounded DLSS trace capability lifecycle', 'Require zero DLSS dispatch records.',
     'Never corrupt resources'
 )) {
@@ -218,7 +226,9 @@ Assert-Contains $simpleCsmSkill 'name: simple-csm' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'exactly 25 Community Shaders menu applies' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'tools/render-scale-qualification/protocol.v1.json' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'short ownership sequence' 'Simple CSM regression guard'
+Assert-Contains $simpleCsmProtocol 'binding-phase CPU/GPU reset receipts' 'Simple CSM regression guard'
 Assert-True (-not $simpleCsmProtocol.Contains('one concurrent bounded fan-out', [StringComparison]::Ordinal)) 'Simple CSM permits concurrent stateful telemetry arming.'
+Assert-True (-not $simpleCsmProtocol.Contains('reset CPU/GPU telemetry', [StringComparison]::Ordinal)) 'Simple CSM repeats CPU/GPU reset during measured arming.'
 Assert-True ((Get-FileHash -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\references\protocol.md') -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $simpleCsmPluginProtocolPath -Algorithm SHA256).Hash) 'Simple CSM source/package parity failed for telemetry arming.'
 Assert-True (-not $simpleCsmProtocol.Contains('renderscale-tuning-nvidia', [StringComparison]::Ordinal)) 'Simple CSM references NVIDIA tuning.'
 Assert-True (-not $simpleCsmProtocol.Contains('renderscale-tuning-amd', [StringComparison]::Ordinal)) 'Simple CSM references AMD tuning.'
