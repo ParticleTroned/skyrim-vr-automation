@@ -4,6 +4,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Separate MO2's public lease identity from its bearer credential in status
+  results, bind live session ownership to PID plus process start time, and make
+  feedback amendments and maintainer transitions carry explicit actor roles.
+- Redact local paths recursively from feedback operation, resolution, and
+  resolution-link fields in default exports.
 - Add a native, fixed-standing SteamVR head-pose provider for Valve null-HMD,
   a versioned shared-memory control/acknowledgement contract, independent
   application-facing OpenVR qualification, transactional installation, and

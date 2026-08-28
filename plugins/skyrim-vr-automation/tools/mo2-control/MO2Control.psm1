@@ -437,8 +437,10 @@ function Get-MO2SessionLockRecord {
         valid = $null
         ownerPid = $null
         ownerRunning = $false
+        ownerIdentityMatched = $false
         sessionId = $null
         accessId = $null
+        leaseId = $null
         acquisitionMode = $null
         status = $null
         data = $null
@@ -455,13 +457,35 @@ function Get-MO2SessionLockRecord {
         $record.data = $data
         if ($data.PSObject.Properties['ownerPid']) {
             $record.ownerPid = [int]$data.ownerPid
-            $record.ownerRunning = $null -ne (Get-Process -Id $record.ownerPid -ErrorAction SilentlyContinue)
+            $ownerProcess = Get-Process -Id $record.ownerPid -ErrorAction SilentlyContinue
+            if ($null -ne $ownerProcess) {
+                $record.ownerRunning = $true
+                if ($data.PSObject.Properties['processStartTime'] -and -not [string]::IsNullOrWhiteSpace([string]$data.processStartTime)) {
+                    try {
+                        $expectedStart = [DateTimeOffset]::Parse([string]$data.processStartTime, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+                        $actualStart = $ownerProcess.StartTime.ToUniversalTime()
+                        $record.ownerIdentityMatched = [math]::Abs(($actualStart - $expectedStart).TotalMilliseconds) -lt 1.0
+                        $record.ownerRunning = $record.ownerIdentityMatched
+                    }
+                    catch {
+                        $record.ownerIdentityMatched = $false
+                        $record.ownerRunning = $false
+                    }
+                }
+                else {
+                    # Compatibility for pre-identity locks. New session owners always persist start time.
+                    $record.ownerIdentityMatched = $true
+                }
+            }
         }
         if ($data.PSObject.Properties['sessionId']) {
             $record.sessionId = [string]$data.sessionId
         }
         if ($data.PSObject.Properties['accessId']) {
             $record.accessId = [string]$data.accessId
+        }
+        if ($data.PSObject.Properties['leaseId']) {
+            $record.leaseId = [string]$data.leaseId
         }
         if ($data.PSObject.Properties['acquisitionMode']) {
             $record.acquisitionMode = [string]$data.acquisitionMode
@@ -753,7 +777,7 @@ function Invoke-MO2Validate {
         $checks += New-MO2Check -Name 'session-lock' -Status 'pass' -Message "The requested access lease owns the lock: $OwnedAccessId" -Details $data.sessionLock
     }
     elseif ($data.sessionLock.exists -and $data.sessionLock.valid) {
-        $lockOwner = if (-not [string]::IsNullOrWhiteSpace([string]$data.sessionLock.accessId)) { "access lease $($data.sessionLock.accessId)" } else { "session $($data.sessionLock.sessionId)" }
+        $lockOwner = if (Test-MO2HasAccessLease -Lock $data.sessionLock) { "access lease $($data.sessionLock.leaseId)" } else { "session $($data.sessionLock.sessionId)" }
         $checks += New-MO2Check -Name 'session-lock' -Status 'fail' -Message "Another MO2 control $lockOwner owns the lock." -Details $data.sessionLock
     }
     elseif ($data.sessionLock.exists) {
@@ -903,7 +927,7 @@ function Write-MO2OwnedSessionAtomic {
         }
 
         $updated = $Value
-        foreach ($propertyName in @('contractVersion', 'accessId', 'acquisitionMode', 'label', 'requestedUtc', 'lastRenewedUtc', 'estimatedDurationMinutes', 'estimatedReleaseUtc', 'ownerRequestPid')) {
+        foreach ($propertyName in @('contractVersion', 'accessId', 'leaseId', 'acquisitionMode', 'label', 'requestedUtc', 'lastRenewedUtc', 'estimatedDurationMinutes', 'estimatedReleaseUtc', 'ownerRequestPid', 'ownerRequestStartTime')) {
             if ($current.data.PSObject.Properties[$propertyName]) {
                 $updated | Add-Member -NotePropertyName $propertyName -NotePropertyValue $current.data.$propertyName -Force
             }
@@ -1003,6 +1027,15 @@ function New-MO2ActionResult {
     }
 }
 
+function Test-MO2HasAccessLease {
+    param([Parameter(Mandatory)]$Lock)
+
+    return -not [string]::IsNullOrWhiteSpace([string]$Lock.leaseId) -or
+        -not [string]::IsNullOrWhiteSpace([string]$Lock.accessId) -or
+        ($Lock.data -and $Lock.data.PSObject.Properties['accessCredentialSha256'] -and
+            -not [string]::IsNullOrWhiteSpace([string]$Lock.data.accessCredentialSha256))
+}
+
 function Get-MO2AccessLeaseSummary {
     param([Parameter(Mandatory)]$Lock)
 
@@ -1010,7 +1043,7 @@ function Get-MO2AccessLeaseSummary {
         return [pscustomobject][ordered]@{
             state = 'available'
             lockPath = $Lock.path
-            accessId = $null
+            leaseId = $null
             sessionId = $null
             label = $null
             estimatedReleaseUtc = $null
@@ -1021,7 +1054,7 @@ function Get-MO2AccessLeaseSummary {
         return [pscustomobject][ordered]@{
             state = 'invalid-lock'
             lockPath = $Lock.path
-            accessId = $null
+            leaseId = $null
             sessionId = $null
             label = $null
             estimatedReleaseUtc = $null
@@ -1044,7 +1077,7 @@ function Get-MO2AccessLeaseSummary {
     return [pscustomobject][ordered]@{
         state = $(if ([string]::IsNullOrWhiteSpace([string]$Lock.sessionId)) { 'access-held' } else { 'session-held' })
         lockPath = $Lock.path
-        accessId = $Lock.accessId
+        leaseId = $(if (-not [string]::IsNullOrWhiteSpace([string]$Lock.leaseId)) { $Lock.leaseId } else { 'legacy-access-lease' })
         sessionId = $Lock.sessionId
         label = $(if ($Lock.data.PSObject.Properties['label']) { [string]$Lock.data.label } else { $null })
         acquisitionMode = $Lock.acquisitionMode
@@ -1054,6 +1087,7 @@ function Get-MO2AccessLeaseSummary {
         estimatedReleaseUtc = $estimatedReleaseUtc
         estimateOverdue = $estimateOverdue
         ownerRequestPid = $(if ($Lock.data.PSObject.Properties['ownerRequestPid']) { $Lock.data.ownerRequestPid } else { $null })
+        ownerRequestStartTime = $(if ($Lock.data.PSObject.Properties['ownerRequestStartTime']) { [string]$Lock.data.ownerRequestStartTime } else { $null })
         generation = $(if ($Lock.data.PSObject.Properties['generation']) { [long]$Lock.data.generation } else { 0L })
     }
 }
@@ -1074,11 +1108,11 @@ function Get-MO2OwnedAccessLease {
     if (-not $lock.valid) {
         throw "The MO2 access lock is invalid: $($lock.error)"
     }
-    if ([string]::IsNullOrWhiteSpace([string]$lock.accessId)) {
+    if (-not (Test-MO2HasAccessLease -Lock $lock)) {
         throw 'The active lock predates cooperative access leases and must be completed through its exact SessionId.'
     }
     if ($lock.accessId -ne $AccessId) {
-        throw "Access lease '$AccessId' does not own the active lock '$($lock.accessId)'."
+        throw "The supplied access credential does not own lease '$($lock.leaseId)'."
     }
     return $lock
 }
@@ -1100,10 +1134,12 @@ function Invoke-MO2RequestAccess {
     $safeLabel = ConvertTo-MO2SafeLabel $Label
     $now = [DateTime]::UtcNow
     $accessId = 'access-{0}-{1}' -f $now.ToString('yyyyMMddTHHmmssZ'), ([guid]::NewGuid().ToString('N').Substring(0, 12))
+    $leaseId = 'lease-{0}-{1}' -f $now.ToString('yyyyMMddTHHmmssZ'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
     $estimatedReleaseUtc = if ($null -ne $EstimatedMinutes) { $now.AddMinutes([int]$EstimatedMinutes).ToString('o') } else { $null }
     $lease = [pscustomobject][ordered]@{
         contractVersion = $script:MO2ControlContractVersion
         accessId = $accessId
+        leaseId = $leaseId
         acquisitionMode = 'explicit-access'
         status = 'access-held'
         label = $safeLabel
@@ -1112,6 +1148,7 @@ function Invoke-MO2RequestAccess {
         estimatedDurationMinutes = $EstimatedMinutes
         estimatedReleaseUtc = $estimatedReleaseUtc
         ownerRequestPid = $PID
+        ownerRequestStartTime = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
         generation = 1L
         sessionId = $null
         sessionPath = $null
@@ -1160,8 +1197,8 @@ function Invoke-MO2AccessStatus {
         return New-MO2ActionResult -Config $Config -Command 'access-status' -Ok $false -State 'invalid-lock' -Data @{ access = $summary } -Errors @('The lock is invalid and requires explicit classification before recovery.')
     }
     $owned = -not [string]::IsNullOrWhiteSpace($AccessId) -and $lock.accessId -eq $AccessId
-    $state = if ($owned) { 'access-owned' } elseif ([string]::IsNullOrWhiteSpace([string]$lock.accessId)) { 'legacy-session-held' } else { 'access-busy' }
-    return New-MO2ActionResult -Config $Config -Command 'access-status' -Ok $true -State $state -Data @{ access = $summary; requestedAccessId = $AccessId; owned = $owned; estimateIsAdvisory = $true }
+    $state = if ($owned) { 'access-owned' } elseif (-not (Test-MO2HasAccessLease -Lock $lock)) { 'legacy-session-held' } else { 'access-busy' }
+    return New-MO2ActionResult -Config $Config -Command 'access-status' -Ok $true -State $state -Data @{ access = $summary; credentialSupplied = -not [string]::IsNullOrWhiteSpace($AccessId); owned = $owned; estimateIsAdvisory = $true }
 }
 
 function Invoke-MO2RenewAccess {

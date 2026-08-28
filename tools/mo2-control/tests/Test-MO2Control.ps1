@@ -196,15 +196,20 @@ selected_profile=@ByteArray(Codex)
 
     $access = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15
     $accessId = [string]$access.data.access.accessId
+    $leaseId = [string]$access.data.access.leaseId
     Assert-MO2Test ($access.ok -and $access.state -eq 'access-acquired' -and -not [string]::IsNullOrWhiteSpace($accessId)) 'first task atomically acquires access'
+    Assert-MO2Test (-not [string]::IsNullOrWhiteSpace($leaseId) -and $leaseId -ne $accessId) 'access receipt separates public lease identity from the bearer credential'
     Assert-MO2Test ([long]$access.data.access.generation -eq 1L) 'new access lease starts at generation one'
     $busyAccess = Invoke-MO2RequestAccess -Config $config -Label 'second task' -EstimatedMinutes 5
     Assert-MO2Test (-not $busyAccess.ok -and $busyAccess.state -eq 'access-busy' -and $busyAccess.data.retryable) 'second task receives a retryable access-busy result'
-    Assert-MO2Test ($busyAccess.data.current.accessId -eq $accessId -and $busyAccess.data.current.estimatedReleaseUtc) 'busy result communicates owner and advisory estimate'
+    Assert-MO2Test ($busyAccess.data.current.leaseId -eq $leaseId -and $busyAccess.data.current.estimatedReleaseUtc) 'busy result communicates public lease identity and advisory estimate'
+    Assert-MO2Test ($busyAccess.data.current.PSObject.Properties.Name -notcontains 'accessId' -and (($busyAccess | ConvertTo-Json -Depth 12) -notmatch [regex]::Escape($accessId))) 'busy result never discloses the bearer credential'
 
     $ownedAccess = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
     Assert-MO2Test ($ownedAccess.ok -and $ownedAccess.state -eq 'access-owned' -and $ownedAccess.data.owned) 'access status proves exact ownership'
     Assert-MO2Test (-not $ownedAccess.data.access.estimateOverdue -and [string]$ownedAccess.data.access.estimatedReleaseUtc -match 'Z$') 'future advisory estimate survives JSON round-trip with UTC identity'
+    $unownedAccess = Invoke-MO2AccessStatus -Config $config -AccessId 'access-wrong-credential'
+    Assert-MO2Test ($unownedAccess.state -eq 'access-busy' -and -not $unownedAccess.data.owned -and (($unownedAccess | ConvertTo-Json -Depth 12) -notmatch 'access-wrong-credential')) 'status rejects a wrong credential without echoing it'
     $ownedValidation = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate -ConfigPath $configPath -AccessId $accessId -RequireClosed -NoExit | ConvertFrom-Json)
     Assert-MO2Test ($ownedValidation.ok -and @($ownedValidation.checks | Where-Object { $_.name -eq 'session-lock' -and $_.status -eq 'pass' }).Count -eq 1) 'validation accepts the exact owned access lease'
     $validationApproval = $ownedValidation.data.approval
@@ -242,6 +247,14 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test (-not $unconfirmedRecovery.ok -and $unconfirmedRecovery.state -eq 'confirmation-required') 'abandoned access is never inferred from time alone'
     $recoveredAccess = Invoke-MO2RecoverAccess -Config $config -AccessId $abandonedAccessId -ConfirmAbandoned -Label 'fixture confirmed abandoned'
     Assert-MO2Test ($recoveredAccess.ok -and $recoveredAccess.state -eq 'access-recovered') 'confirmed abandoned access can be recovered in proven closed state'
+
+    [ordered]@{
+        contractVersion = 'fixture'; sessionId = 'session-pid-reuse'; status = 'running'; ownerPid = $PID
+        processStartTime = [DateTime]::UtcNow.AddDays(-1).ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath $config.session.lockFile -Encoding utf8
+    $pidReuseInspection = Invoke-MO2Inspect -Config $config
+    Assert-MO2Test (-not $pidReuseInspection.data.sessionLock.ownerRunning -and -not $pidReuseInspection.data.sessionLock.ownerIdentityMatched) 'session ownership rejects a reused PID with a different process start time'
+    Remove-Item -LiteralPath $config.session.lockFile -Force
 
     $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE -WhatIf
     Assert-MO2Test ($prepareDryRun.ok -and $prepareDryRun.state -eq 'dry-run') 'prepare dry-run succeeds'

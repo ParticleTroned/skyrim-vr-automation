@@ -35,6 +35,8 @@ param(
     [string]$ProfilePath,
 
     [string]$Actor,
+    [ValidateSet('reporter', 'maintainer')]
+    [string]$ActorRole,
     [string]$Note,
     [string]$DuplicateOf,
     [string]$Resolution,
@@ -306,6 +308,23 @@ function Protect-PublicText([string]$Text) {
     return $protected
 }
 
+function Protect-PublicValue($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return Protect-PublicText $Value }
+    if ($Value -is [Collections.IDictionary]) {
+        $protected = [ordered]@{}
+        foreach ($key in $Value.Keys) { $protected[[string]$key] = Protect-PublicValue $Value[$key] }
+        return $protected
+    }
+    if ($Value -is [pscustomobject]) {
+        $protected = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) { $protected[$property.Name] = Protect-PublicValue $property.Value }
+        return [pscustomobject]$protected
+    }
+    if ($Value -is [Collections.IEnumerable]) { return @($Value | ForEach-Object { Protect-PublicValue $_ }) }
+    return $Value
+}
+
 function ConvertTo-PublicFeedback($Item, [bool]$IncludePaths) {
     $evidence = @($Item.evidence | ForEach-Object {
         [ordered]@{
@@ -328,12 +347,12 @@ function ConvertTo-PublicFeedback($Item, [bool]$IncludePaths) {
         observed = if ($IncludePaths) { $Item.observed } else { Protect-PublicText ([string]$Item.observed) }
         expected = if ($IncludePaths) { $Item.expected } else { Protect-PublicText ([string]$Item.expected) }
         suggestion = if ($IncludePaths) { $Item.suggestion } else { Protect-PublicText ([string]$Item.suggestion) }
-        operation = $Item.operation
+        operation = if ($IncludePaths) { $Item.operation } else { Protect-PublicValue $Item.operation }
         toolkit = $Item.toolkit
         evidence = $evidence
         duplicateOf = if ($Item.PSObject.Properties.Name -contains 'duplicateOf') { $Item.duplicateOf } else { $null }
-        resolution = if ($Item.PSObject.Properties.Name -contains 'resolution') { $Item.resolution } else { $null }
-        resolutionLinks = if ($Item.PSObject.Properties.Name -contains 'resolutionLinks') { $Item.resolutionLinks } else { $null }
+        resolution = if ($Item.PSObject.Properties.Name -contains 'resolution') { if ($IncludePaths) { $Item.resolution } else { Protect-PublicValue $Item.resolution } } else { $null }
+        resolutionLinks = if ($Item.PSObject.Properties.Name -contains 'resolutionLinks') { if ($IncludePaths) { $Item.resolutionLinks } else { Protect-PublicValue $Item.resolutionLinks } } else { $null }
         reviewRequired = 'Review this export before sharing. Free-text fields can contain identifying or private information.'
     }
 }
@@ -442,7 +461,7 @@ try {
         $result = New-Result $true 'listed' ([pscustomobject]@{ scanned = $scanned; total = $total; returned = $items.Count; feedback = $items })
     }
     elseif ($Command -eq 'amend') {
-        Require-Value 'FeedbackId' $FeedbackId
+        Require-Value 'FeedbackId' $FeedbackId; Require-Value 'Actor' $Actor; Require-Value 'ActorRole' $ActorRole
         $updated = Invoke-WithFeedbackLock -Root $root -Action {
             $current = Get-CurrentFeedback -Root $root -Id $FeedbackId
             if ($current.status -in $script:TerminalStatuses) { throw "Closed feedback '$FeedbackId' must be reopened before amendment." }
@@ -457,13 +476,14 @@ try {
             $evidenceValues = @($EvidencePath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             if ($evidenceValues.Count -gt 0) { $patch.evidence = @($current.evidence) + @($evidenceValues | ForEach-Object { Get-EvidenceRecord $_ }) }
             if ($patch.Count -eq 0) { throw 'Amend requires at least one changed field or evidence path.' }
-            $event = [ordered]@{ schemaVersion = 1; type = 'amend'; timestampUtc = [DateTime]::UtcNow.ToString('o'); actor = $Actor; note = $Note; patch = $patch }
+            $event = [ordered]@{ schemaVersion = 1; type = 'amend'; timestampUtc = [DateTime]::UtcNow.ToString('o'); actor = $Actor; actorRole = $ActorRole; note = $Note; patch = $patch }
             Write-FeedbackEvent -Root $root -Id $FeedbackId -Event $event
         }
         $result = New-Result $true 'amended' ([pscustomobject]@{ receipt = $FeedbackId; feedback = $updated })
     }
     elseif ($Command -in @('triage', 'accept', 'duplicate', 'defer', 'decline', 'resolve', 'reopen')) {
-        Require-Value 'FeedbackId' $FeedbackId; Require-Value 'Actor' $Actor
+        Require-Value 'FeedbackId' $FeedbackId; Require-Value 'Actor' $Actor; Require-Value 'ActorRole' $ActorRole
+        if ($ActorRole -ne 'maintainer') { throw "-$Command requires -ActorRole maintainer." }
         $targetStatus = if ($Command -eq 'triage') { 'triaged' } elseif ($Command -eq 'accept') { 'accepted' } elseif ($Command -eq 'reopen') { 'reopened' } else { $Command + 'd' }
         if ($Command -eq 'duplicate') { $targetStatus = 'duplicate' }
         if ($Command -eq 'defer') { $targetStatus = 'deferred' }
@@ -479,7 +499,7 @@ try {
             }
             if ($Command -eq 'resolve') { Require-Value 'Resolution' $Resolution }
             $event = [ordered]@{
-                schemaVersion = 1; type = 'status'; timestampUtc = [DateTime]::UtcNow.ToString('o'); actor = $Actor
+                schemaVersion = 1; type = 'status'; timestampUtc = [DateTime]::UtcNow.ToString('o'); actor = $Actor; actorRole = $ActorRole
                 status = $targetStatus; note = $Note
             }
             if ($Command -eq 'duplicate') { $event.duplicateOf = $DuplicateOf }
