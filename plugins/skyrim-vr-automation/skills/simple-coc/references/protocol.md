@@ -78,6 +78,9 @@ Refresh the live tool schemas before the run. Required capture lanes are:
 - Community Shaders profiler status/timers when available.
 - render-target resource-publication telemetry from the same render-scale
   status/qualification observation as each transition.
+- bounded render-scale preparation telemetry, including raw events plus all
+  admission/early-exit, shader-cache, SSS/SSGI prewarm, DLSS/FSR/FSR4, D3D,
+  total, request-to-prepared, and prepared-to-creator timings.
 
 Reset each supported capture lane before use. Start stress capture before the
 first qualification. Start auxiliary trace, lifetime, probe, and profiler
@@ -102,7 +105,10 @@ Build ID and UTC time. For transition IDs 1 through 20, append this block:
    destination; use `startPerformanceTelemetry: true` only on transition 1;
 4. `qualification_wait` with the same owner/transition, exact expected editor
    ID, fixed foveation fixture, `milestone: "strict"`, `timeoutMs: 30000`, and
-   no `target` field.
+   no `target` field;
+5. render-scale `status` with the exact Build ID. Retain its bounded
+   `status.preparation` trace, filtered to the transition epoch returned by the
+   waiter. This read occurs after strict completion and is not another waiter.
 
 From the strict receipt's render-scale observation, extract current,
 current/completed/published generations, expected/published width and height,
@@ -110,10 +116,16 @@ current/completed/published generations, expected/published width and height,
 Preserve missing fields as missing evidence; do not infer them from profile or
 stereo telemetry.
 
+Preserve the preparation ring/session/QPC metadata and original event objects,
+including identity, generations, D3D device, profile, dimensions, frames,
+occurrences, outcome/reasons, QPC duration, bytecode compilation, and D3D
+creation. Summaries may aggregate those records but must not replace them.
+
 The dispatch itself issues the only COC for that transition. Never add a
 separate console COC. An exact block therefore produces one timing origin, one
-COC, and one strict result. There must be exactly 20 dispatch receipts and 20
-waiter receipts.
+COC, one strict result, and one post-wait telemetry snapshot. There must be
+exactly 20 dispatch receipts, 20 waiter receipts, and 20 preparation status
+receipts.
 
 Preserve every result, including semantic anomalies. A successful waiter may
 report an unsatisfied milestone; that is measured evidence. Stop future COCs
@@ -145,6 +157,8 @@ and classify their reasons. Also extract:
 - render/output dimensions, scale, profiles, both-eye validity, lifecycle,
   latch/contract generations, full resource-publication telemetry, and final
   cell;
+- per-transition and session preparation-stage events and timings, including
+  ring overwrite/coalescing evidence;
 - memory pressure, process-private growth, trims, retirement/fence state, and
   pending cleanup;
 - CPU queue hold/wait metrics, strong-packet counters, GPU capture counters,
@@ -170,6 +184,11 @@ only for information the producer genuinely did not emit. Include the full
 Build ID, source description, dirty state, fixture, scenario identity, and
 verdict. Edit the CSV with `apply_patch`, parse it after editing, and run
 `git diff --check`. Do not build or run repository tests.
+
+Add rows for preparation availability, retained/overwritten/coalesced counts,
+and each named stage's record/occurrence count plus duration, bytecode, and D3D
+timing summaries. Keep the complete raw preparation events in run evidence;
+the CSV is a comparison view, not their replacement.
 
 Finally, tell the user the run verdict and print the complete comparison table
 for the two pinned references plus the newly appended run.

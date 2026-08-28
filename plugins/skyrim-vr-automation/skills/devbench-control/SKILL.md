@@ -46,3 +46,8 @@ The entry point is:
 DevBench calls are loopback-only but can still mutate a running CSX session.
 Inspection or diagnosis does not authorize state changes. Keep screenshot,
 capture, or profiling receipts with the associated MO2 session evidence.
+
+For offline render-scale evidence, use the shared module normalizers for both
+resource publication and `status.preparation`. The preparation normalizer keeps
+the raw bounded events and exposes every stage summary; never rebuild producer
+dimensions, outcomes, reasons, or durations from adjacent fields.

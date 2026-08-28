@@ -26,7 +26,11 @@ comparing data. Use these entry points:
 4. Write to a dedicated evidence directory outside live MO2 overwrite and
    shader-cache trees. Keep raw JSON; summaries alone cannot be re-analysed.
    Preserve the collector's before/after normalized resource-publication
-   telemetry with the timer data; missing fields are evidence, never inferred.
+   telemetry and render-scale preparation trace with the timer data. Keep raw
+   preparation events and stage summaries for admission/early exit,
+   shader-cache deferral, SSS/SSGI, DLSS/FSR/FSR4, D3D creation, total,
+   request-to-prepared, and prepared-to-creator. Missing fields are evidence,
+   never inferred.
 5. Compare at least two raw captures and identify the reference explicitly.
    Treat the total as the active CSX profiler block, not whole-frame cost. Do
    not sum correlated timer deltas into a fictional independent total.

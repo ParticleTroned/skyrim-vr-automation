@@ -147,6 +147,62 @@ Assert-Test ($resourcePublication.available -and $resourcePublication.current -a
 $missingPublication = Get-DevBenchResourcePublicationTelemetry -Response ([pscustomobject]@{ status = [pscustomobject]@{} })
 Assert-Test (-not $missingPublication.available -and $missingPublication.missingFields -contains 'publishedGeneration') 'missing resource-publication telemetry remains explicit'
 
+$preparationResponse = [pscustomobject]@{
+    status = [pscustomobject]@{
+        preparation = [pscustomobject]@{
+            schemaVersion = 1; devBenchOnly = $true; active = $true
+            sessionId = 9; qpcFrequency = 10000000; retainedEvents = 3
+            capacity = 512; overwrittenEvents = 0; coalescedEvents = 2
+            events = @(
+                [pscustomobject]@{
+                    sequence = 1; sessionId = 9; requestId = 17
+                    transitionEpoch = 41; event = 'admission_check'
+                    outcome = 'eligible'; occurrences = 1; reasons = @()
+                    durationQpcTicks = 100; durationMs = 0.01
+                    bytecodeCompilationMs = 0; d3dObjectCreationMs = 0
+                },
+                [pscustomobject]@{
+                    sequence = 2; sessionId = 9; requestId = 17
+                    transitionEpoch = 41; event = 'sss_raymarch_prewarm'
+                    outcome = 'ready'; occurrences = 1; reasons = @()
+                    durationQpcTicks = 500; durationMs = 0.05
+                    bytecodeCompilationMs = 0.03; d3dObjectCreationMs = 0.02
+                },
+                [pscustomobject]@{
+                    sequence = 3; sessionId = 9; requestId = 18
+                    transitionEpoch = 42; event = 'total_preparation'
+                    outcome = 'ready'; occurrences = 1; reasons = @()
+                    durationQpcTicks = 900; durationMs = 0.09
+                    bytecodeCompilationMs = 0.03; d3dObjectCreationMs = 0.02
+                }
+            )
+        }
+    }
+}
+$preparation = Get-DevBenchRenderScalePreparationTelemetry `
+    -Response $preparationResponse -TransitionEpoch 41
+Assert-Test ($preparation.available -and $preparation.filterApplied -and
+    $preparation.sessionId -eq 9 -and $preparation.capacity -eq 512 -and
+    $preparation.allEventCount -eq 3 -and $preparation.eventCount -eq 2 -and
+    $preparation.stages.admission_check.observed -and
+    $preparation.stages.sss_raymarch_prewarm.bytecodeCompilationMs.total -eq 0.03 -and
+    -not $preparation.stages.total_preparation.observed -and
+    $preparation.events[1].requestId -eq 17) 'preparation telemetry retains raw records, stage timings, and exact transition filtering'
+foreach ($eventName in @(
+    'request_queued', 'admission_check', 'early_exit',
+    'shader_cache_busy_wait', 'sss_raymarch_prewarm', 'ssgi_prewarm',
+    'dlss_preparation', 'fsr_preparation', 'fsr4_preparation',
+    'd3d_object_creation', 'total_preparation', 'request_to_prepared',
+    'prepared_to_creator'
+)) {
+    Assert-Test ($null -ne $preparation.stages.PSObject.Properties[$eventName]) `
+        "preparation telemetry exposes the '$eventName' stage"
+}
+$missingPreparation = Get-DevBenchRenderScalePreparationTelemetry `
+    -Response ([pscustomobject]@{ status = [pscustomobject]@{} })
+Assert-Test (-not $missingPreparation.available -and
+    $missingPreparation.missingFields -contains 'events') 'missing preparation telemetry remains explicit'
+
 $expectations = Get-DevBenchRuntimeExpectations -Runtime ([pscustomobject]@{ port = 8921; pid = 123; exe = 'SkyrimVR.exe'; buildId = 'build-1'; dllPath = 'C:\Test\CommunityShaders.dll'; artifactSha256 = 'ABC' })
 Assert-Test ($expectations.port -eq 8921 -and $expectations.pid -eq 123 -and $expectations.exe -eq 'SkyrimVR.exe') 'runtime expectations preserve process identity fields'
 Assert-Test ($expectations.buildId -eq 'build-1' -and $expectations.artifactPath -like '*CommunityShaders.dll' -and $expectations.artifactSha256 -eq 'ABC') 'runtime expectations preserve build and deployed artifact identity'

@@ -94,6 +94,17 @@ try {
     }
     catch { $schemaError = $_.Exception.Message }
     Assert-Test ($schemaError -like 'Profiler comparison requires per-sample *.raw.json input*') 'aggregated summary input fails with a specific schema error'
+
+    $measureText = Get-Content -LiteralPath (Join-Path $PSScriptRoot `
+        'Measure-CSXProfiler.ps1') -Raw
+    Assert-Test ($measureText.Contains(
+        'Get-DevBenchRenderScalePreparationTelemetry',
+        [StringComparison]::Ordinal
+    )) 'profiler capture retains render-scale preparation telemetry'
+    Assert-Test ($measureText.Contains(
+        'preparation = [pscustomobject][ordered]@{',
+        [StringComparison]::Ordinal
+    )) 'profiler summary exposes before and after preparation traces'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

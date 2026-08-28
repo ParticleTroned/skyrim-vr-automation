@@ -12,10 +12,24 @@ $configPath = Join-Path $PSScriptRoot 'protocol.v1.json'
 Import-Module $modulePath -Force
 
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json -Depth 30
+$requiredPreparationEvents = @(
+    'request_queued', 'admission_check', 'early_exit',
+    'shader_cache_busy_wait', 'sss_raymarch_prewarm', 'ssgi_prewarm',
+    'dlss_preparation', 'fsr_preparation', 'fsr4_preparation',
+    'd3d_object_creation', 'total_preparation', 'request_to_prepared',
+    'prepared_to_creator'
+)
+if (@($config.telemetry.preparation.eventNames).Count -ne
+    $requiredPreparationEvents.Count -or
+    @($requiredPreparationEvents | Where-Object {
+            $_ -notin @($config.telemetry.preparation.eventNames)
+        }).Count -ne 0) {
+    throw 'The protocol config does not retain every preparation stage.'
+}
 $scenario = New-CocMeasuredScenario -ProtocolConfig $config `
     -ExpectedBuildId ('a' * 64) -OwnerId 'test-owner'
 $steps = @($scenario.steps)
-$statuses = @($steps | Where-Object label -like 'coc-*-status')
+$statuses = @($steps | Where-Object label -match '^coc-\d{2}-status$')
 $qualificationStatuses = @($steps | Where-Object label -like 'coc-*-qualification-status')
 $dispatches = @($steps | Where-Object label -like 'coc-*-dispatch')
 $waiters = @($steps | Where-Object label -like 'coc-*-wait')
@@ -46,8 +60,9 @@ for ($index = 0; $index -lt 20; $index++) {
         'WindhelmExterior01'
     }
     $offset = 2 + ($index * 5)
-    if ([string]$steps[$offset + 3].label -ne [string]$dispatches[$index].label -or
-        [string]$steps[$offset + 4].label -ne [string]$waiters[$index].label) {
+    if ([string]$steps[$offset + 2].label -ne [string]$dispatches[$index].label -or
+        [string]$steps[$offset + 3].label -ne [string]$waiters[$index].label -or
+        [string]$steps[$offset + 4].label -ne [string]$statuses[$index].label) {
         throw "Transition $($index + 1) does not execute its COC immediately before the bounded waiter."
     }
     if ([string]$dispatches[$index].args.action -ne 'qualification_dispatch' -or
@@ -86,6 +101,9 @@ for ($ordinal = 1; $ordinal -le 20; $ordinal++) {
             timing = [pscustomobject]@{ dispatchTick = $ordinal }
             frames = [pscustomobject]@{ dispatch = $ordinal }
             observation = [pscustomobject]@{
+                physical = [pscustomobject]@{
+                    stable = [pscustomobject]@{ transitionEpoch = 1000 + $ordinal }
+                }
                 diagnostics = [pscustomobject]@{
                     delta = [pscustomobject]@{ vendorFailures = 0; boundsMismatchFallbacks = 0 }
                 }
@@ -98,6 +116,29 @@ for ($ordinal = 1; $ordinal -le 20; $ordinal++) {
             producer = [pscustomobject]@{ buildId = ('a' * 64) }
         }
     })
+    $results.Add([pscustomobject]@{
+        label = "coc-$($ordinal.ToString('D2'))-status"
+        result = [pscustomobject]@{
+            status = [pscustomobject]@{
+                preparation = [pscustomobject]@{
+                    schemaVersion = 1; devBenchOnly = $true; active = $true
+                    sessionId = 7; qpcFrequency = 10000000
+                    retainedEvents = $ordinal; capacity = 512
+                    overwrittenEvents = 0; coalescedEvents = 0
+                    events = @([pscustomobject]@{
+                            sequence = $ordinal; sessionId = 7
+                            requestId = 2000 + $ordinal
+                            transitionEpoch = 1000 + $ordinal
+                            event = 'total_preparation'; outcome = 'ready'
+                            occurrences = 1; reasons = @()
+                            durationQpcTicks = 100; durationMs = 0.01
+                            bytecodeCompilationMs = 0
+                            d3dObjectCreationMs = 0
+                        })
+                }
+            }
+        }
+    })
 }
 $analysis = Get-CocQualificationAnalysis -Scenario ([pscustomobject]@{
         results = @($results)
@@ -108,7 +149,11 @@ if (-not $analysis.available -or $analysis.transitions.Count -ne 20 -or
     $analysis.totals.vendorFailures -ne 0 -or
     -not $analysis.transitions[0].resourcePublication.current -or
     $analysis.resourcePublication.availableSamples -ne 20 -or
-    $analysis.resourcePublication.currentSamples -ne 20) {
+    $analysis.resourcePublication.currentSamples -ne 20 -or
+    $analysis.preparation.availableSamples -ne 20 -or
+    $analysis.preparation.exactTransitionSamples -ne 20 -or
+    $analysis.preparation.eventCount -ne 20 -or
+    -not $analysis.transitions[0].preparation.stages.total_preparation.observed) {
     throw 'Strict milestone analysis did not retain the required timing and failure evidence.'
 }
 

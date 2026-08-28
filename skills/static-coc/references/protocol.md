@@ -75,17 +75,19 @@ Submit exactly one asynchronous DevBench scenario with
 
 1. render-scale stress `reset` and `start` with the exact Build ID;
 2. for each ordinal 1 through 20, append these five server-side steps:
-   1. `status` with the expected Build ID, proving the stress capture is active;
-   2. `qualification_status` with the expected Build ID, proving no foreign
+   1. `qualification_status` with the expected Build ID, proving no foreign
       owner is being overrun;
-   3. `qualification_begin` with that ordinal as a unique nonzero transition
+   2. `qualification_begin` with that ordinal as a unique nonzero transition
       ID, a run-unique owner ID, and the expected Build ID;
-   4. `qualification_dispatch` with the same ownership, exactly one
+   3. `qualification_dispatch` with the same ownership, exactly one
       `cocCellEditorId`, and `startPerformanceTelemetry: true` only for ordinal
       1. Dispatch owns the COC and reads server QPC immediately before it;
-   5. `qualification_wait` with the same ownership, exact destination,
+   4. `qualification_wait` with the same ownership, exact destination,
       `milestone: "strict"`, `timeoutMs: 30000`, expected Build ID, and the
-      fixture only when `prepare_coc` established protocol ownership.
+      fixture only when `prepare_coc` established protocol ownership;
+   5. `status` with the expected Build ID, retaining the completed transition's
+      bounded preparation trace and confirming the stress capture remains
+      active before the next owner is armed.
 
 The scenario therefore contains 2 + (20 x 5) = 102 steps. Do not add fixed
 inter-transition waits, client polling, a separate console COC, a second
@@ -118,6 +120,11 @@ For every strict receipt record:
 - normalized `resourcePublication`: current, current/completed/published
   generations, expected/published width and height, `complete`,
   `deferredSetupAcknowledged`, and D3D device/context matches.
+- normalized, transition-epoch-filtered `status.preparation`, retaining the raw
+  event objects, ring/session/QPC metadata, outcomes/reasons, and all timings
+  for queued requests, admission/early exits, shader-cache deferral, SSS/SSGI
+  prewarm, DLSS/FSR/FSR4 preparation, D3D creation, total preparation,
+  request-to-prepared, and prepared-to-creator.
 
 On timeout also retain `timedOutMilestone`, all milestone masks/reason arrays,
 the last observation, and outstanding cleanup debt. Report presentation,
@@ -125,8 +132,8 @@ cleanup, strict, and cleanup-tail (`strict - presentation`) timing per
 transition, plus median/p95/max for all four. Report retry, stretch, hard
 failure, OOM, device-loss, fidelity, vendor-failure, and bounds-mismatch totals;
 rank cleanup debt by frequency and accumulated tail.
-Do not infer a missing resource-publication field from another telemetry value;
-preserve it as missing evidence.
+Do not infer a missing resource-publication or preparation field from another
+telemetry value; preserve it as missing evidence.
 
 Strict frames remain the release result: Dragonsreach <= 24, Windhelm <= 20,
 overall <= 22, worst <= 24, retries <= 9, session stretch observations <= 428,

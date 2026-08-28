@@ -23,3 +23,5 @@ that run from Breezehome only after the cause is corrected.
 CPU performance is primary and GPU performance is secondary. Preserve raw
 evidence and report stretch duration in consecutive frames; convert it to time
 only when the capture exposes a defensible measured frame interval.
+Also preserve the render-scale stress-stop preparation trace and all stage
+timings; do not add polling or infer missing producer measurements.

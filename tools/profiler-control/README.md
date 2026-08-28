@@ -11,6 +11,13 @@ expected/published dimensions, `complete`, deferred-setup acknowledgement, and
 D3D device/context matches. An unavailable snapshot is explicit evidence and
 does not invalidate the CPU/GPU capture.
 
+Those same existing status calls retain bounded render-scale preparation
+telemetry: raw events and ring/session/QPC metadata plus summaries for queued
+requests, admission/early exits, shader-cache deferral, SSS/SSGI prewarming,
+DLSS/FSR/FSR4 preparation, D3D object creation, total preparation,
+request-to-prepared latency, and prepared-to-creator latency. The collector
+does not poll or alter the render-scale profile to obtain this evidence.
+
 ```powershell
 .\Measure-CSXProfiler.ps1 `
   -Label 'breezehome-enabled' `

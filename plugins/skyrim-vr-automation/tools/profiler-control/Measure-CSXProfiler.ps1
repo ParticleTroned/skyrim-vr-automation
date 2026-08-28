@@ -117,6 +117,7 @@ function Get-ResourcePublicationSnapshot {
             phase = $Phase
             timestampUtc = [DateTime]::UtcNow.ToString('o')
             telemetry = Get-DevBenchResourcePublicationTelemetry -Response $response
+            preparation = Get-DevBenchRenderScalePreparationTelemetry -Response $response
             error = $null
         }
     }
@@ -125,6 +126,7 @@ function Get-ResourcePublicationSnapshot {
             phase = $Phase
             timestampUtc = [DateTime]::UtcNow.ToString('o')
             telemetry = Get-DevBenchResourcePublicationTelemetry -Response $null
+            preparation = Get-DevBenchRenderScalePreparationTelemetry -Response $null
             error = $_.Exception.Message
         }
     }
@@ -210,6 +212,10 @@ $summary = [pscustomobject][ordered]@{
     resourcePublication = [pscustomobject][ordered]@{
         before = $resourcePublicationBefore
         after = $resourcePublicationAfter
+    }
+    preparation = [pscustomobject][ordered]@{
+        before = $resourcePublicationBefore.preparation
+        after = $resourcePublicationAfter.preparation
     }
     resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedTotalMs }))
     resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedCpuTotalMs }))

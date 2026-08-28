@@ -306,9 +306,8 @@ Use the one async server scenario generated and submitted by
 `coc-stability-control` for setup and the complete transition sequence:
 
 1. render-scale stress `reset` then `start`; retain its `sessionId`;
-2. before every transition, call `status` and `qualification_status` with the
-   exact expected Build ID. The server receipts prove the intended producer and
-   that the stress capture remains active before a new owner is armed;
+2. before every transition, call `qualification_status` with the exact expected
+   Build ID, proving no foreign owner is being overrun;
 3. call `qualification_begin` with a unique nonzero transition ID and run owner
    ID;
 4. call `qualification_dispatch` with the exact `cocCellEditorId` and, for
@@ -322,8 +321,12 @@ Use the one async server scenario generated and submitted by
    the coherent Stabilizer-selected profile. It immediately follows dispatch;
    30 seconds is a maximum from the dispatch QPC origin, and the waiter returns
    as soon as strict is satisfied;
-6. repeat server preflight, begin, adjacent dispatch plus one COC, and one
-   strict waiter for transitions
+6. immediately call render-scale `status` with the exact Build ID. This is the
+   block's existing status step moved after the waiter, where it retains the
+   completed transition's bounded `status.preparation` trace. It does not add a
+   step, poll, or delay the COC dispatch;
+7. repeat owner preflight, begin, adjacent dispatch plus one COC, one strict
+   waiter, and one post-wait status for transitions
    2 through 20, omitting `startPerformanceTelemetry` after transition 1.
 
 Do not issue separate `cpu_performance_reset`, `cpu_performance_start`,
@@ -346,9 +349,9 @@ and preserve the complete receipt. A rejected COC, ownership loss, vanished
 waiter, or main-thread timeout is a control-plane failure; dispatching further
 COCs after it cannot add valid evidence.
 
-Advance immediately after each coherent waiter receipt. Do not add fixed
-inter-transition waits, menu checks, client polling, or per-transition client
-round trips.
+After each coherent waiter receipt, take its one server-side status receipt and
+advance immediately. Do not add fixed inter-transition waits, menu checks,
+client polling, or per-transition client round trips.
 
 `dimensionsMatch` is producer-owned CSX evidence. Automation must retain the
 reported value and dimensions without calculating, overriding, or repairing
@@ -395,6 +398,17 @@ For the baseline and every transition, retain the normalized
 published generations, expected/published width and height, `complete`,
 `deferredSetupAcknowledged`, `deviceMatches`, and `contextMatches`. Missing
 fields are evidence, not values to infer or reconstruct.
+
+For every transition, also retain its transition-epoch-filtered
+`status.preparation` record and the original event objects. Preserve schema and
+session identity, QPC frequency, capacity, retained/overwritten/coalesced event
+counts, and all event identity, profile, dimension, outcome/reason, frame, QPC,
+bytecode-compilation, and D3D-object-creation fields. Summarize without dropping
+raw records for `request_queued`, admission checks, early exits, shader-cache
+busy deferrals, SSS and SSGI prewarming, DLSS/FSR/FSR4 preparation, D3D object
+creation, total preparation, request-to-prepared latency, and
+prepared-to-creator latency. Missing stages remain observed absences or missing
+evidence; do not synthesize durations.
 
 ## Fidelity interpretation
 

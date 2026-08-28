@@ -769,7 +769,11 @@ function Get-CSXWilsonInterval {
 }
 
 function Get-CSXQualificationWaitRecords {
-    param([Parameter(Mandatory)]$ScenarioResult, [Parameter(Mandatory)][string]$LabelPrefix)
+    param(
+        [Parameter(Mandatory)]$ScenarioResult,
+        [Parameter(Mandatory)][string]$LabelPrefix,
+        $PreparationResponse
+    )
     $records = [Collections.Generic.List[object]]::new()
     foreach ($step in @($ScenarioResult.results)) {
         $label = [string](Get-CSXPropertyValue $step 'label')
@@ -777,12 +781,29 @@ function Get-CSXQualificationWaitRecords {
         $payload = Get-CSXPropertyValue $step 'result'
         $satisfied = [bool](Get-CSXPropertyValue $payload 'satisfied' $false)
         $elapsed = Get-CSXPathValue $payload 'timing.elapsedMs' (Get-CSXPropertyValue $payload 'elapsedMs')
+        $transitionEpoch = Get-CSXPathValue $payload `
+            'observation.physical.stable.transitionEpoch'
+        if ($null -eq $transitionEpoch) {
+            $transitionEpoch = Get-CSXPathValue $payload `
+                'observation.upscalingSnapshot.stable.transitionEpoch'
+        }
+        $preparation = if ($null -ne $PreparationResponse -and
+            $null -ne $transitionEpoch) {
+            Get-DevBenchRenderScalePreparationTelemetry `
+                -Response $PreparationResponse -TransitionEpoch $transitionEpoch
+        } elseif ($null -ne $PreparationResponse) {
+            Get-DevBenchRenderScalePreparationTelemetry `
+                -Response $PreparationResponse
+        } else {
+            Get-DevBenchRenderScalePreparationTelemetry -Response $null
+        }
         $records.Add([pscustomobject][ordered]@{
             ordinal = [int]$Matches.ordinal; transitionId = [uint64](Get-CSXPropertyValue $payload 'transitionId')
             satisfied = $satisfied; elapsedMs = $(if ($null -ne $elapsed) { [double]$elapsed } else { $null })
             target = Get-CSXPropertyValue $payload 'target'; foveation = Get-CSXPropertyValue $payload 'foveation'
             diagnostics = Get-CSXPropertyValue $payload 'diagnostics'; raw = $payload
             resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $payload
+            preparation = $preparation
         })
     }
     return @($records | Sort-Object ordinal)
@@ -4634,6 +4655,10 @@ function Update-CSXQualificationReport {
     $cocPublication = Get-CSXPathValue $raw 'assays.coc.resourcePublication'
     $menuPublication = Get-CSXPathValue $raw 'assays.menu.resourcePublication'
     $publicationLine = "- Resource publication: COC current $((Get-CSXPropertyValue $cocPublication 'currentSamples' 0))/$((Get-CSXPropertyValue $cocPublication 'availableSamples' 0)); menu current $((Get-CSXPropertyValue $menuPublication 'currentSamples' 0))/$((Get-CSXPropertyValue $menuPublication 'availableSamples' 0)). Per-transition generation, dimension, completion, deferred-setup, and D3D identity fields are retained in transitions.json/CSV."
+    $cocPreparation = Get-CSXPathValue $raw 'assays.coc.preparation'
+    $menuPreparation = Get-CSXPathValue $raw 'assays.menu.preparation'
+    $visualPreparation = Get-CSXPathValue $raw 'assays.visual.preparation'
+    $preparationLine = "- Preparation telemetry: COC $((Get-CSXPropertyValue $cocPreparation 'eventCount' 0)) events; menu $((Get-CSXPropertyValue $menuPreparation 'eventCount' 0)) events; visual $((Get-CSXPropertyValue $visualPreparation 'eventCount' 0)) events. Raw transition-filtered stage records are retained in transitions.json and preparation-events.csv; the visual session trace is retained with its assay."
     $speedLine = if ($prMode) {
         $cocMedianDelta = Get-CSXPathValue $cocDelta 'median.percent' 'unavailable'
         $cocP95Delta = Get-CSXPathValue $cocDelta 'p95.percent' 'unavailable'
@@ -4659,6 +4684,7 @@ function Update-CSXQualificationReport {
         "- COC: $cocCompleted/20 stable; wall $((Get-CSXPathValue $raw 'assays.coc.wallClockMs')) ms; total $((Get-CSXPropertyValue $cocStats 'total')) ms; min $((Get-CSXPropertyValue $cocStats 'min')) ms; median $cocMedian ms; mean $((Get-CSXPropertyValue $cocStats 'mean')) ms; SD $((Get-CSXPropertyValue $cocStats 'sampleStandardDeviation')) ms; CV $((Get-CSXPropertyValue $cocStats 'coefficientOfVariation')); p95 $cocP95 ms; max $cocMax ms; rate $((Get-CSXPropertyValue $cocStats 'transitionsPerMinute'))/min.",
         "- COC failures: $cocFailures events in $((Get-CSXPathValue $raw 'assays.coc.failedTransitions' 0)) transitions; Wilson 95% CI [$cocWilsonLower, $cocWilsonUpper].",
         $publicationLine,
+        $preparationLine,
         "- Presentation stretch: mean $stretchMeanFrames frames / $stretchMeanMs ms; max $stretchMaxFrames frames / $stretchMaxMs ms; incomplete stereo at stop $((Get-CSXPathValue $raw 'assays.coc.stretch.incompleteStereoCycleAtStop' 'unknown')).",
         "- CS menu: $menuCompleted/25 stable; wall $((Get-CSXPathValue $raw 'assays.menu.wallClockMs')) ms; total $((Get-CSXPropertyValue $menuStats 'total')) ms; min $((Get-CSXPropertyValue $menuStats 'min')) ms; median $menuMedian ms; mean $((Get-CSXPropertyValue $menuStats 'mean')) ms; SD $((Get-CSXPropertyValue $menuStats 'sampleStandardDeviation')) ms; CV $((Get-CSXPropertyValue $menuStats 'coefficientOfVariation')); p95 $menuP95 ms; max $((Get-CSXPropertyValue $menuStats 'max')) ms; rate $((Get-CSXPropertyValue $menuStats 'transitionsPerMinute'))/min.",
         "- DLSS trace: $traceOutcome; $($traceGroups.Count) scoped sessions; $traceSetConstants constants calls; $traceEvaluates evaluate calls; $traceDropped dropped records.",

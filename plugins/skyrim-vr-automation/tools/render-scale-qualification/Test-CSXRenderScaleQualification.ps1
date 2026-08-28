@@ -62,6 +62,9 @@ $publicationRecords = Get-CSXQualificationWaitRecords -ScenarioResult ([pscustom
                 result = [pscustomobject]@{
                     transitionId = 1; satisfied = $true
                     observation = [pscustomobject]@{
+                        physical = [pscustomobject]@{
+                            stable = [pscustomobject]@{ transitionEpoch = 77 }
+                        }
                         resourcePublication = [pscustomobject]@{
                             current = $true; currentGeneration = 31; completedGeneration = 31; publishedGeneration = 31
                             expectedWidth = 1644; expectedHeight = 1826; publishedWidth = 1644; publishedHeight = 1826
@@ -70,12 +73,31 @@ $publicationRecords = Get-CSXQualificationWaitRecords -ScenarioResult ([pscustom
                     }
                 }
             })
-    }) -LabelPrefix 'coc'
+    }) -LabelPrefix 'coc' -PreparationResponse ([pscustomobject]@{
+        status = [pscustomobject]@{
+            preparation = [pscustomobject]@{
+                schemaVersion = 1; devBenchOnly = $true; active = $false
+                sessionId = 12; qpcFrequency = 10000000
+                retainedEvents = 1; capacity = 512
+                overwrittenEvents = 0; coalescedEvents = 0
+                events = @([pscustomobject]@{
+                        sequence = 1; sessionId = 12; requestId = 80
+                        transitionEpoch = 77; event = 'request_to_prepared'
+                        outcome = 'ready'; occurrences = 1; reasons = @()
+                        durationQpcTicks = 500; durationMs = 0.05
+                        bytecodeCompilationMs = 0; d3dObjectCreationMs = 0
+                    })
+            }
+        }
+    })
 Assert-Test ($publicationRecords.Count -eq 1 -and $publicationRecords[0].resourcePublication.available -and
     $publicationRecords[0].resourcePublication.currentGeneration -eq 31 -and
     $publicationRecords[0].resourcePublication.publishedWidth -eq 1644 -and
     $publicationRecords[0].resourcePublication.complete -and
-    $publicationRecords[0].resourcePublication.contextMatches) 'Qualification wait extraction preserves resource-publication telemetry.'
+    $publicationRecords[0].resourcePublication.contextMatches -and
+    $publicationRecords[0].preparation.filterApplied -and
+    $publicationRecords[0].preparation.eventCount -eq 1 -and
+    $publicationRecords[0].preparation.stages.request_to_prepared.durationMs.total -eq 0.05) 'Qualification wait extraction preserves publication and preparation telemetry.'
 $publicationSummary = Get-CSXResourcePublicationSummary -Records $publicationRecords
 Assert-Test ($publicationSummary.availableSamples -eq 1 -and $publicationSummary.currentSamples -eq 1 -and
     $publicationSummary.latest.deferredSetupAcknowledged) 'Qualification telemetry summary retains publication completeness.'

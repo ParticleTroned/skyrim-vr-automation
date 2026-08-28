@@ -176,20 +176,55 @@ function Get-DevBenchNamedValue {
     return ([string]$Value).ToLowerInvariant()
 }
 
+function Get-DevBenchTelemetryMember {
+    param($Value, [Parameter(Mandatory)][string]$Name)
+
+    if ($null -eq $Value -or $Value -is [ValueType] -or $Value -is [string]) {
+        return $null
+    }
+    if ($Value -is [Collections.IDictionary]) {
+        return $(if ($Value.Contains($Name)) { $Value[$Name] } else { $null })
+    }
+    $property = $Value.PSObject.Properties[$Name]
+    return $(if ($property) { $property.Value } else { $null })
+}
+
+function Find-DevBenchTelemetryNode {
+    param(
+        $Response,
+        [Parameter(Mandatory)][string]$Name,
+        [ValidateRange(0, 8)][int]$MaxDepth = 3
+    )
+
+    $queue = [Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue([pscustomobject]@{ value = $Response; path = '$'; depth = 0 })
+    while ($queue.Count -gt 0) {
+        $entry = $queue.Dequeue()
+        $candidate = Get-DevBenchTelemetryMember $entry.value $Name
+        if ($null -ne $candidate) {
+            return [pscustomobject]@{
+                value = $candidate
+                path = "$($entry.path).$Name"
+            }
+        }
+        if ([int]$entry.depth -ge $MaxDepth) { continue }
+        foreach ($childName in @('value', 'result', 'status', 'observation')) {
+            $child = Get-DevBenchTelemetryMember $entry.value $childName
+            if ($null -ne $child) {
+                $queue.Enqueue([pscustomobject]@{
+                        value = $child
+                        path = "$($entry.path).$childName"
+                        depth = [int]$entry.depth + 1
+                    })
+            }
+        }
+    }
+    return $null
+}
+
 function Get-DevBenchResourcePublicationTelemetry {
     [CmdletBinding()]
     param($Response)
-
-    function Get-PublicationMember($Value, [string]$Name) {
-        if ($null -eq $Value -or $Value -is [ValueType] -or $Value -is [string]) {
-            return $null
-        }
-        if ($Value -is [Collections.IDictionary]) {
-            return $(if ($Value.Contains($Name)) { $Value[$Name] } else { $null })
-        }
-        $property = $Value.PSObject.Properties[$Name]
-        return $(if ($property) { $property.Value } else { $null })
-    }
 
     function New-PublicationTelemetry($Publication, [string]$SourcePath) {
         $fields = @(
@@ -201,7 +236,7 @@ function Get-DevBenchResourcePublicationTelemetry {
         $missing = [Collections.Generic.List[string]]::new()
         $values = [ordered]@{}
         foreach ($field in $fields) {
-            $values[$field] = Get-PublicationMember $Publication $field
+            $values[$field] = Get-DevBenchTelemetryMember $Publication $field
             if ($null -eq $values[$field]) { $missing.Add($field) }
         }
         return [pscustomobject][ordered]@{
@@ -221,35 +256,173 @@ function Get-DevBenchResourcePublicationTelemetry {
             deferredSetupAcknowledged = $values.deferredSetupAcknowledged
             deviceMatches = $values.deviceMatches
             contextMatches = $values.contextMatches
-            evaluated = Get-PublicationMember $Publication 'evaluated'
-            present = Get-PublicationMember $Publication 'present'
-            generationMatchesCurrent = Get-PublicationMember $Publication 'generationMatchesCurrent'
-            generationMatchesCompleted = Get-PublicationMember $Publication 'generationMatchesCompleted'
-            dimensionsMatch = Get-PublicationMember $Publication 'dimensionsMatch'
+            evaluated = Get-DevBenchTelemetryMember $Publication 'evaluated'
+            present = Get-DevBenchTelemetryMember $Publication 'present'
+            generationMatchesCurrent = Get-DevBenchTelemetryMember $Publication 'generationMatchesCurrent'
+            generationMatchesCompleted = Get-DevBenchTelemetryMember $Publication 'generationMatchesCompleted'
+            dimensionsMatch = Get-DevBenchTelemetryMember $Publication 'dimensionsMatch'
         }
     }
 
-    $queue = [Collections.Generic.Queue[object]]::new()
-    $queue.Enqueue([pscustomobject]@{ value = $Response; path = '$'; depth = 0 })
-    while ($queue.Count -gt 0) {
-        $entry = $queue.Dequeue()
-        $publication = Get-PublicationMember $entry.value 'resourcePublication'
-        if ($null -ne $publication) {
-            return New-PublicationTelemetry $publication "$($entry.path).resourcePublication"
+    $node = Find-DevBenchTelemetryNode -Response $Response `
+        -Name 'resourcePublication'
+    return $(if ($node) {
+            New-PublicationTelemetry $node.value $node.path
+        } else {
+            New-PublicationTelemetry $null $null
+        })
+}
+
+function Get-DevBenchPreparationMetricSummary {
+    param([object[]]$Values)
+
+    $numbers = [Collections.Generic.List[double]]::new()
+    $invalidCount = 0
+    foreach ($value in @($Values)) {
+        if ($null -eq $value) { continue }
+        $number = 0.0
+        if (-not [double]::TryParse(
+                [string]$value,
+                [Globalization.NumberStyles]::Float,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$number
+            ) -or
+            [double]::IsNaN($number) -or [double]::IsInfinity($number)) {
+            $invalidCount++
+            continue
         }
-        if ([int]$entry.depth -ge 3) { continue }
-        foreach ($name in @('value', 'result', 'status', 'observation')) {
-            $child = Get-PublicationMember $entry.value $name
-            if ($null -ne $child) {
-                $queue.Enqueue([pscustomobject]@{
-                        value = $child
-                        path = "$($entry.path).$name"
-                        depth = [int]$entry.depth + 1
-                    })
-            }
+        $numbers.Add($number)
+    }
+    if ($numbers.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            count = 0; invalidCount = $invalidCount
+            total = $null; mean = $null; min = $null; max = $null
         }
     }
-    return New-PublicationTelemetry $null $null
+    $measure = $numbers | Measure-Object -Sum -Average -Minimum -Maximum
+    return [pscustomobject][ordered]@{
+        count = $numbers.Count
+        invalidCount = $invalidCount
+        total = [Math]::Round([double]$measure.Sum, 6)
+        mean = [Math]::Round([double]$measure.Average, 6)
+        min = [Math]::Round([double]$measure.Minimum, 6)
+        max = [Math]::Round([double]$measure.Maximum, 6)
+    }
+}
+
+function Get-DevBenchRenderScalePreparationTelemetry {
+    [CmdletBinding()]
+    param(
+        $Response,
+        $TransitionEpoch
+    )
+
+    $eventNames = @(
+        'request_queued', 'admission_check', 'early_exit',
+        'shader_cache_busy_wait', 'sss_raymarch_prewarm', 'ssgi_prewarm',
+        'dlss_preparation', 'fsr_preparation', 'fsr4_preparation',
+        'd3d_object_creation', 'total_preparation', 'request_to_prepared',
+        'prepared_to_creator'
+    )
+    $topLevelFields = @(
+        'schemaVersion', 'devBenchOnly', 'active', 'sessionId',
+        'qpcFrequency', 'retainedEvents', 'capacity', 'overwrittenEvents',
+        'coalescedEvents', 'events'
+    )
+    $node = Find-DevBenchTelemetryNode -Response $Response -Name 'preparation'
+    $preparation = if ($node) { $node.value } else { $null }
+    $missing = [Collections.Generic.List[string]]::new()
+    foreach ($field in $topLevelFields) {
+        if ($null -eq (Get-DevBenchTelemetryMember $preparation $field)) {
+            $missing.Add($field)
+        }
+    }
+
+    $allEventsValue = Get-DevBenchTelemetryMember $preparation 'events'
+    $allEvents = if ($null -eq $allEventsValue) { @() } else { @($allEventsValue) }
+    $filterApplied = $PSBoundParameters.ContainsKey('TransitionEpoch') -and
+        $null -ne $TransitionEpoch
+    $events = if ($filterApplied) {
+        @($allEvents | Where-Object {
+                [string](Get-DevBenchTelemetryMember $_ 'transitionEpoch') -ceq
+                    [string]$TransitionEpoch
+            })
+    } else {
+        @($allEvents)
+    }
+
+    $stages = [ordered]@{}
+    foreach ($eventName in $eventNames) {
+        $records = @($events | Where-Object {
+                [string](Get-DevBenchTelemetryMember $_ 'event') -ceq $eventName
+            })
+        $occurrences = @($records | ForEach-Object {
+                Get-DevBenchTelemetryMember $_ 'occurrences'
+            })
+        $outcomes = @($records | ForEach-Object {
+                Get-DevBenchTelemetryMember $_ 'outcome'
+            } | Where-Object { $null -ne $_ } | Select-Object -Unique)
+        $reasons = @($records | ForEach-Object {
+                @(Get-DevBenchTelemetryMember $_ 'reasons')
+            } | Where-Object { $null -ne $_ } | Select-Object -Unique)
+        $occurrenceSummary = Get-DevBenchPreparationMetricSummary $occurrences
+        $stages[$eventName] = [pscustomobject][ordered]@{
+            observed = $records.Count -gt 0
+            recordCount = $records.Count
+            occurrenceCount = $(if ($null -eq $preparation) {
+                    $null
+                } elseif ($records.Count -eq 0) {
+                    0
+                } elseif ($occurrenceSummary.invalidCount -eq 0) {
+                    $occurrenceSummary.total
+                } else { $null })
+            occurrenceInvalidCount = $occurrenceSummary.invalidCount
+            outcomes = $outcomes
+            reasons = $reasons
+            durationMs = Get-DevBenchPreparationMetricSummary @(
+                $records | ForEach-Object {
+                    Get-DevBenchTelemetryMember $_ 'durationMs'
+                }
+            )
+            durationQpcTicks = Get-DevBenchPreparationMetricSummary @(
+                $records | ForEach-Object {
+                    Get-DevBenchTelemetryMember $_ 'durationQpcTicks'
+                }
+            )
+            bytecodeCompilationMs = Get-DevBenchPreparationMetricSummary @(
+                $records | ForEach-Object {
+                    Get-DevBenchTelemetryMember $_ 'bytecodeCompilationMs'
+                }
+            )
+            d3dObjectCreationMs = Get-DevBenchPreparationMetricSummary @(
+                $records | ForEach-Object {
+                    Get-DevBenchTelemetryMember $_ 'd3dObjectCreationMs'
+                }
+            )
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        schema = 'csx-render-scale-preparation-telemetry-v1'
+        available = $null -ne $preparation
+        sourcePath = $(if ($node) { $node.path } else { $null })
+        missingFields = @($missing)
+        schemaVersion = Get-DevBenchTelemetryMember $preparation 'schemaVersion'
+        devBenchOnly = Get-DevBenchTelemetryMember $preparation 'devBenchOnly'
+        active = Get-DevBenchTelemetryMember $preparation 'active'
+        sessionId = Get-DevBenchTelemetryMember $preparation 'sessionId'
+        qpcFrequency = Get-DevBenchTelemetryMember $preparation 'qpcFrequency'
+        retainedEvents = Get-DevBenchTelemetryMember $preparation 'retainedEvents'
+        capacity = Get-DevBenchTelemetryMember $preparation 'capacity'
+        overwrittenEvents = Get-DevBenchTelemetryMember $preparation 'overwrittenEvents'
+        coalescedEvents = Get-DevBenchTelemetryMember $preparation 'coalescedEvents'
+        transitionEpochFilter = $(if ($filterApplied) { $TransitionEpoch } else { $null })
+        filterApplied = $filterApplied
+        allEventCount = $allEvents.Count
+        eventCount = $events.Count
+        events = $events
+        stages = [pscustomobject]$stages
+    }
 }
 
 function Test-DevBenchUpscalingProfilesEqual {
@@ -458,4 +631,4 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations

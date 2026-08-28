@@ -117,6 +117,10 @@ After the scenario completes, use `coc-stability-control status` for the
 per-transition milestone table and its presentation, cleanup, strict, and
 cleanup-tail aggregates. Strict frames remain the canonical RC166 comparison;
 presentation and cleanup-tail timings are diagnostic evidence only.
+The same analysis must retain each post-wait `status.preparation` trace,
+including admission/early-exit, shader-cache, prewarm, DLSS/FSR/FSR4, D3D,
+total, request-to-prepared, and prepared-to-creator timings. Do not add a
+second waiter or client poll to collect them.
 
 After transition 20, attempt guarded GPU, CPU, stress, and ProcDump cleanup only
 while their control planes are responsive. On CTD or hang, make no further

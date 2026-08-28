@@ -95,6 +95,8 @@ foreach ($requiredSkillText in @(
     'post-dispatch maximum',
     'waiter returns as soon',
     'cleanup-tail aggregates',
+    '`status.preparation` trace',
+    'prepared-to-creator timings',
     'continueOnError: false',
     'actual failed tool step',
     'make no further main-thread calls'
@@ -159,6 +161,10 @@ foreach ($requiredProtocolText in @(
     'maximum from the dispatch QPC origin',
     '`dimensionsMatch` is producer-owned CSX evidence',
     'without calculating, overriding, or repairing',
+    'transition-epoch-filtered',
+    'shader-cache',
+    'request-to-prepared latency',
+    'prepared-to-creator latency',
     '## Milestone receipt analysis',
     'presentationStable',
     'cleanupDrained',
@@ -263,6 +269,10 @@ Assert-Protocol ($runnerModule.Contains(
     'Get-CocQualificationAnalysis',
     [StringComparison]::Ordinal
 )) 'The controller must provide milestone analysis from the server transcript.'
+Assert-Protocol ($runnerModule.Contains(
+    'Get-DevBenchRenderScalePreparationTelemetry',
+    [StringComparison]::Ordinal
+)) 'The controller must normalize the bounded preparation trace.'
 Assert-Protocol (-not $runnerModule.Contains(
     "method = 'tools/list'",
     [StringComparison]::Ordinal

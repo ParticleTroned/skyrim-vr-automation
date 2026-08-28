@@ -81,6 +81,11 @@ For each run preserve and report:
 - resource-publication current state; current, completed, and published
   generations; expected and published dimensions; `complete`, deferred-setup
   acknowledgement, and D3D device/context matches;
+- the stress-stop `status.preparation` trace with its raw bounded events,
+  session/ring/QPC metadata, and stage summaries for queued requests,
+  admission/early exits, shader-cache deferral, SSS/SSGI prewarm,
+  DLSS/FSR/FSR4 preparation, D3D creation, total preparation,
+  request-to-prepared, and prepared-to-creator;
 - fidelity mismatch count;
 - duplicate-constants and coalesced-duplicate counts;
 - session vendor-failure stretched-eye observations;

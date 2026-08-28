@@ -1384,6 +1384,7 @@ function Convert-ToTransitionRows($Records, $Scenario, [ValidateSet('coc', 'menu
         $foveationTarget = Get-CSXPropertyValue $wait 'foveationTarget'
         $qpcTiming = Get-CSXPropertyValue $wait 'timing'
         $resourcePublication = $record.resourcePublication
+        $preparation = $record.preparation
         if ($null -eq $target -or $null -eq $expectedCell -or $null -eq $foveationTarget -or $null -eq $qpcTiming) {
             throw "Scenario wait receipt omitted transition proof at $Assay ordinal $ordinal."
         }
@@ -1406,6 +1407,11 @@ function Convert-ToTransitionRows($Records, $Scenario, [ValidateSet('coc', 'menu
             elapsedFrames = [uint64](Get-CSXPropertyValue $qpcTiming 'elapsedFrames' 0)
             satisfied = [bool](Get-CSXPropertyValue $wait 'satisfied' $false)
             resourcePublication = $resourcePublication
+            preparation = $preparation
+            preparationTransitionEpoch = Get-CSXPropertyValue `
+                $preparation 'transitionEpochFilter'
+            preparationEventCount = Get-CSXPropertyValue `
+                $preparation 'eventCount'
             publicationCurrent = Get-CSXPropertyValue $resourcePublication 'current'
             publicationCurrentGeneration = Get-CSXPropertyValue $resourcePublication 'currentGeneration'
             publicationCompletedGeneration = Get-CSXPropertyValue $resourcePublication 'completedGeneration'
@@ -1433,6 +1439,55 @@ function Write-TransitionEvidence($CocRows, $MenuRows) {
         publicationComplete, publicationDeferredSetupAcknowledged, publicationDeviceMatches, publicationContextMatches |
         ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine) + [Environment]::NewLine
     Write-CSXTextFile -Path (Join-Path $script:evidenceRoot 'transitions.csv') -Value $csv | Out-Null
+    $preparationRows = [Collections.Generic.List[object]]::new()
+    foreach ($row in $all) {
+        foreach ($event in @(Get-CSXPropertyValue $row.preparation 'events' @())) {
+            $preparationRows.Add([pscustomobject][ordered]@{
+                assay = $row.assay; ordinal = $row.ordinal
+                transitionId = $row.transitionId
+                sequence = Get-CSXPropertyValue $event 'sequence'
+                sessionId = Get-CSXPropertyValue $event 'sessionId'
+                requestId = Get-CSXPropertyValue $event 'requestId'
+                transitionEpoch = Get-CSXPropertyValue $event 'transitionEpoch'
+                optionsGeneration = Get-CSXPropertyValue $event 'optionsGeneration'
+                shaderDefinesGeneration = Get-CSXPropertyValue $event 'shaderDefinesGeneration'
+                deviceIdentity = Get-CSXPropertyValue $event 'deviceIdentity'
+                frame = Get-CSXPropertyValue $event 'frame'
+                lastFrame = Get-CSXPropertyValue $event 'lastFrame'
+                occurrences = Get-CSXPropertyValue $event 'occurrences'
+                method = Get-CSXPropertyValue $event 'method'
+                qualityMode = Get-CSXPropertyValue $event 'qualityMode'
+                dlssPreset = Get-CSXPropertyValue $event 'dlssPreset'
+                fsr4RuntimeEnabled = Get-CSXPropertyValue $event 'fsr4RuntimeEnabled'
+                renderEyeWidth = Get-CSXPropertyValue $event 'renderEyeWidth'
+                renderEyeHeight = Get-CSXPropertyValue $event 'renderEyeHeight'
+                displayEyeWidth = Get-CSXPropertyValue $event 'displayEyeWidth'
+                displayEyeHeight = Get-CSXPropertyValue $event 'displayEyeHeight'
+                event = Get-CSXPropertyValue $event 'event'
+                outcome = Get-CSXPropertyValue $event 'outcome'
+                reasonMask = Get-CSXPropertyValue $event 'reasonMask'
+                reasons = @(Get-CSXPropertyValue $event 'reasons') -join '|'
+                beginQpc = Get-CSXPropertyValue $event 'beginQpc'
+                endQpc = Get-CSXPropertyValue $event 'endQpc'
+                durationQpcTicks = Get-CSXPropertyValue $event 'durationQpcTicks'
+                durationMs = Get-CSXPropertyValue $event 'durationMs'
+                bytecodeCompilationQpcTicks = Get-CSXPropertyValue $event `
+                    'bytecodeCompilationQpcTicks'
+                bytecodeCompilationMs = Get-CSXPropertyValue $event `
+                    'bytecodeCompilationMs'
+                d3dObjectCreationQpcTicks = Get-CSXPropertyValue $event `
+                    'd3dObjectCreationQpcTicks'
+                d3dObjectCreationMs = Get-CSXPropertyValue $event `
+                    'd3dObjectCreationMs'
+            })
+        }
+    }
+    $preparationCsv = if ($preparationRows.Count -gt 0) {
+        (($preparationRows | ConvertTo-Csv -NoTypeInformation) -join
+            [Environment]::NewLine) + [Environment]::NewLine
+    } else { '' }
+    Write-CSXTextFile -Path (Join-Path $script:evidenceRoot `
+        'preparation-events.csv') -Value $preparationCsv | Out-Null
     foreach ($entry in @(
         [pscustomobject]@{ name = 'coc'; rows = @($CocRows) },
         [pscustomobject]@{ name = 'menu'; rows = @($MenuRows) }
@@ -1444,6 +1499,16 @@ function Write-TransitionEvidence($CocRows, $MenuRows) {
         }) | Out-Null
         $assayCsv = (($entry.rows | Select-Object assay, ordinal, transitionId, method, qualityMode, renderScaleMode, elapsedMs, elapsedFrames, satisfied | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine) + [Environment]::NewLine
         Write-CSXTextFile -Path (Join-Path $script:evidenceRoot "$($entry.name)\transitions.csv") -Value $assayCsv | Out-Null
+        $assayPreparationRows = @($preparationRows | Where-Object {
+                $_.assay -eq $entry.name
+            })
+        $assayPreparationCsv = if ($assayPreparationRows.Count -gt 0) {
+            (($assayPreparationRows | ConvertTo-Csv -NoTypeInformation) -join
+                [Environment]::NewLine) + [Environment]::NewLine
+        } else { '' }
+        Write-CSXTextFile -Path (Join-Path $script:evidenceRoot `
+            "$($entry.name)\preparation-events.csv") `
+            -Value $assayPreparationCsv | Out-Null
     }
 }
 
@@ -1667,7 +1732,9 @@ try {
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\diagnostics.json') -Value $cocDiagnostics | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\stress-record.json') -Value $cocDiagnostics.stress.record | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'coc\cpu-record.json') -Value $cocDiagnostics.cpu.cpuPerformance | Out-Null
-    $cocRecords = @(Get-CSXQualificationWaitRecords -ScenarioResult $cocScenario -LabelPrefix 'coc')
+    $cocRecords = @(Get-CSXQualificationWaitRecords `
+        -ScenarioResult $cocScenario -LabelPrefix 'coc' `
+        -PreparationResponse $cocDiagnostics.stress)
     $cocFailureCount = Get-RenderScaleFailureEventCount $cocRecords
     $cocDiagnosticFailureLowerBound = Get-DiagnosticFailureLowerBound $cocRecords
     $cocFailureBreakdown = Get-DiagnosticFailureBreakdown $cocRecords
@@ -1691,8 +1758,10 @@ try {
         }
         failureCount = $cocFailureCount; diagnosticFailureLowerBound = $cocDiagnosticFailureLowerBound; failureBreakdown = $cocFailureBreakdown; failedTransitions = $cocFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $cocFailedTransitions -Trials 20
         stretch = $stretch; stressTransitions = $cocStressTransitions; resourcePublication = Get-CSXResourcePublicationSummary -Records $cocRecords
+        preparation = Get-DevBenchRenderScalePreparationTelemetry `
+            -Response $cocDiagnostics.stress
         validation = [pscustomobject][ordered]@{ scenarioOk = [bool]$cocScenario.ok -and -not [bool]$cocScenario.aborted; stretchError = $stretchError; stressRecordError = $cocStressError }
-        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'coc/scenario.request.json'; scenarioResult = 'coc/scenario.result.json'; diagnostics = 'coc/diagnostics.json'; stressRecord = 'coc/stress-record.json'; cpuRecord = 'coc/cpu-record.json' }
+        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'coc/scenario.request.json'; scenarioResult = 'coc/scenario.result.json'; diagnostics = 'coc/diagnostics.json'; stressRecord = 'coc/stress-record.json'; cpuRecord = 'coc/cpu-record.json'; preparationEvents = 'coc/preparation-events.csv' }
     }
     Write-TransitionEvidence -CocRows $cocRows -MenuRows @()
     if (-not [bool]$cocScenario.ok -or [bool]$cocScenario.aborted) { throw 'COC scenario failed or aborted.' }
@@ -1734,7 +1803,9 @@ try {
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\diagnostics.json') -Value $menuDiagnostics | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\stress-record.json') -Value $menuDiagnostics.stress.record | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\cpu-record.json') -Value $menuDiagnostics.cpu.cpuPerformance | Out-Null
-    $menuRecords = @(Get-CSXQualificationWaitRecords -ScenarioResult $menuScenario -LabelPrefix 'menu')
+    $menuRecords = @(Get-CSXQualificationWaitRecords `
+        -ScenarioResult $menuScenario -LabelPrefix 'menu' `
+        -PreparationResponse $menuDiagnostics.stress)
     $menuFailureCount = Get-RenderScaleFailureEventCount $menuRecords
     $menuDiagnosticFailureLowerBound = Get-DiagnosticFailureLowerBound $menuRecords
     $menuFailureBreakdown = Get-DiagnosticFailureBreakdown $menuRecords
@@ -1757,12 +1828,14 @@ try {
         statistics = Get-CSXMetricSummary -Values $menuTimes -IncludeRate; strata = Get-MenuStrata $menuRows
         failureCount = $menuFailureCount; diagnosticFailureLowerBound = $menuDiagnosticFailureLowerBound; failureBreakdown = $menuFailureBreakdown; failedTransitions = $menuFailedTransitions; failureWilson95 = Get-CSXWilsonInterval -Failures $menuFailedTransitions -Trials 25
         stretch = $menuStretch; stressTransitions = $menuStressTransitions; resourcePublication = Get-CSXResourcePublicationSummary -Records $menuRecords
+        preparation = Get-DevBenchRenderScalePreparationTelemetry `
+            -Response $menuDiagnostics.stress
         dlssTrace = [pscustomobject][ordered]@{
             outcome = $(if (-not $traceEvidence.ok) { 'failed' } elseif ($GpuVendor -eq 'NVIDIA') { 'dispatch_validated' } else { 'capability_lifecycle_only_zero_dispatch' })
             evidence = $traceEvidence
         }
         validation = [pscustomobject][ordered]@{ scenarioOk = [bool]$menuScenario.ok -and -not [bool]$menuScenario.aborted; stretchError = $menuStretchError; stressRecordError = $menuStressError }
-        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'menu/scenario.request.json'; scenarioResult = 'menu/scenario.result.json'; diagnostics = 'menu/diagnostics.json'; stressRecord = 'menu/stress-record.json'; cpuRecord = 'menu/cpu-record.json'; dlssTraces = 'menu/dlss-traces.json' }
+        evidence = [pscustomobject][ordered]@{ scenarioRequest = 'menu/scenario.request.json'; scenarioResult = 'menu/scenario.result.json'; diagnostics = 'menu/diagnostics.json'; stressRecord = 'menu/stress-record.json'; cpuRecord = 'menu/cpu-record.json'; dlssTraces = 'menu/dlss-traces.json'; preparationEvents = 'menu/preparation-events.csv' }
     }
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'menu\dlss-traces.json') -Value ([pscustomobject][ordered]@{ readLimit = [int]$script:protocol.menuAssay.traceReadLimit; detail = 'bounded_partial_raw_records_with_authoritative_summary_and_pinned_failures'; evidence = $traceEvidence }) | Out-Null
     Write-TransitionEvidence -CocRows $cocRows -MenuRows $menuRows
@@ -1849,6 +1922,8 @@ try {
         fixtureObservationsPath = 'visual/fixture-observations.json'; fixtureObservationsSha256 = $visualObservationSha256
         fixtureObservations = @($visualObservations | ForEach-Object { [pscustomobject][ordered]@{ label = $_.label; ok = [bool]$_.result.ok } })
         diagnostics = $visualDiagnostics
+        preparation = Get-DevBenchRenderScalePreparationTelemetry `
+            -Response $visualDiagnostics.stress
         evidence = [pscustomobject][ordered]@{
             diagnostics = 'visual/diagnostics.json'; stressRecord = 'visual/stress-record.json'; cpuRecord = 'visual/cpu-record.json'
         }

@@ -38,7 +38,9 @@ foreach ($required in @(
     '`persisted: false`',
     'developer/debug logging',
     'FOV/TAA `0.3/0.3/0.7`',
-    'exclusive owner of DLSS and upscaling'
+    'exclusive owner of DLSS and upscaling',
+    'transition-filtered preparation events',
+    'prepared-to-creator'
 )) {
     if (-not $skill.Contains($required, [StringComparison]::Ordinal)) {
         throw "Simple COC skill is missing: $required"
@@ -53,7 +55,11 @@ foreach ($required in @(
     'foveated vendor dispatch enabled with center area `0.3`',
     'periphery TAA enabled with center area `0.3` and outer scale `0.7`',
     'must not save settings or change method, quality, preset',
-    'begins only at transition 1''s atomic'
+    'begins only at transition 1''s atomic',
+    '`status.preparation` trace',
+    'request-to-prepared',
+    'preparation availability',
+    '20 preparation status'
 )) {
     if (-not $protocol.Contains($required, [StringComparison]::Ordinal)) {
         throw "Simple COC protocol is missing: $required"

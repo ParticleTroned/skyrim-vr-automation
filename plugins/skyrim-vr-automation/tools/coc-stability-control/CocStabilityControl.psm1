@@ -137,6 +137,42 @@ function New-CocMeasuredScenario {
         [int]$qualification.timeoutMs -ne 30000) {
         throw 'The measured COC run requires strict qualification with a 30-second maximum deadline.'
     }
+    $requiredPreparationEvents = @(
+        'request_queued', 'admission_check', 'early_exit',
+        'shader_cache_busy_wait', 'sss_raymarch_prewarm', 'ssgi_prewarm',
+        'dlss_preparation', 'fsr_preparation', 'fsr4_preparation',
+        'd3d_object_creation', 'total_preparation', 'request_to_prepared',
+        'prepared_to_creator'
+    )
+    $telemetryContract = Get-CocPropertyValue -Value $ProtocolConfig `
+        -Name 'telemetry'
+    $preparationContract = if ($null -ne $telemetryContract) {
+        Get-CocPropertyValue -Value $telemetryContract -Name 'preparation'
+    } else { $null }
+    $requiredPublicationFields = @(
+        'current', 'currentGeneration', 'completedGeneration',
+        'publishedGeneration', 'expectedWidth', 'expectedHeight',
+        'publishedWidth', 'publishedHeight', 'complete',
+        'deferredSetupAcknowledged', 'deviceMatches', 'contextMatches'
+    )
+    $publicationFields = if ($null -ne $telemetryContract) {
+        @(Get-CocPropertyValue -Value $telemetryContract `
+                -Name 'resourcePublicationFields')
+    } else { @() }
+    if ($null -eq $preparationContract -or
+        [string]$preparationContract.source -ne 'status.preparation' -or
+        [string]$preparationContract.capturePoint -ne 'post_wait_status' -or
+        @($preparationContract.eventNames).Count -ne
+            $requiredPreparationEvents.Count -or
+        @($requiredPreparationEvents | Where-Object {
+                $_ -notin @($preparationContract.eventNames)
+            }).Count -ne 0 -or
+        $publicationFields.Count -ne $requiredPublicationFields.Count -or
+        @($requiredPublicationFields | Where-Object {
+                $_ -notin $publicationFields
+            }).Count -ne 0) {
+        throw 'The measured COC run requires the complete publication and post-wait preparation telemetry contract.'
+    }
 
     $foveation = [ordered]@{
         foveatedVendorDispatch = [bool]$ProtocolConfig.foveation.foveatedVendorDispatch
@@ -169,14 +205,6 @@ function New-CocMeasuredScenario {
         }
         if ($ordinal -eq 1) { $dispatch.startPerformanceTelemetry = $true }
 
-        $steps.Add([ordered]@{
-            tool = 'communityshaders.renderscale'
-            label = "coc-$($ordinal.ToString('D2'))-status"
-            args = [ordered]@{
-                action = 'status'
-                expectedBuildId = $ExpectedBuildId
-            }
-        })
         $steps.Add([ordered]@{
             tool = 'communityshaders.renderscale'
             label = "coc-$($ordinal.ToString('D2'))-qualification-status"
@@ -213,6 +241,14 @@ function New-CocMeasuredScenario {
                 foveation = $foveation
                 milestone = 'strict'
                 timeoutMs = [int]$qualification.timeoutMs
+            }
+        })
+        $steps.Add([ordered]@{
+            tool = 'communityshaders.renderscale'
+            label = "coc-$($ordinal.ToString('D2'))-status"
+            args = [ordered]@{
+                action = 'status'
+                expectedBuildId = $ExpectedBuildId
             }
         })
     }
@@ -290,6 +326,7 @@ function Test-CocBaseline {
         actualCell = $actualCell
         stability = $stability
         resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $renderScale
+        preparation = Get-DevBenchRenderScalePreparationTelemetry -Response $renderScale
     }
 }
 
@@ -401,6 +438,23 @@ function Get-CocNumberTotal {
     return [Math]::Round((($numbers | Measure-Object -Sum).Sum), 3)
 }
 
+function Get-CocScenarioRecordPayload {
+    param(
+        [Parameter(Mandatory)][object[]]$Records,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $record = @($Records | Where-Object {
+            [string](Get-CocPropertyValue -Value $_ -Name 'label') -ceq $Label
+        } | Select-Object -First 1)[0]
+    if ($null -eq $record) { return $null }
+    $payload = Get-CocPropertyValue -Value $record -Name 'result'
+    if ($null -eq $payload) {
+        $payload = Get-CocPropertyValue -Value $record -Name 'value'
+    }
+    return $payload
+}
+
 function Get-CocQualificationAnalysis {
     [CmdletBinding()]
     param(
@@ -418,18 +472,11 @@ function Get-CocQualificationAnalysis {
 
     $transitions = [Collections.Generic.List[object]]::new()
     for ($ordinal = 1; $ordinal -le [int]$ProtocolConfig.transitionCount; $ordinal++) {
-        $label = "coc-$($ordinal.ToString('D2'))-wait"
-        $record = @($records | Where-Object {
-                [string](Get-CocPropertyValue -Value $_ -Name 'label') -ceq $label
-            } | Select-Object -First 1)[0]
-        $receipt = if ($record) {
-            Get-CocPropertyValue -Value $record -Name 'result'
-        } else {
-            $null
-        }
-        if ($null -eq $receipt -and $record) {
-            $receipt = Get-CocPropertyValue -Value $record -Name 'value'
-        }
+        $prefix = "coc-$($ordinal.ToString('D2'))"
+        $receipt = Get-CocScenarioRecordPayload -Records $records `
+            -Label "$prefix-wait"
+        $statusReceipt = Get-CocScenarioRecordPayload -Records $records `
+            -Label "$prefix-status"
         $cell = if (($ordinal % 2) -eq 1) {
             [string]$ProtocolConfig.interiorCellEditorId
         } else {
@@ -443,6 +490,7 @@ function Get-CocQualificationAnalysis {
                 strictElapsedMs = $null; strictElapsedFrames = $null
                 cleanupTailMs = $null; cleanupTailFrames = $null
                 resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $null
+                preparation = Get-DevBenchRenderScalePreparationTelemetry -Response $statusReceipt
             })
             continue
         }
@@ -460,6 +508,18 @@ function Get-CocQualificationAnalysis {
             [Math]::Round($strictFrames - $presentationFrames, 3)
         } else { $null }
         $observation = Get-CocPropertyValue -Value $receipt -Name 'observation'
+        $transitionEpoch = Get-CocPathValue -Value $observation `
+            -Path 'physical.stable.transitionEpoch'
+        if ($null -eq $transitionEpoch) {
+            $transitionEpoch = Get-CocPathValue -Value $observation `
+                -Path 'upscalingSnapshot.stable.transitionEpoch'
+        }
+        $preparation = if ($null -ne $transitionEpoch) {
+            Get-DevBenchRenderScalePreparationTelemetry -Response $statusReceipt `
+                -TransitionEpoch $transitionEpoch
+        } else {
+            Get-DevBenchRenderScalePreparationTelemetry -Response $statusReceipt
+        }
         $transitions.Add([pscustomobject][ordered]@{
             ordinal = $ordinal
             destination = $cell
@@ -489,6 +549,7 @@ function Get-CocQualificationAnalysis {
             frames = Get-CocPropertyValue -Value $receipt -Name 'frames'
             observation = $observation
             resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $observation
+            preparation = $preparation
             producer = Get-CocPropertyValue -Value $receipt -Name 'producer'
             retryCount = Get-CocFirstNumber $receipt @('retryCount', 'retries', 'observation.retryCount', 'observation.retries')
             sessionStretchObservations = Get-CocFirstNumber $receipt @('observation.stretch.sessionObservations', 'sessionStretchObservations')
@@ -525,6 +586,9 @@ function Get-CocQualificationAnalysis {
     $publicationSamples = @($transitions | ForEach-Object { $_.resourcePublication })
     $availablePublications = @($publicationSamples | Where-Object { [bool]$_.available })
     $currentPublications = @($availablePublications | Where-Object { [bool]$_.current })
+    $preparationSamples = @($transitions | ForEach-Object { $_.preparation })
+    $availablePreparation = @($preparationSamples | Where-Object { [bool]$_.available })
+    $exactPreparation = @($availablePreparation | Where-Object { [bool]$_.filterApplied })
     return [pscustomobject][ordered]@{
         available = $true
         canonicalMilestone = 'strict'
@@ -559,6 +623,27 @@ function Get-CocQualificationAnalysis {
             availableSamples = $availablePublications.Count
             currentSamples = $currentPublications.Count
             latest = $(if ($publicationSamples.Count -gt 0) { $publicationSamples[-1] } else { Get-DevBenchResourcePublicationTelemetry -Response $null })
+        }
+        preparation = [pscustomobject][ordered]@{
+            samples = $preparationSamples
+            availableSamples = $availablePreparation.Count
+            exactTransitionSamples = $exactPreparation.Count
+            eventCount = Get-CocNumberTotal @(
+                $preparationSamples | ForEach-Object { $_.eventCount }
+            )
+            overwrittenEventsMaximum = $(
+                $overwritten = @($availablePreparation | ForEach-Object {
+                        ConvertTo-CocNumber $_.overwrittenEvents
+                    } | Where-Object { $null -ne $_ })
+                if ($overwritten.Count -gt 0) {
+                    ($overwritten | Measure-Object -Maximum).Maximum
+                } else { $null }
+            )
+            latest = $(if ($preparationSamples.Count -gt 0) {
+                    $preparationSamples[-1]
+                } else {
+                    Get-DevBenchRenderScalePreparationTelemetry -Response $null
+                })
         }
     }
 }

@@ -29,3 +29,9 @@ PID/build mismatch, dead or unresponsive game control plane, aborted scenario,
 or failed required telemetry lane. Never continue with direct unmeasured COCs
 and never publish `n/a` for stabilization or retries merely because a required
 measurement call was omitted.
+
+Each measured block ends with one render-scale status receipt. Preserve its
+transition-filtered preparation events and summaries for admission/early exit,
+shader cache, SSS/SSGI, DLSS/FSR/FSR4, D3D creation, total preparation,
+request-to-prepared, and prepared-to-creator. This must not add polling or
+change Stabilizer-owned settings.

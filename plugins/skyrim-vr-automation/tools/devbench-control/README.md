@@ -99,3 +99,13 @@ Use `-ToolFilter` or `-NamesOnly` to reduce a large authoritative `list`
 response. `-NoExit` keeps failures as structured JSON without terminating a
 larger PowerShell orchestration host. A missing runtime file, identity mismatch,
 or unreachable endpoint is a blocked result.
+
+`DevBenchControl.psm1` exports two lossless render-scale telemetry normalizers.
+`Get-DevBenchResourcePublicationTelemetry` retains publication generations,
+expected/published dimensions, completion/deferred setup, and D3D identity.
+`Get-DevBenchRenderScalePreparationTelemetry` retains the complete bounded
+`status.preparation` event objects plus ring/session/QPC metadata and stage
+summaries for queued requests, admission/early exits, shader-cache deferral,
+SSS/SSGI prewarm, DLSS/FSR/FSR4 preparation, D3D creation, total preparation,
+request-to-prepared, and prepared-to-creator. Its optional transition-epoch
+filter selects exact producer events without inventing missing values.
