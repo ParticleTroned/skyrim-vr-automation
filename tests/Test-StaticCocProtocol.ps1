@@ -31,6 +31,8 @@ foreach ($required in @(
     'qualification_wait',
     'strict',
     'timeoutMs: 30000',
+    'post-dispatch maximum',
+    'returns as soon as strict is satisfied',
     'VR FPS Stabilizer exclusively owns'
 )) {
     if (-not $skill.Contains($required, [StringComparison]::Ordinal)) {
@@ -52,6 +54,8 @@ foreach ($required in @(
     'qualification_status',
     'qualification_dispatch',
     '`milestone: "strict"`, `timeoutMs: 30000`',
+    '`dimensionsMatch` is producer-owned CSX evidence',
+    'without calculating, overriding, or repairing it',
     'Do not add fixed',
     'qualification_cancel',
     'strict - presentation',

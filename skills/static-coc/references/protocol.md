@@ -8,7 +8,8 @@ change runtime code, profile selection, or pinned reference rows.
 - Initial positioning cell: `WindhelmExterior01`.
 - Odd transitions: `WhiterunDragonsreach`.
 - Even transitions: `WindhelmExterior01`.
-- Canonical waiter: `milestone: "strict"`, `timeoutMs: 30000`.
+- Canonical waiter: `milestone: "strict"`, `timeoutMs: 30000`; this is a
+  post-dispatch maximum, not a fixed delay.
 - The initial, unmeasured Windhelm positioning scenario retains its separate
   10,000 ms server wait.
 - VR FPS Stabilizer owns profile selection; omit `target` from every waiter.
@@ -91,6 +92,13 @@ inter-transition waits, client polling, a separate console COC, a second
 waiter, or profile mutation. Semantic milestone failures are preserved receipts;
 an actual failed server step, ownership loss, stale build, dead game, or
 transport failure stops later COCs.
+
+For every measured block, `qualification_dispatch` must immediately precede
+`qualification_wait`. Dispatch executes the COC and captures its QPC origin
+before the waiter can run. The waiter must return as soon as strict is
+satisfied; `timeoutMs: 30000` only bounds a faulty or incomplete transition.
+`dimensionsMatch` is producer-owned CSX evidence; automation must retain it
+without calculating, overriding, or repairing it.
 
 On an operator interruption while the game control plane is responsive, call
 `qualification_cancel` only with the active transition's exact transition ID,

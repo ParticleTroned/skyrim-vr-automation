@@ -135,7 +135,7 @@ function New-CocMeasuredScenario {
     if ($null -eq $qualification -or
         [string]$qualification.milestone -ne 'strict' -or
         [int]$qualification.timeoutMs -ne 30000) {
-        throw 'The measured COC run requires the strict 30-second qualification milestone.'
+        throw 'The measured COC run requires strict qualification with a 30-second maximum deadline.'
     }
 
     $foveation = [ordered]@{

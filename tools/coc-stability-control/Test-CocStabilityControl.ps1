@@ -19,6 +19,9 @@ $statuses = @($steps | Where-Object label -like 'coc-*-status')
 $qualificationStatuses = @($steps | Where-Object label -like 'coc-*-qualification-status')
 $dispatches = @($steps | Where-Object label -like 'coc-*-dispatch')
 $waiters = @($steps | Where-Object label -like 'coc-*-wait')
+$fixedWaitSteps = @($steps | Where-Object {
+    $_ -is [Collections.IDictionary] -and $_.Contains('wait')
+})
 
 if ($scenario.async -ne $true -or $scenario.continueOnError -ne $false) {
     throw 'The measured scenario is not one async fail-fast control batch.'
@@ -42,16 +45,28 @@ for ($index = 0; $index -lt 20; $index++) {
     } else {
         'WindhelmExterior01'
     }
+    $offset = 2 + ($index * 5)
+    if ([string]$steps[$offset + 3].label -ne [string]$dispatches[$index].label -or
+        [string]$steps[$offset + 4].label -ne [string]$waiters[$index].label) {
+        throw "Transition $($index + 1) does not execute its COC immediately before the bounded waiter."
+    }
+    if ([string]$dispatches[$index].args.action -ne 'qualification_dispatch' -or
+        [string]$waiters[$index].args.action -ne 'qualification_wait') {
+        throw "Transition $($index + 1) does not use the dispatch/wait action pair."
+    }
     if ([string]$dispatches[$index].args.cocCellEditorId -ne $expectedCell) {
         throw "Transition $($index + 1) has the wrong exact COC target."
     }
     if ([int]$waiters[$index].args.timeoutMs -ne 30000 -or
         [string]$waiters[$index].args.milestone -ne 'strict') {
-        throw "Transition $($index + 1) does not use the strict 30-second waiter deadline."
+        throw "Transition $($index + 1) does not use the strict 30-second maximum waiter deadline."
     }
     if ($waiters[$index].args.Contains('target')) {
         throw "Transition $($index + 1) attempts to own the Stabilizer profile."
     }
+}
+if ($fixedWaitSteps.Count -ne 0) {
+    throw 'The measured scenario contains a fixed wait before a COC dispatch.'
 }
 
 $results = [Collections.Generic.List[object]]::new()

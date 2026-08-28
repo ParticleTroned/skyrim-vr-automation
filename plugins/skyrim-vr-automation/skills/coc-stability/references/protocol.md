@@ -319,7 +319,9 @@ Use the one async server scenario generated and submitted by
    cell, no `target` argument, `milestone: "strict"`, and `timeoutMs: 30000`.
    The strict receipt returns the first presentation-stable, cleanup-drained,
    and strict-satisfied timestamps in the same owned transition while preserving
-   the coherent Stabilizer-selected profile;
+   the coherent Stabilizer-selected profile. It immediately follows dispatch;
+   30 seconds is a maximum from the dispatch QPC origin, and the waiter returns
+   as soon as strict is satisfied;
 6. repeat server preflight, begin, adjacent dispatch plus one COC, and one
    strict waiter for transitions
    2 through 20, omitting `startPerformanceTelemetry` after transition 1.
@@ -347,6 +349,11 @@ COCs after it cannot add valid evidence.
 Advance immediately after each coherent waiter receipt. Do not add fixed
 inter-transition waits, menu checks, client polling, or per-transition client
 round trips.
+
+`dimensionsMatch` is producer-owned CSX evidence. Automation must retain the
+reported value and dimensions without calculating, overriding, or repairing
+them. A persistent false value must remain visible in the timeout receipt;
+automation must not replace it with an inferred pass.
 
 Never call a presentation-only wait and then a cleanup-only wait for the same
 owner and transition ID: successful milestone completion consumes the owned

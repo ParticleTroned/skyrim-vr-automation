@@ -22,7 +22,9 @@ Run one initial server-scheduled, unmeasured Windhelm positioning COC, then one
 async 20-transition scenario. Every measured transition uses server-side
 `status`, `qualification_status`, `qualification_begin`, one atomic
 `qualification_dispatch` COC, and one strict waiter with `timeoutMs: 30000`.
-The initial Windhelm settle remains a separate 10-second server wait.
+Dispatch executes the COC before the waiter starts. The 30 seconds is only a
+post-dispatch maximum; the waiter returns as soon as strict is satisfied. The
+initial Windhelm COC remains the only COC preceded by a 10-second server wait.
 
 VR FPS Stabilizer exclusively owns DLSS, FSR, render scale, and profile choice.
 Every static waiter omits `target`; record the coherent observed profile without

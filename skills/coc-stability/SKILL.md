@@ -104,9 +104,11 @@ thread aborts later COCs immediately. Preserve the embedded receipt. Do not
 split ordinary transitions into client round trips.
 
 Every canonical transition uses one `qualification_wait` with
-`milestone: "strict"` and `timeoutMs: 30000`. The strict receipt captures the
-first presentation-stable, cleanup-drained, and strict-satisfied observations
-without changing the independent 10-second start-cell settle. Do not use a
+`milestone: "strict"` and `timeoutMs: 30000`. This is a post-dispatch maximum,
+not a fixed wait: the atomic COC executes first and the waiter returns as soon
+as strict is satisfied. The strict receipt captures the first
+presentation-stable, cleanup-drained, and strict-satisfied observations without
+changing the independent 10-second start-cell settle. Do not use a
 presentation-only or cleanup-only wait in the same owned transition, add a
 fixed inter-transition wait, or poll the client. Those shorter milestones are
 separate diagnostic runs only.
