@@ -8,7 +8,8 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   settings on CS menu close, retain the last proven stereo generation until
   destructive mutation, reject stale use afterward, and capture the complete
   admission, ownership, publication, preparation, and per-eye evidence set
-  with performance profiling disabled.
+  with performance profiling disabled. Its explicit acceptance extension
+  reuses only the existing 20-transition qualification.
 - Add the `$simple-csm` protocol: reuse Simple COC 5 binding, runtime fixture,
   telemetry, failure handling, and evidence extraction; position once at
   Dragonsreach; then measure the canonical hardware-specific 25-step CS menu

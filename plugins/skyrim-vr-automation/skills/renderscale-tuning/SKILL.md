@@ -29,9 +29,8 @@ Skyrim restart, or another protocol. VR FPS Stabilizer remains the sole owner
 of its settings.
 
 `renderscale-tuning acceptance` additionally authorizes the existing complete
-20-transition render-scale qualification and the read-only external SteamVR
-comparison described in the final acceptance section. Never infer that wider
-authorization from the base trigger.
+20-transition render-scale qualification described in the final acceptance
+section. Never infer that wider authorization from the base trigger.
 
 Before mutation, require the live tool descriptions and response fields named
 by the protocol. Do not calculate, infer, rename, or substitute missing

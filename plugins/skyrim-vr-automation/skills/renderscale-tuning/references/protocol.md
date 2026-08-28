@@ -248,7 +248,5 @@ bounds-mismatch fallback; Dragonsreach at most 24 frames; Windhelm at most 20;
 mean at most 22; worst at most 24; at most 9 retries; at most 428 stretch-target
 observations; and no more than 18 consecutive stretch frames.
 
-Run the separate read-only external SteamVR frame-timing comparison against
-the `main-VR` baseline with identical settings, scene, cache, and runtime.
-Keep in-game profiling off in both comparison runs. Report every acceptance
-threshold and evidence path; do not turn absent external evidence into a pass.
+Keep in-game profiling off. Report every acceptance threshold and evidence
+path; do not turn absent qualification evidence into a pass.

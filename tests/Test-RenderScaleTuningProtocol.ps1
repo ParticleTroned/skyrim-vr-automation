@@ -106,6 +106,12 @@ if ($matrixRows.Count -ne 15) {
 if ($protocol -match 'startPerformanceTelemetry:\s*true') {
     throw 'Correctness protocol must never start performance telemetry.'
 }
+foreach ($unsupported in @('external SteamVR', 'SteamVR frame-timing')) {
+    if ($skill.Contains($unsupported, [StringComparison]::OrdinalIgnoreCase) -or
+        $protocol.Contains($unsupported, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protocol retains unsupported acceptance step: $unsupported"
+    }
+}
 
 [pscustomobject][ordered]@{
     ok = $true
