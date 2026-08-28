@@ -80,6 +80,8 @@ Assert-Test ($entryPointText -match '\$Command -eq ''wait'' -and \$statusCode -e
 Assert-Test ($entryPointText -match 'mcp-session-reinitialized') 'bounded waits reinitialize invalidated MCP sessions'
 Assert-Test ($entryPointText -match 'if \(\$RequireSuccess\) \{ -not \$semantic\.known -or -not \$semantic\.ok \}') 'RequireSuccess rejects unknown as well as failed semantic outcomes'
 Assert-Test ($entryPointText -match '\$semantic\.known -and -not \$semantic\.ok -and \$Command -eq ''wait''') 'unsatisfied waits fail even without RequireSuccess'
+Assert-Test ($entryPointText -match '\$Command -eq ''call'' -and -not \$runtimeIdentity\.complete') 'mutation-capable calls require complete runtime identity'
+Assert-Test ($entryPointText -match 'if \(\$Command -eq ''call''\) \{ -not \$semantic\.known -or -not \$semantic\.ok \}') 'mutation-capable calls fail closed on unknown semantic outcomes'
 Assert-Test ($entryPointText -match '\[string\]\$EvidenceLabel') 'runtime binding evidence accepts an explicit invocation label'
 Assert-Test ($entryPointText -match 'devbench-runtime-binding\.\$safeLabel\.\$stamp\.\$PID\.json') 'parallel runtime bindings use invocation-unique filenames'
 Assert-Test ($entryPointText -match 'function Test-WaitRetryableException') 'bounded waits classify exhausted transient probe failures'

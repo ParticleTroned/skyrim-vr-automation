@@ -56,6 +56,11 @@ try {
     Import-Module (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'mo2-control\MO2Control.psm1') -Force
     $config = Read-MO2ControlConfig -ConfigPath $configPath
     $access = Invoke-MO2RequestAccess -Config $config -Label fixture; $accessId = [string]$access.data.access.accessId
+    $escapedSource = Join-Path $mo2 'outside'
+    New-Item -ItemType Directory -Path $escapedSource -Force | Out-Null
+    '+Loader' | Set-Content -LiteralPath (Join-Path $escapedSource 'modlist.txt') -Encoding utf8
+    $escapedStatus = & $entry fixture-status -ConfigPath $configPath -SourceProfile '..\outside' -Compact -NoExit | ConvertFrom-Json
+    if ($escapedStatus.ok -or $escapedStatus.errors[0] -notmatch 'direct child|malformed') { throw 'SourceProfile traversal was not rejected as malformed.' }
     $fixtureStatusRaw = & $entry fixture-status -ConfigPath $configPath -Compact
     if ($fixtureStatusRaw -match "`r|`n") { throw 'Compact workspace output was not one line.' }
     $fixtureStatus = $fixtureStatusRaw | ConvertFrom-Json

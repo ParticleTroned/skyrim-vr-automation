@@ -16,6 +16,13 @@ function Invoke-Feedback([string[]]$Arguments) {
 
 try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    $escapeLeaf = 'feedback-escape-' + [guid]::NewGuid().ToString('N')
+    $escapePath = Join-Path (Split-Path -Parent $fixture) ($escapeLeaf + '.json')
+    $invalidId = '..\..\' + $escapeLeaf
+    $invalidRead = Invoke-Feedback @('get', '-FeedbackId', $invalidId)
+    if ($invalidRead.exitCode -eq 0 -or $invalidRead.result.ok -or $invalidRead.result.errors[0] -notmatch 'malformed') { throw 'Malformed feedback ID was not rejected.' }
+    if (Test-Path -LiteralPath $escapePath) { throw 'Malformed feedback ID escaped the feedback root.' }
+
     $evidence = Join-Path $fixture 'private\evidence.txt'
     New-Item -ItemType Directory -Path (Split-Path -Parent $evidence) -Force | Out-Null
     [IO.File]::WriteAllText($evidence, 'durable evidence', [Text.UTF8Encoding]::new($false))

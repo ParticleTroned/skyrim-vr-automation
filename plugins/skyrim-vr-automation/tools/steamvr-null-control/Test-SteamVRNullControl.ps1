@@ -75,6 +75,17 @@ try {
     Assert-Test ($appliedJson['dashboard']['enableDashboard'] -eq $false) 'apply disables the dashboard generic-HMD input route'
     Assert-Test ($appliedJson['driver_codex_head_pose']['eyeHeightMeters'] -eq 1.68 -and $appliedJson['TrackingOverrides']['/devices/codex_head_pose/CSX-NULL-HMD-POSE-1'] -eq '/user/head') 'apply configures the synthetic head pose and semantic override'
     Assert-Test (Test-Path -LiteralPath (Join-Path $evidence 'steamvr-null-receipt.json')) 'apply writes hash receipt'
+    $appliedText = [IO.File]::ReadAllText($settingsPath)
+
+    $otherSettingsPath = Join-Path $fixture 'other-steamvr.vrsettings'
+    [IO.File]::WriteAllText($otherSettingsPath, $originalText, [Text.UTF8Encoding]::new($false))
+    $wrongPathRestore = & $entry restore -SettingsPath $otherSettingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $evidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $wrongPathRestore.ok -and $wrongPathRestore.state -eq 'blocked' -and $wrongPathRestore.errors[0] -match 'settings path') 'restore refuses a settings path different from its apply receipt'
+
+    [IO.File]::AppendAllText($settingsPath, "`n")
+    $settingsDriftRestore = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $evidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $settingsDriftRestore.ok -and $settingsDriftRestore.state -eq 'blocked' -and $settingsDriftRestore.errors[0] -match 'settings.*changed|settings.*drift') 'restore refuses SteamVR settings drift after apply'
+    [IO.File]::WriteAllText($settingsPath, $appliedText, [Text.UTF8Encoding]::new($false))
 
     $inspectConfigured = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
     Assert-Test ($inspectConfigured.ok -and $inspectConfigured.state -eq 'null-configured-runtime-stopped' -and -not $inspectConfigured.data.runtime.active) 'inspect distinguishes configured settings from a proven runtime'
