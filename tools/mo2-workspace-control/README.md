@@ -4,7 +4,10 @@ This tool gives each automation task a unique MO2 profile cloned from an
 explicitly configured, known-good `defaults.testProfileSource`. It never uses
 the ordinary session default as an implicit template. The complete `saves`
 tree from that maintained source profile is copied and verified into every new
-task profile so ordinary access requests remain usable.
+task profile so ordinary access requests remain usable. Fresh creation is
+fail-closed unless that source also has one valid default world-entry fixture.
+The fixture is the maintained route into the loaded game world; alternate
+locations may then be reached with guarded `coc`/`cow` commands.
 
 Before `create`, run `prepare-source` under the same MO2 access lease. It scans
 overwrite recursively for every directory named `ShaderCache` or beginning
@@ -49,7 +52,17 @@ this release does not synthesize that action, and `coc APStartCell` is
 explicitly not equivalent. See `../../docs/BREEZEHOME-SAVE.md` for the current
 maintained fallback starting point.
 
-`VerifiedFixture` is the deterministic automation form of “new game”. It uses
+One default fixture is mandatory for every fresh clone, regardless of
+`SavePolicy`. The installer or list maintainer must first load that save in the
+maintained source profile, record it in `defaults.newGameFixtureManifest`, and
+obtain `fixture-valid`. Creation records the qualification as
+`data.sourceQualification`, reports it as `data.worldEntryFixture`, verifies it
+again in the copied tree, and sets `data.copiedWorldEntrySave`. This is a
+clone-time source guarantee only: `resume` preserves a task's prior profile
+exactly and does not claim its save still works after task-local edits.
+
+`VerifiedFixture` additionally authorizes that exact fixture as the
+deterministic automation form of “new game”. It uses
 `-FixtureManifestPath`, or `defaults.newGameFixtureManifest`, and selects
 `-FixtureId` or the manifest's `defaultFixtureId`. The manifest fingerprint must
 match the exact stable source profile. Every listed save/co-save is verified by
@@ -64,8 +77,9 @@ changing anything. When no manifest is configured, or the configured file is
 missing, `fixture-status` returns `fixture-not-configured` or
 `fixture-manifest-missing` with the exact configuration property, portable
 example path, current stable-profile fingerprint, and creation guidance; this
-discovery state is not a tool error. The doctor reports the same configuration
-as an optional warning. `refresh-fixture` is the separately authorized repair path:
+discovery state is not a tool error for inspection, but it blocks fresh
+`create`. The doctor treats anything other than `fixture-valid` as a failed
+setup prerequisite. `refresh-fixture` is the separately authorized repair path:
 it requires the exact access lease and closed-state proof, preserves the prior
 manifest and a receipt, refreshes only the selected declared fixture, and
 verifies the postcondition. It never invents a replacement save path.

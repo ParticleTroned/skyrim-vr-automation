@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Require every fresh MO2 task clone to inherit a hash- and
+  profile-fingerprint-qualified default world-entry save, make the doctor fail
+  unqualified setup, and preserve resumed task profiles without making a
+  post-edit save warranty.
 - Make deprecated workspace `release` fail closed, add collision-resistant
   registration evidence names, let blocking DevBench calls consume their
   declared bounded timeout, and accept successful unclassified inspect payloads

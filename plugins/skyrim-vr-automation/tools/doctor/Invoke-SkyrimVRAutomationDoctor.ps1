@@ -79,17 +79,37 @@ try {
             try {
                 $machineConfig = Get-Content -LiteralPath $resolution.path -Raw | ConvertFrom-Json
                 $fixtureInput = if ($machineConfig.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$machineConfig.defaults.newGameFixtureManifest } else { '' }
-                $fixturePath = if ([string]::IsNullOrWhiteSpace($fixtureInput)) { $null } else { [IO.Path]::GetFullPath($fixtureInput) }
-                $fixtureExists = -not [string]::IsNullOrWhiteSpace($fixturePath) -and (Test-Path -LiteralPath $fixturePath -PathType Leaf)
-                $fixtureMessage = if ($fixtureExists) { "Verified fixture manifest exists: $fixturePath" } elseif ([string]::IsNullOrWhiteSpace($fixturePath)) { 'Optional verified fixture manifest is not configured. Set defaults.newGameFixtureManifest or pass -FixtureManifestPath.' } else { "Configured verified fixture manifest does not exist: $fixturePath" }
-                $checks.Add((New-DoctorCheck 'verified-fixture-manifest' $(if ($fixtureExists) { 'pass' } else { 'warn' }) $fixtureMessage ([pscustomobject][ordered]@{
-                    configuredPath = $fixturePath; exists = $fixtureExists
-                    configurationProperty = 'defaults.newGameFixtureManifest'
-                    exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
-                })))
+                if ([string]::IsNullOrWhiteSpace($fixtureInput)) {
+                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry' 'fail' 'The maintained source profile has no configured world-entry save. Set defaults.newGameFixtureManifest and qualify its default fixture before creating task profiles.' ([pscustomobject][ordered]@{
+                        configurationProperty = 'defaults.newGameFixtureManifest'
+                        exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
+                    })))
+                }
+                else {
+                    $fixtureParameters = @{
+                        FilePath = (Get-Process -Id $PID).Path
+                        ArgumentList = @('-NoProfile', '-File', (Join-Path $repositoryRoot 'tools\mo2-workspace-control\Invoke-MO2WorkspaceControl.ps1'), 'fixture-status', '-ConfigPath', [string]$resolution.path, '-Compact', '-NoExit')
+                        WorkingDirectory = $repositoryRoot; TimeoutSeconds = $TimeoutSeconds; MaxAttempts = 1; NoExit = $true; Compact = $true
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $fixtureParameters.EvidenceDirectory = $EvidenceDirectory }
+                    $boundedFixture = & $boundedProcessTool @fixtureParameters | ConvertFrom-Json -Depth 40
+                    $fixtureStatus = $null
+                    if ($boundedFixture.ok -and @($boundedFixture.attempts).Count -eq 1) {
+                        try { $fixtureStatus = ([string]$boundedFixture.attempts[0].stdout) | ConvertFrom-Json -Depth 30 } catch { $fixtureStatus = [pscustomobject]@{ ok = $false; raw = @($boundedFixture.attempts[0].stdout); boundedProcess = $boundedFixture } }
+                    }
+                    else { $fixtureStatus = [pscustomobject]@{ ok = $false; boundedProcess = $boundedFixture } }
+                    $fixtureValid = $fixtureStatus.ok -and [string]$fixtureStatus.state -eq 'fixture-valid' -and [bool]$fixtureStatus.data.valid
+                    $fixtureEvidence = [pscustomobject][ordered]@{
+                        configurationProperty = 'defaults.newGameFixtureManifest'
+                        configuredPath = [IO.Path]::GetFullPath($fixtureInput)
+                        exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
+                        fixtureStatus = $fixtureStatus
+                    }
+                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry' $(if ($fixtureValid) { 'pass' } else { 'fail' }) $(if ($fixtureValid) { "The maintained source profile has a valid world-entry save fixture '$($fixtureStatus.data.fixtureId)'." } else { 'The maintained source profile world-entry save is missing, stale, or invalid. Run fixture-status and repair or refresh it before creating task profiles.' }) $fixtureEvidence))
+                }
             }
             catch {
-                $checks.Add((New-DoctorCheck 'verified-fixture-manifest' 'warn' "Could not inspect verified fixture configuration: $($_.Exception.Message)"))
+                $checks.Add((New-DoctorCheck 'prime-profile-world-entry' 'fail' "Could not qualify the maintained source profile world-entry save: $($_.Exception.Message)"))
             }
         }
 

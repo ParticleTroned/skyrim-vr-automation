@@ -91,6 +91,10 @@ try {
     if (@(Get-ChildItem -LiteralPath (Join-Path $mo2 'overwrite') -Directory -Recurse -Force | Where-Object Name -Match '^(?i:ShaderCache)(?:[.]|$)').Count -ne 0) { throw 'ShaderCache directories remained in overwrite after preparation.' }
     if ((Get-Content -LiteralPath (Join-Path $source 'modlist.txt') -Raw) -notmatch ('(?m)^\+' + [regex]::Escape([string]$prepared.data.modName) + '\r?$')) { throw 'Migrated shader-cache mod was not enabled in the stable source.' }
     foreach ($move in @($prepared.data.movedDirectories)) { if (-not (Test-Path -LiteralPath ([string]$move.destinationPath) -PathType Container)) { throw "Migrated ShaderCache destination is missing: $($move.destinationPath)" } }
+    $unqualifiedCreate = & $entry create -ConfigPath $unconfiguredPath -AccessId $accessId -TaskId $taskId -Label unqualified -SavePolicy MainMenuOnly -Confirm:$false -NoExit | ConvertFrom-Json
+    if ($unqualifiedCreate.ok -or $unqualifiedCreate.errors[0] -notmatch 'valid default world-entry save') { throw 'Fresh creation did not reject an unqualified maintained source profile.' }
+    $missingFixtureCreate = & $entry create -ConfigPath $missingPath -AccessId $accessId -TaskId $taskId -Label missing-fixture -SavePolicy FreshGame -Confirm:$false -NoExit | ConvertFrom-Json
+    if ($missingFixtureCreate.ok -or $missingFixtureCreate.errors[0] -notmatch 'valid default world-entry save') { throw 'Fresh creation did not reject a missing maintained world-entry fixture.' }
     'stable-profile-drift' | Set-Content -LiteralPath (Join-Path $source 'fixture-drift.txt') -Encoding utf8
     $staleStatus = & $entry fixture-status -ConfigPath $configPath -Compact | ConvertFrom-Json
     if ($staleStatus.state -ne 'fixture-stale' -or $staleStatus.data.expectedProfileFingerprintSha256 -eq $staleStatus.data.actualProfileFingerprintSha256) { throw 'Fixture drift did not report expected and actual fingerprints.' }
@@ -104,6 +108,7 @@ try {
     $ordinaryCopied = Join-Path $created.data.profilePath 'saves\ordinary.ess'
     if (-not (Test-Path -LiteralPath $ordinaryCopied -PathType Leaf) -or (Get-FileHash -LiteralPath $ordinaryCopied -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath (Join-Path $source 'saves\ordinary.ess') -Algorithm SHA256).Hash) { throw 'Workspace did not copy the complete stable-source saves tree.' }
     if (-not $created.data.inheritedSaves -or $created.data.sourceSaveSnapshot.sha256 -ne $created.data.profileSaveSnapshot.sha256 -or $created.data.sourceSaveSnapshot.fileCount -ne 3) { throw 'Workspace did not report a verified inherited-save snapshot.' }
+    if (-not $created.data.copiedWorldEntrySave -or -not $created.data.sourceQualification.qualified -or $created.data.worldEntryFixture.id -ne 'interior' -or $null -ne $created.data.saveFixture) { throw 'Ordinary fresh creation did not preserve the qualified world-entry baseline independently of SavePolicy.' }
     $verified = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label verified -SavePolicy VerifiedFixture -Confirm:$false | ConvertFrom-Json
     if (-not $verified.ok -or -not $verified.data.copiedVerifiedSaves -or $verified.data.saveFixture.id -ne 'interior') { throw 'Verified fixture workspace was not created from the configured default.' }
     foreach ($name in @('Save2_KnownGood.ess', 'Save2_KnownGood.skse')) {
@@ -162,6 +167,6 @@ try {
     if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $loaderMod)) { throw 'Workspace cleanup damaged stable state.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $nextAccessId
     if (-not $releasedAccess.ok) { throw 'Resumed access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=51; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=54; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally { if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }
