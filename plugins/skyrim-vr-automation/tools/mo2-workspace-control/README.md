@@ -85,8 +85,8 @@ the exact prior INI bytes and receipt, and only then removes the task profile.
 Workspace manifests and results expose `profileName`, `profileDirectory`, and
 `modListPath` while retaining the legacy `profile` and `profilePath` fields.
 Calling MO2 `release-access` alone preserves the workspace for later `resume`.
-The deprecated workspace `release` alias is destructive and exists only for
-compatibility.
+The deprecated workspace `release` command is retained only to return safe
+recovery guidance; it fails before mutation and never deletes a profile.
 
 `-WinningPaths` changes `register-mod` into an enabled winning-provider
 transaction. `ensure-mod-wins` can subsequently re-check and reposition only a

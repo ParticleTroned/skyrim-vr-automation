@@ -123,9 +123,19 @@ try {
     if (-not $winnerReceipt.winnerProof.verified -or $winnerReceipt.relativeToMod -ne 'Loader') { throw 'Workspace registration did not prove the task DLL wins.' }
     $ensured = & $entry ensure-mod-wins -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName 'Owned Test Mod' -WinningPaths 'SKSE\Plugins\Example.dll' -Confirm:$false | ConvertFrom-Json
     if (-not $ensured.ok -or $ensured.state -ne 'winner-verified') { throw 'Workspace could not re-verify its task-owned winning mod.' }
+    $longNames = @('Codex CSX common prefix extending beyond thirty two characters alpha', 'Codex CSX common prefix extending beyond thirty two characters beta')
+    $longRegistrations = @()
+    foreach ($longName in $longNames) {
+        $longCreated = & $entry create-mod -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName $longName -Confirm:$false | ConvertFrom-Json
+        $longRegistrations += ,(& $entry register-mod -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName $longName -ModDirectory $longCreated.data.modDirectory -Confirm:$false | ConvertFrom-Json)
+    }
+    $longEvidence = @($longRegistrations | ForEach-Object { Split-Path -Parent ([string]$_.data.registration.receiptPath) })
+    if (@($longRegistrations | Where-Object { -not $_.ok }).Count -ne 0 -or $longEvidence[0] -eq $longEvidence[1]) { throw 'Long common-prefix mod names did not receive distinct collision-resistant registration evidence.' }
     $preexisting = & $entry register-mod -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName Loader -ModDirectory $loaderMod -NoExit -Confirm:$false | ConvertFrom-Json
     if ($preexisting.ok) { throw 'Workspace claimed a pre-existing mod.' }
     'retained-profile-state' | Set-Content -LiteralPath (Join-Path $created.data.profilePath 'task-state.txt') -Encoding utf8
+    $unsafeRelease = & $entry release -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -NoExit -Confirm:$false | ConvertFrom-Json
+    if ($unsafeRelease.ok -or $unsafeRelease.errors[0] -notmatch 'intentionally unavailable' -or -not (Test-Path -LiteralPath $created.data.profilePath) -or -not (Test-Path -LiteralPath (Join-Path $created.data.profilePath 'task-state.txt'))) { throw 'Deprecated workspace release did not fail closed while preserving retained task state.' }
     $listed = & $entry list-task -ConfigPath $configPath -TaskId $taskId -Compact | ConvertFrom-Json
     if (-not $listed.ok -or $listed.data.count -ne 2) { throw 'Task workspace discovery did not list both retained profiles.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
@@ -152,6 +162,6 @@ try {
     if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $loaderMod)) { throw 'Workspace cleanup damaged stable state.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $nextAccessId
     if (-not $releasedAccess.ok) { throw 'Resumed access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=49; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=51; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally { if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }

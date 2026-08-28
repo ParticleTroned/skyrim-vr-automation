@@ -188,13 +188,15 @@ function Test-DevBenchServiceReady {
     $state = if ($stateRecord.Count -gt 0) { [string]$stateRecord[0].state } else { $null }
     $retryable = $semantic.transient -or ($state -in $RetryableStates)
     $terminalFailure = -not $semantic.ok -and -not $retryable
-    $ready = if ($state) { $state -in $AcceptedStates } else { $semantic.known -and $semantic.ok -and -not $retryable }
+    $probeReturnedContent = @($Content).Count -gt 0
+    $ready = if ($state) { $state -in $AcceptedStates } elseif ($semantic.known) { $semantic.ok -and -not $retryable } else { $probeReturnedContent }
     return [pscustomobject][ordered]@{
         ready = $ready
         retryable = $retryable
         terminalFailure = $terminalFailure
         state = $state
         statePath = if ($stateRecord.Count -gt 0) { $stateRecord[0].path } else { $null }
+        probeReturnedContent = $probeReturnedContent
         semantic = $semantic
     }
 }

@@ -48,14 +48,14 @@ $runtimeIdentity = $null
 $transportRetries = [Collections.Generic.List[object]]::new()
 $invocationEvidencePath = $null
 $invocationRecord = $null
-$operationDeadlineUtc = $null
+$operationDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 Import-Module (Join-Path $PSScriptRoot 'DevBenchControl.psm1') -Force
 
 function Get-RequestTimeoutSeconds {
-    if ($null -eq $script:operationDeadlineUtc) { return 15 }
+    if ($null -eq $script:operationDeadlineUtc) { return $TimeoutSeconds }
     $remainingSeconds = ($script:operationDeadlineUtc - [DateTime]::UtcNow).TotalSeconds
     if ($remainingSeconds -lt 1) { throw [TimeoutException]::new('The DevBench operation deadline expired before another request could start.') }
-    return [int][Math]::Max(1, [Math]::Min(15, [Math]::Floor($remainingSeconds)))
+    return [int][Math]::Max(1, [Math]::Min(600, [Math]::Ceiling($remainingSeconds)))
 }
 
 function Start-OperationDelay([int]$RequestedMilliseconds) {
@@ -334,7 +334,7 @@ function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
     $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
     if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
     $sessionHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
-    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec 15 | Out-Null
+    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec (Get-RequestTimeoutSeconds) | Out-Null
     $listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $sessionHeaders -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
     if ($listRpc.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)" }
     $sessionTools = @($listRpc.json.result.tools)

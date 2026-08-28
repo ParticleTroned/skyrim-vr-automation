@@ -35,8 +35,9 @@ Use workspace `retire` only when the task has finished with that profile.
 Retirement selects the maintained primary profile and recursively removes only
 the exact task-owned profile. `-CleanupOwnedMods` additionally removes only
 mods that the workspace created and registered. The old workspace `release`
-command remains a deprecated compatibility alias for destructive `retire`; it
-does not mean lease yield.
+command now fails closed without mutation. It points callers to MO2
+`release-access` for lease yield and to the explicit `retire` command for
+destructive cleanup.
 
 ## Ownership and shared-state rules
 
@@ -54,4 +55,3 @@ Some applications write runtime data into an existing mod, notably CSX writing
 compiled shaders into the managed shader-cache mod. That known exception is
 accepted. Automatic cache reset on lease yield is intentionally not part of
 this contract; it can be added later as a separately evidenced policy.
-

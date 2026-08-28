@@ -93,6 +93,12 @@ optional explicit-log samples. A missing target with increasing CPU is reported
 as `api-waiting-behind-initialization`; a quiet missing target is
 `api-absent-or-not-registered`.
 
+The same `-TimeoutSeconds` value is the total transport budget for `list`,
+`call`, and `wait`. Blocking calls such as a scenario with declared server-side
+waits may therefore use the caller's full bounded budget instead of failing at
+an unrelated fixed 15-second HTTP timeout. Mutation transport failures remain
+indeterminate and are never replayed automatically.
+
 All bounded waits keep explicitly transient 404/429/502/503/504, timeout, and
 main-thread-busy probe failures as unsatisfied observations after the short
 transport retry budget is exhausted. The outer deadline therefore survives a

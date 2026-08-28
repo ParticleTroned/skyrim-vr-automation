@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Make deprecated workspace `release` fail closed, add collision-resistant
+  registration evidence names, let blocking DevBench calls consume their
+  declared bounded timeout, and accept successful unclassified inspect payloads
+  as `serviceReady` evidence.
 - Separate MO2's public lease identity from its bearer credential in status
   results, bind live session ownership to PID plus process start time, and make
   feedback amendments and maintainer transitions carry explicit actor roles.

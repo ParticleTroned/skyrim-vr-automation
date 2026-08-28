@@ -69,6 +69,12 @@ function Get-SafeName([string]$Value) {
     return $safe
 }
 
+function Get-CollisionResistantSafeName([string]$Value) {
+    $readable = Get-SafeName -Value $Value
+    $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($Value))).ToLowerInvariant()
+    return "$readable-$($digest.Substring(0, 8))"
+}
+
 function Assert-NoWorkspaceReparsePoint([string]$Path, [string]$Purpose) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     while ($null -ne $item) {
@@ -559,6 +565,10 @@ try {
     $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
     $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
 
+    if ($Command -eq 'release') {
+        throw 'Workspace release is intentionally unavailable because it previously deleted retained task state. Yield scarce MO2 access with Invoke-MO2Control.ps1 release-access; destroy a finished workspace only with the explicit retire command.'
+    }
+
     if ($Command -eq 'list-task') {
         $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
         $allWorkspaces = @(Get-TaskWorkspaces -Config $config -ResolvedTaskId $resolvedTaskId)
@@ -876,7 +886,7 @@ try {
         $ownershipMarker = Assert-WorkspaceOwnerMarker -Workspace $owned -ModName $ModName -ModPath $resolvedMod
         if ([string]$createdMatches[0].markerSha256 -cne [string]$ownershipMarker.sha256) { throw "Task mod ownership marker changed after create-mod: $ModName" }
         Assert-NoWorkspaceReparsePoint -Path $resolvedMod -Purpose 'Task-owned mod directory'
-        $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-register-' + (Get-SafeName $ModName))
+        $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-register-' + (Get-CollisionResistantSafeName $ModName))
         $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
         $winning = @($WinningPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $arguments = @{
@@ -1044,7 +1054,7 @@ try {
             profileName = [string]$owned.data.profile; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             selectedProfileRelease = $profileSelection; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods
             releaseAccessRequired = $true; manifestPath = $owned.path
-            deprecatedCommand = if ($Command -eq 'release') { 'release is a compatibility alias for destructive retire; use retire. To yield scarce MO2 access while retaining this profile, call MO2 release-access only.' } else { $null }
+            deprecatedCommand = $null
         } }
     }
 }
