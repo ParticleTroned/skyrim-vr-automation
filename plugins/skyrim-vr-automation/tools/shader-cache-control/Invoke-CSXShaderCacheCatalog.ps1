@@ -249,14 +249,19 @@ function Get-ReceiptProof([string]$Path, [string]$SourcePath, [string]$ExpectedH
     $resolvedReceipt = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolvedReceipt -PathType Leaf)) { throw "Source receipt does not exist: $resolvedReceipt" }
     $receipt = Get-Content -LiteralPath $resolvedReceipt -Raw | ConvertFrom-Json -Depth 30
+    $operation = [string](Get-PropertyValue $receipt 'operation' '')
+    $transactionId = [string](Get-PropertyValue $receipt 'transactionId' '')
+    if ($operation -notin @('snapshot', 'seed', 'restore') -or [string]::IsNullOrWhiteSpace($transactionId)) { throw 'Source receipt lacks a supported operation and immutable transaction identity.' }
     $resolvedSource = [IO.Path]::GetFullPath($SourcePath)
     $pairs = @(
-        @{ path = 'backupPath'; hash = 'beforeTreeSha256' },
-        @{ path = 'displacedPath'; hash = 'displacedTreeSha256' },
-        @{ path = 'sourceCachePath'; hash = 'sourceTreeSha256' }
+        @{ operation = 'snapshot'; path = 'backupPath'; hash = 'beforeTreeSha256' },
+        @{ operation = 'seed'; path = 'displacedPath'; hash = 'displacedTreeSha256' },
+        @{ operation = 'restore'; path = 'displacedPath'; hash = 'displacedTreeSha256' },
+        @{ operation = 'seed'; path = 'sourceCachePath'; hash = 'sourceTreeSha256' }
     )
     $matched = $false
     foreach ($pair in $pairs) {
+        if ($operation -cne [string]$pair.operation) { continue }
         if (-not (Test-Property $receipt $pair.path) -or -not (Test-Property $receipt $pair.hash)) { continue }
         if ([IO.Path]::GetFullPath([string]$receipt.($pair.path)) -eq $resolvedSource -and [string]$receipt.($pair.hash) -ieq $ExpectedHash) {
             $matched = $true
@@ -268,6 +273,8 @@ function Get-ReceiptProof([string]$Path, [string]$SourcePath, [string]$ExpectedH
         path = $resolvedReceipt
         sha256 = (Get-FileHash -LiteralPath $resolvedReceipt -Algorithm SHA256).Hash
         contractVersion = [string](Get-PropertyValue $receipt 'contractVersion' '')
+        operation = $operation
+        transactionId = $transactionId
     }
 }
 
@@ -486,8 +493,13 @@ function Prepare-TaskCache($Storage) {
     $resolvedCache = Assert-SafeDirectory $CachePath 'live shader-cache' -MustExist
     $evidence = Assert-SafeDirectory $EvidenceDirectory 'shader-cache task evidence'
     $planPath = Join-Path $evidence 'shader-cache-task.plan.json'
-    if (Test-Path -LiteralPath $planPath) { throw "Refusing to overwrite an existing task cache plan: $planPath" }
-    $selection = Select-CatalogSnapshot $Storage
+    $existingPlan = $null
+    if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+        $existingPlan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -Depth 40
+        if ([IO.Path]::GetFullPath([string]$existingPlan.cachePath) -ne $resolvedCache -or [IO.Path]::GetFullPath([string]$existingPlan.catalog.path) -ne [IO.Path]::GetFullPath([string]$Storage.path) -or [IO.Path]::GetFullPath([string]$existingPlan.evidenceDirectory) -ne $evidence) { throw 'Existing task cache plan owns different immutable source or target identities.' }
+        if ([string]$existingPlan.state -notin @('snapshot-preserved', 'prepared')) { throw "Existing task cache plan is not resumable from state '$($existingPlan.state)'." }
+    }
+    $selection = if ($null -ne $existingPlan) { $existingPlan.selection } else { Select-CatalogSnapshot $Storage }
     if ($RequireMatch -and $null -eq $selection.selected) { throw 'No compatible known-working shader-cache snapshot matched the task request.' }
 
     if ($WhatIfPreference) {
@@ -495,11 +507,23 @@ function Prepare-TaskCache($Storage) {
         return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; current = $current.data; selection = $selection; action = $(if ($null -eq $selection.selected) { 'use-current-no-match' } elseif ([string]$selection.selected.treeSha256 -ieq [string]$current.data.treeSha256) { 'use-current-exact' } else { 'seed-selected' }) }
     }
 
-    $snapshot = Invoke-Transaction 'snapshot' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+    if ($null -ne $existingPlan -and [string]$existingPlan.state -eq 'prepared') {
+        $current = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
+        $expectedLiveHash = if ([string]$existingPlan.action -eq 'seed-selected') { [string]$existingPlan.selection.selected.treeSha256 } else { [string]$existingPlan.beforeTreeSha256 }
+        if ([string]$current.data.treeSha256 -ine $expectedLiveHash) { throw 'Prepared task cache plan no longer matches the exact live cache state.' }
+        return [pscustomobject][ordered]@{ state = 'already-prepared'; planPath = $planPath; action = [string]$existingPlan.action; selection = $existingPlan.selection; before = @{ treeSha256 = [string]$existingPlan.beforeTreeSha256 }; seed = $null }
+    }
+    $snapshot = if ($null -ne $existingPlan) {
+        [pscustomobject]@{ data = [pscustomobject]@{ receiptPath = [string]$existingPlan.transactionReceiptPath; inventory = [pscustomobject]@{ treeSha256 = [string]$existingPlan.beforeTreeSha256 } } }
+    }
+    else {
+        Invoke-Transaction 'snapshot' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+    }
     $action = 'use-current-no-match'
     $seed = $null
-    $plan = [pscustomobject][ordered]@{
+    $plan = if ($null -ne $existingPlan) { $existingPlan } else { [pscustomobject][ordered]@{
         contractVersion = $contractVersion
+        transactionId = [guid]::NewGuid().ToString('N')
         state = 'snapshot-preserved'
         createdUtc = [DateTime]::UtcNow.ToString('o')
         catalog = $Storage
@@ -511,8 +535,8 @@ function Prepare-TaskCache($Storage) {
         transactionReceiptPath = [string]$snapshot.data.receiptPath
         beforeTreeSha256 = [string]$snapshot.data.inventory.treeSha256
         seedReceiptPath = $null
-    }
-    Write-JsonAtomic $planPath $plan -RefuseExisting
+    } }
+    if ($null -eq $existingPlan) { Write-JsonAtomic $planPath $plan -RefuseExisting }
     if ($null -ne $selection.selected) {
         if ([string]$selection.selected.treeSha256 -ieq [string]$snapshot.data.inventory.treeSha256) {
             $action = 'use-current-exact'
@@ -544,7 +568,11 @@ function Complete-TaskCache($Storage) {
     $planPath = Join-Path $evidence 'shader-cache-task.plan.json'
     $completionPath = Join-Path $evidence 'shader-cache-task.completion.json'
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) { throw "Task cache plan does not exist: $planPath" }
-    if (Test-Path -LiteralPath $completionPath) { throw "Refusing to overwrite an existing task cache completion: $completionPath" }
+    if (Test-Path -LiteralPath $completionPath -PathType Leaf) {
+        $existingCompletion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 40
+        if ([IO.Path]::GetFullPath([string]$existingCompletion.planPath) -ne $planPath) { throw 'Existing completion owns a different task cache plan.' }
+        return [pscustomobject][ordered]@{ state = 'already-complete'; completionPath = $completionPath; workingTree = $existingCompletion.workingTree; restoredTreeSha256 = [string]$existingCompletion.restoredTreeSha256; promoted = $existingCompletion.promoted }
+    }
     $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -Depth 40
     if ([IO.Path]::GetFullPath([string]$plan.cachePath) -ne $resolvedCache) { throw 'Task cache plan owns a different live cache path.' }
     if ([IO.Path]::GetFullPath([string]$plan.catalog.path) -ne [IO.Path]::GetFullPath([string]$Storage.path)) { throw 'Task cache plan owns a different catalog root.' }
@@ -555,8 +583,38 @@ function Complete-TaskCache($Storage) {
         return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; completionPath = $completionPath; current = $current.data; wouldRestore = $true; wouldPromote = [bool]$Promote }
     }
 
-    $currentBeforeRestore = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
-    $restore = Invoke-Transaction 'restore' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+    $currentBeforeRestore = if ($plan.PSObject.Properties['workingTreeInventory']) { [pscustomobject]@{ data = $plan.workingTreeInventory } } else { Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache } }
+    if (-not $plan.PSObject.Properties['workingTreeInventory']) {
+        $plan | Add-Member -NotePropertyName workingTreeInventory -NotePropertyValue $currentBeforeRestore.data -Force
+        $plan.state = 'completing'
+        Write-JsonAtomic $planPath $plan
+    }
+    $restore = $null
+    if ($plan.PSObject.Properties['restoreReceiptPath'] -and -not [string]::IsNullOrWhiteSpace([string]$plan.restoreReceiptPath)) {
+        $restoreReceipt = Get-Content -LiteralPath ([string]$plan.restoreReceiptPath) -Raw | ConvertFrom-Json -Depth 30
+        $restore = [pscustomobject]@{ data = [pscustomobject]@{ displacedPath = [string]$restoreReceipt.displacedPath; baseline = [pscustomobject]@{ treeSha256 = [string]$restoreReceipt.restoredTreeSha256 }; restoreReceiptPath = [string]$plan.restoreReceiptPath } }
+    }
+    else {
+        $liveNow = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
+        if ([string]$liveNow.data.treeSha256 -ieq [string]$plan.beforeTreeSha256) {
+            $matchingReceipts = @(Get-ChildItem -LiteralPath $evidence -Filter 'shader-cache-restore.*.receipt.json' -File | Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
+                try {
+                    $candidate = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 30
+                    if ([string]$candidate.cachePath -eq $resolvedCache -and [string]$candidate.restoredTreeSha256 -ieq [string]$plan.beforeTreeSha256 -and [string]$candidate.displacedTreeSha256 -ieq [string]$currentBeforeRestore.data.treeSha256) { [pscustomobject]@{ path = $_.FullName; receipt = $candidate } }
+                } catch { }
+            })
+            if ($matchingReceipts.Count -ne 1) { throw 'Live cache is restored but no unique committed restore receipt proves the preserved working tree; recovery is required.' }
+            $match = $matchingReceipts[0]
+            $restore = [pscustomobject]@{ data = [pscustomobject]@{ displacedPath = [string]$match.receipt.displacedPath; baseline = [pscustomobject]@{ treeSha256 = [string]$match.receipt.restoredTreeSha256 }; restoreReceiptPath = [string]$match.path } }
+        }
+        elseif ([string]$liveNow.data.treeSha256 -ieq [string]$currentBeforeRestore.data.treeSha256) {
+            $restore = Invoke-Transaction 'restore' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+        }
+        else { throw 'Live cache matches neither the recorded working tree nor the preserved baseline; recovery is required.' }
+        $plan | Add-Member -NotePropertyName restoreReceiptPath -NotePropertyValue ([string]$restore.data.restoreReceiptPath) -Force
+        $plan.state = 'restored'
+        Write-JsonAtomic $planPath $plan
+    }
     $promoted = $null
     if ($Promote) {
         $request = $plan.request
@@ -569,8 +627,7 @@ function Complete-TaskCache($Storage) {
         $script:FeatureSetSha256 = [string](Get-PropertyValue $request 'featureSetSha256' '')
         $script:Tags = @($request.tags)
         $script:Label = if ([string]::IsNullOrWhiteSpace($Label)) { 'task-complete-' + [IO.Path]::GetFileName($evidence) } else { $Label }
-        $restoreReceipt = Join-Path $evidence 'shader-cache-restore.receipt.json'
-        $promoted = New-CatalogSnapshot $Storage ([string]$restore.data.displacedPath) ([string]$currentBeforeRestore.data.treeSha256) $restoreReceipt 'known-working'
+        $promoted = New-CatalogSnapshot $Storage ([string]$restore.data.displacedPath) ([string]$currentBeforeRestore.data.treeSha256) ([string]$restore.data.restoreReceiptPath) 'known-working'
     }
     $completion = [pscustomobject][ordered]@{
         contractVersion = $contractVersion

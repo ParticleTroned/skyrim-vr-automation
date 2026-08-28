@@ -9,6 +9,9 @@ attributable transactions. It can enumerate every MO2 mod that provides the
 cache path, snapshot and verify an exact tree, seed a verified baseline, or
 restore it while preserving the displaced tree and both inventories. Snapshot,
 seed, and restore refuse to run while MO2, Skyrim, or the SKSE loader is active.
+Recursive inventory is reparse-point-free and bounded by file count, bytes,
+depth, and elapsed time. Snapshot receipts bind the exact cache parent, leaf,
+path, and baseline hash before they authorize a destructive seed or restore.
 
 `Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
 cache management. It stores immutable, content-addressed cache objects and
@@ -114,6 +117,8 @@ Prepare a closed task cache immediately before launching MO2:
 selects the best compatible known-working snapshot and seeds it only when it is
 different. With no match it safely leaves the current tree in use; add
 `-RequireMatch` when a task must not proceed without a catalog baseline.
+Repeating `prepare` with the same immutable cache, evidence, and catalog
+identities reconciles and returns the existing prepared plan.
 
 After the game and MO2 are closed, complete the cache transaction:
 
@@ -134,6 +139,9 @@ catalog. A shader-source mismatch remains excluded unless
 `-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
 this exception does not bypass ABI, runtime, render-family, feature-set, status,
 or tag gates.
+Repeated `complete` calls return the immutable existing completion. A retry
+after restoration but before completion publication accepts only one committed
+restore receipt proving both the baseline and preserved working tree.
 
 `seed` requires the existing snapshot receipt for the same live cache and
 evidence directory, verifies the exact source tree, stages it, swaps it into
@@ -156,7 +164,11 @@ deployment resolution to separate VFS evidence.
 
 Restore never silently discards the current tree: it copies the displaced
 contents into the evidence directory, verifies that copy, and only then removes
-the temporary sibling used for the atomic swap.
+the temporary sibling used for the atomic swap. Seed and restore write unique
+operation journals before moving the live tree. Any pre-commit failure first
+quarantines the uncommitted replacement, restores and hash-verifies the exact
+displaced original, and reports `recovery-required` if that rollback cannot be
+fully verified.
 
 Run `Test-CSXShaderCacheControl.ps1` after changing comparison or transaction
 logic, and `Test-CSXShaderCacheCatalog.ps1` after changing catalog selection or
