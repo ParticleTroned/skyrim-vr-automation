@@ -250,6 +250,14 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    snapshot, render-scale status, preparation trace, and provider-lifecycle
    evidence. Inspect the completed transition before allowing the next apply.
 
+For each transition, persist the exact decoded response bodies in one local
+batch under `raw/transitions/<lane>/transition-NN/`: settle scenario,
+pre-snapshot, mutation scenario, terminal `qualification_wait` (or recovered
+`qualification_status.lastEvidence`), operation, API events, final snapshot,
+render-scale status, preparation trace, and provider-lifecycle receipts. Add
+and rehash their `receipt-index.json` entries before the next apply. Never
+substitute a transcript reference or MCP/store key for one of these files.
+
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
 row or retry it. Continue with the next matrix row only when the game remains
@@ -315,7 +323,11 @@ and `fsr_host`/`fsr_runtime` plus observed runtime fallback for the fallback
 lane. A missing or mismatched native FSR receipt is a failure. Record first
 physical match, first coherent stereo
 presentation, `presentationStable`, `cleanupDrained`, and strict completion
-separately.
+separately. Use the one strict receipt's `milestoneTimings`; preserve
+presentation, cleanup, and strict first-observation frame/QPC/elapsed values,
+the signed presentation-to-cleanup delta, `cleanupTailMs`/frames, and
+`sameObservation`. Equal values count as a measured zero tail only when
+`sameObservation: true`; they are never filled from strict completion.
 
 For None and TAA require the public operation target and
 requested/effective/stable profiles to match the complete target;
@@ -358,6 +370,19 @@ Every transition record must retain direct raw paths for:
 - per-lane CPU/GPU telemetry and profiler capture, plus all stress, fidelity,
   stereo, lifetime, load-presentation, and trace session identities.
 
+Project these producer fields verbatim from the terminal receipt's
+`replacementTimeline` into `summary.json`, `transitions.csv`, and the rendered
+report: `currentPresentationProven`, `currentPresentationGeneration`,
+`replacementAdmissionBlocked`, `replacementAdmissionBlockReasons`,
+`physicalMutationStarted`, and `selectedPresentationDisposition`. Also retain
+the current presentation device/resource identity, both-eye path/generation,
+completed-output reuse/ownership proof, and the relative raw receipt paths plus
+their SHA-256 values. Use `lastPreMutation` for the pre-mutation facet,
+`blockedPreMutation` for blocked-admission proof, and
+`firstPhysicalMutation` for the mutation boundary. A missing required timeline
+entry makes only that evidence facet `INCONCLUSIVE`; do not invent it from a
+later status snapshot.
+
 Perform one bounded DLSS trace capability lifecycle before the first AMD lane:
 status, reset, start, stop, and read. Require zero DLSS dispatch records. A
 missing trace action is `unsupported`; an exposed action that fails is a
@@ -378,7 +403,12 @@ failure. Returning from TAA or None must restore the lane's intended backend.
 Never accept stale FSR generation/resource identity after mutation.
 
 After each lane's transition 31, stop only its owned telemetry and retain final
-status. Append one uniquely headed result column per completed lane, then
+status. Persist every stop/final-status response under `raw/finalization`, then
+verify that every `receipt-index.json` entry exists and matches its byte length
+and SHA-256 before producing summaries or appending the ledger. An evidence
+root containing only `summary.json` and `transitions.csv` is incomplete and
+cannot support a ledger append. Append one uniquely headed result column per
+completed lane, then
 produce separate tables for:
 
 ### Ledger append transaction

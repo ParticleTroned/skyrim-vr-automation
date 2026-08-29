@@ -43,7 +43,7 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
-foreach ($token in @('one parallel read-only batch', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`")) {
+foreach ($token in @('one parallel read-only batch', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
 
@@ -178,6 +178,13 @@ foreach ($variant in $variants) {
         'shader-cache waits', 'SSS/SSGI prewarm',
         'DLSS, FSR,', 'request-to-prepared', 'prepared-to-creator',
         'replacement admission state and all reasons', 'consecutive stretch frames',
+        '`raw/transitions/', '`receipt-index.json`', 'exact decoded response bodies',
+        '`milestoneTimings`', '`cleanupTailMs`', '`sameObservation`',
+        '`replacementTimeline`', '`currentPresentationProven`',
+        '`currentPresentationGeneration`', '`replacementAdmissionBlocked`',
+        '`replacementAdmissionBlockReasons`', '`physicalMutationStarted`',
+        '`selectedPresentationDisposition`', 'their SHA-256 values',
+        'only `summary.json` and `transitions.csv` is incomplete',
         'No external', 'Never average'
     )) {
         Assert-Contains $protocolContract $token $variant.Name

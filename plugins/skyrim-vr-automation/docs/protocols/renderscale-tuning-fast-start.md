@@ -12,6 +12,17 @@ deferred tools, as the schema inventory. Do not inspect plugin cache paths,
 manifests, marketplace files, or the bundled controller during a live run.
 There is no fallback transport and no lane switching.
 
+Before the first live request, create one unique evidence root named
+`.tmp/renderscale-tuning-<vendor>-<UTC>-evidence` with `raw/startup`,
+`raw/baseline`, `raw/transitions`, and `raw/finalization` children. Create
+`receipt-index.json` there. Each direct MCP response must be written as its
+exact decoded JSON response body before the next mutation; request identity,
+tool/action, lane, transition, relative path, byte length, and SHA-256 belong
+in the index. Transcript references and MCP/store keys are supplemental only
+and are never durable evidence paths. A receipt that cannot be written and
+rehash-verified stops future mutations; preserve the write failure and perform
+only ownership-guarded cleanup that is already safe.
+
 Start a local monotonic startup budget with the first live request. The
 positioning scenario must be accepted within 30 seconds. Its required
 post-COC 10,000 ms settle is outside that dispatch budget. A successful call
@@ -28,6 +39,9 @@ Before positioning, use only these request rounds:
    `fsr`. If a read returns 429/502/503/504 while the off-thread health receipt
    remains exact, retry only the failed read once immediately within the same
    startup budget. No fixed sleep or availability waiter is permitted.
+   Require the direct render-scale tool description to advertise independent
+   `milestoneTimings` and the `replacementTimeline`; otherwise stop with
+   `plugin_contract_outdated` before the fixture or COC.
 2. Call `communityshaders.menu prepare_coc` exactly once and alone. It is the
    first stateful call. Require the runtime-only FOV/TAA `0.3/0.3/0.7` fixture,
    debug logging, and `persisted: false`. It must not change DLSS,
@@ -51,7 +65,9 @@ telemetry action, screenshot, or status call before the scenario is queued.
 
 As soon as the async scenario returns its `runId`, read the selected lane's
 matrix and full protocol completely while the server performs the 10,000 ms
-settle. Do not wait first. After both files are loaded, query that `runId`.
+settle. In the same interval, persist and index the startup round,
+`prepare_coc`, and positioning-acceptance receipts. Do not wait first. After
+both files are loaded, query that `runId`.
 If it is still running, query status at most once per second until the settle
 plus a five-second receipt envelope expires. Never send a second COC.
 
@@ -61,6 +77,12 @@ no active qualification, and an authoritative public snapshot. Reuse these
 receipts for post-position admission and the initial baseline. Do not repeat
 the same state, scene, menu, render-scale, or API reads merely to reconfirm
 them.
+
+Persist the positioning terminal response and all three post-position
+admission rounds under `raw/startup`. Persist the baseline begin/dispatch/apply
+scenario, strict waiter, and owner-handoff responses under `raw/baseline`.
+Index and rehash each batch before its next mutation. The evidence bundle is
+invalid if these response bodies exist only in the transcript.
 
 The positioning scenario is the only `async: true` scenario in the assay.
 Every mutation, admission, reset, and ownership scenario remains synchronous

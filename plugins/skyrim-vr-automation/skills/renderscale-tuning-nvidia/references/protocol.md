@@ -222,6 +222,14 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    snapshot, render-scale status, preparation trace, and applicable DLSS
    trace. Inspect the completed transition before allowing the next apply.
 
+For each transition, persist the exact decoded response bodies in one local
+batch under `raw/transitions/transition-NN/`: settle scenario, pre-snapshot,
+mutation scenario, terminal `qualification_wait` (or recovered
+`qualification_status.lastEvidence`), operation, API events, final snapshot,
+render-scale status, preparation trace, and any DLSS trace lifecycle receipts.
+Add and rehash their `receipt-index.json` entries before the next apply. Never
+substitute a transcript reference or MCP/store key for one of these files.
+
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
 row or retry it. Continue with the next matrix row only when the game remains
@@ -288,7 +296,12 @@ fidelity proof. A missing or mismatched native vendor receipt is a failure.
 Record first
 physical-profile match, first coherent stereo presentation,
 `presentationStable`, `cleanupDrained`, and strict completion separately.
-Cleanup may follow presentation and must not replace its timing.
+Use the one strict receipt's `milestoneTimings`; preserve presentation,
+cleanup, and strict first-observation frame/QPC/elapsed values, the signed
+presentation-to-cleanup delta, `cleanupTailMs`/frames, and
+`sameObservation`. Cleanup may follow presentation and must not replace its
+timing. Equal values count as a measured zero tail only when
+`sameObservation: true`; they are never filled from strict completion.
 
 For None and TAA require the public operation target and
 requested/effective/stable profiles to match the complete target;
@@ -336,6 +349,19 @@ Every transition record must retain direct raw paths for:
   33, plus all stress, fidelity, stereo, lifetime, load-presentation, and trace
   session identities.
 
+Project these producer fields verbatim from the terminal receipt's
+`replacementTimeline` into `summary.json`, `transitions.csv`, and the rendered
+report: `currentPresentationProven`, `currentPresentationGeneration`,
+`replacementAdmissionBlocked`, `replacementAdmissionBlockReasons`,
+`physicalMutationStarted`, and `selectedPresentationDisposition`. Also retain
+the current presentation device/resource identity, both-eye path/generation,
+completed-output reuse/ownership proof, and the relative raw receipt paths plus
+their SHA-256 values. Use `lastPreMutation` for the pre-mutation facet,
+`blockedPreMutation` for blocked-admission proof, and
+`firstPhysicalMutation` for the mutation boundary. A missing required timeline
+entry makes only that evidence facet `INCONCLUSIVE`; do not invent it from a
+later status snapshot.
+
 Before each DLSS or DLAA transition, reset and start exactly one owned bounded
 DLSS trace. Stop and read that same trace after the terminal receipt. A missing
 trace action is `BLOCKED`; an exposed trace action that fails is a control
@@ -363,6 +389,11 @@ output after destructive mutation. A proven old provider may remain active only
 before mutation begins.
 
 After transition 33, stop only task-owned telemetry and retain final status.
+Persist every stop/final-status response under `raw/finalization`, then verify
+that every `receipt-index.json` entry exists and matches its byte length and
+SHA-256 before producing summaries or appending the ledger. An evidence root
+containing only `summary.json` and `transitions.csv` is incomplete and cannot
+support a ledger append.
 Append one uniquely headed result column, then produce separate tables for:
 
 ### Ledger append transaction
