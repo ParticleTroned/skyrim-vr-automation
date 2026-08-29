@@ -44,37 +44,20 @@ Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
 foreach ($token in @(
-    'Minimal live admission', 'named plugin-provided', 'Do not enumerate the tool catalog',
-    'Do not measure, classify, or report startup duration',
-    "transition 1's `qualification_dispatch`", 'parallel three-read',
-    'no local file, timer, script, progress message', 'After all three responses return',
-    'continue directly to `prepare_coc` and positioning', 'three decoded responses',
-    'mandatory 10,000 ms settle', 'only direct `inspect health`',
-    '`communityshaders.upscaling_api capabilities`',
-    '`communityshaders.renderscale status`', 'contains registry and producer data',
-    'do not call `registry` separately', 'Do not call `ping`, `inspect state`',
-    '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098',
-    'retry only that read once', 'Do not sleep', 'absolute tolerance `0.000001`',
-    'ordinary binary32 serialization drift', 'Validate the decoded response in memory',
-    'Persist it during the settle', 'do not write or rehash it first',
-    '`async: true`', '"tool": "console"', '"action": "exec"',
-    '"command": "coc WhiterunDragonsreach"', '`args.command` is mandatory',
-    '"wait": 10000', '"action": "state"', '"action": "scene"',
-    '"action": "snapshot"', '"action": "status"',
-    '"expectedBuildId": "<bound-build-id>"',
-    'three startup responses', 'positioning-acceptance receipt',
-    'Create required parent directories implicitly',
-    'Do not create an empty directory tree or placeholder files first',
-    '`receipt-index.json`', 'exact decoded JSON response body',
-    'does not require byte-for-byte equality', 'final on-disk files are authoritative',
-    '`Get-Item` and `Get-FileHash -Algorithm SHA256`',
-    'Do not compare a file against an in-memory serialization',
-    'client JavaScript encoding or crypto APIs',
-    'a failure of a non-required helper is not an evidence failure',
-    'allow the positioning scenario', 'stop before the baseline',
-    'Do not run a separate post-position admission',
+    'post-position contract', 'starts only after', 'synchronous',
+    '`stepsRun: 8`', '`position-health`', '`position-state`',
+    '`position-scene`', '`position-capabilities`', '`position-snapshot`',
+    '`position-renderscale`', '`WhiterunDragonsreach`', '`0x10DE`/4318',
+    '`0x1002`/4098', 'Report positioning as soon as it returns',
+    'do not create an evidence directory', 'decode Base64',
+    'read another reference first', 'in one local read action',
+    'Do not write startup evidence before transition 1',
+    "transition 1's required evidence batch before transition 2",
+    '`Get-Item` and `Get-FileHash`',
+    'never compare them with an in-memory reserialization',
+    'Every later mutation and ownership scenario remains synchronous',
     'terminal baseline waiter receipt', '`milestoneTimings`',
-    '`replacementTimeline`', 'never durable evidence paths'
+    '`replacementTimeline`'
 )) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
@@ -102,6 +85,10 @@ foreach ($forbidden in @(
     '`slow_startup_reads`',
     '`slow_positioning_dispatch`',
     'parallel five-read',
+    'parallel three-read',
+    '`async: true`',
+    'positioning-acceptance receipt',
+    'during its mandatory 10,000 ms settle',
     '`menu list`',
     '`cpu_performance_reset`',
     '`gpu_performance_reset`',
@@ -162,7 +149,7 @@ foreach ($variant in $variants) {
 
     $skill = Get-Content -LiteralPath (Join-Path $sourceRoot 'SKILL.md') -Raw
     $protocol = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\protocol.md') -Raw
-    $protocolContract = "$fastStart`n$protocol"
+    $protocolContract = "$skill`n$fastStart`n$protocol"
     $matrix = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
 
     Assert-Contains $skill "name: $($variant.Name)" $variant.Name
@@ -179,18 +166,24 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'Validate required output fields only' $variant.Name
     Assert-Contains $skill 'structured producer receipt that owns them' $variant.Name
     Assert-Contains $skill '../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
-    Assert-Contains $skill 'As soon as its `runId` is accepted' $variant.Name
+    Assert-Contains $skill 'The first live call is `communityshaders.menu`' $variant.Name
+    Assert-Contains $skill '`{"action":"prepare_coc"}`' $variant.Name
+    Assert-Contains $skill '"async": false' $variant.Name
+    Assert-Contains $skill '"command": "coc WhiterunDragonsreach"' $variant.Name
+    Assert-Contains $skill '"label": "position-renderscale"' $variant.Name
+    Assert-Contains $skill 'Do not insert commentary' $variant.Name
+    Assert-Contains $skill 'report positioning immediately' $variant.Name
+    Assert-Contains $skill 'completely in one local read' $variant.Name
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
     Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
 
     foreach ($token in @(
-        '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
-        'Apply the shared render-scale tuning fast-start contract exactly',
-        'only live admission reads', 'do not repeat its reads',
+        '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7`',
+        '`SKILL.md` owns runtime-only `prepare_coc`',
+        'one synchronous', 'post-position contract', 'do not repeat its reads',
         'Do not enumerate', 'audit schemas', '`plugin_direct_unavailable`',
         'no fallback transport',
-        'only `async: true` scenario',
-        'After the positioning `runId` is accepted',
+        'synchronous positioning response returns',
         'offline package invariant', 'do not revalidate or summarize it',
         'reset then start the short', 'exact six',
         'one synchronous fail-closed handoff scenario',
@@ -231,7 +224,7 @@ foreach ($variant in $variants) {
         'selected live lane''s short', 'pre_snapshot_transport_unavailable',
         'send no further DevBench', 'ask the user immediately',
         'Do not attempt cleanup until',
-        'shared startup `communityshaders.renderscale status` receipt',
+        'positioning `communityshaders.renderscale status` result',
         'they are output evidence',
         'Except for the pre-snapshot transport-unavailable path',
         'Native-generation evidence is optional',
@@ -283,7 +276,7 @@ foreach ($variant in $variants) {
     Assert-True (-not $skill.Contains('live public API to expose every action and field', [StringComparison]::Ordinal)) "$($variant.Name) still treats input metadata as an output contract."
 
     $positioningPosition = $protocol.IndexOf(
-        'After the positioning `runId` is accepted',
+        'synchronous positioning response returns',
         [StringComparison]::Ordinal
     )
     $baselinePosition = $protocol.IndexOf(

@@ -6,10 +6,10 @@ run the Simple CSM matrix and never mutates a profile through
 
 ## 1. Bind and prepare
 
-Apply the shared render-scale tuning fast-start contract exactly. It owns
-the only live admission reads, runtime-only `prepare_coc`, Dragonsreach
-positioning, baseline, and measured-owner handoff. Reuse its receipts; do not
-repeat its reads or add another preflight phase.
+The NVIDIA `SKILL.md` owns runtime-only `prepare_coc` and the one synchronous
+Dragonsreach positioning scenario before this file is read. Apply the shared
+post-position contract to that returned scenario, then use it for baseline and
+measured-owner handoff. Do not repeat its reads or add another preflight phase.
 
 Use the installed plugin's direct DevBench MCP tools exclusively for every
 NVIDIA baseline, transition, evidence read, and guarded cleanup. Do not
@@ -18,9 +18,10 @@ local orchestration script. If one of the named direct calls is unavailable,
 stop with `plugin_direct_unavailable`; there is no fallback transport.
 
 Require `status.adapter.available: true` and NVIDIA vendor ID `0x10DE`/4318 in
-the shared startup `communityshaders.renderscale status` receipt. This is the
+the positioning `communityshaders.renderscale status` result. This is the
 bound active D3D adapter; do not substitute generic process inventory or a
-description string. Retain the three shared startup receipts.
+description string. Retain the fixture receipt and the single positioning
+scenario response.
 
 Require public capabilities to expose DLSS, FSR, every matrix quality mode,
 and FSR3 before the baseline. Missing capability is `BLOCKED`; do not replace a
@@ -38,9 +39,9 @@ controller's applied/stable resource records are separate physical evidence.
 At native resolution they remain inactive with backend `none`, but retain the
 exact logical method and never replace a public profile.
 
-After the positioning `runId` is accepted, load the packaged `matrix.v1.json`
-during the 10-second wait and execute it unchanged. Its structure is an offline
-package invariant; do not revalidate or summarize it during live startup.
+Load the packaged `matrix.v1.json` with this protocol only after the
+synchronous positioning response returns, and execute it unchanged. Its
+structure is an offline package invariant; do not revalidate or summarize it.
 
 ## 2. Establish the NVIDIA baseline
 
