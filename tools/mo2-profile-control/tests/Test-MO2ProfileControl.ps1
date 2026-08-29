@@ -3,6 +3,8 @@
 $ErrorActionPreference = 'Stop'
 $script = Join-Path (Split-Path -Parent $PSScriptRoot) 'Invoke-MO2ProfileControl.ps1'
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('mo2-profile-control-' + [guid]::NewGuid().ToString('N'))
+$priorControlRoot = $env:CSX_MO2_PROFILE_CONTROL_ROOT
+$env:CSX_MO2_PROFILE_CONTROL_ROOT = Join-Path $fixture 'target-controls'
 try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
     $profile = Join-Path $fixture 'modlist.txt'
@@ -55,7 +57,8 @@ try {
     $enableInspect = & $script inspect -ProfilePath $profile -ModName 'Enable Test Mod' -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
     if ($enableInspect.enabled) { throw 'Inspect did not report the disabled marker.' }
 
-    $heldLock = [IO.File]::Open("$profile.transaction.lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $profileControlDirectory = @(Get-ChildItem -LiteralPath $env:CSX_MO2_PROFILE_CONTROL_ROOT -Directory)[0].FullName
+    $heldLock = [IO.File]::Open((Join-Path $profileControlDirectory 'target.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     $contentionRejected = $false
     try {
         try { $null = & $script disable -ProfilePath $profile -ModName 'Exact Test Mod' -EvidenceDirectory (Join-Path $fixture 'contention-evidence') -BlockingProcessNames $fixtureProcessNames -TransactionLockTimeoutMilliseconds 150 -Confirm:$false }
@@ -90,6 +93,22 @@ try {
     if ($enableRestored.enabled -or $enableRestored.sha256 -ne $originalHash) { throw 'Enable restore did not reproduce the original marker state.' }
     if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$original, [byte[]][IO.File]::ReadAllBytes($profile))) { throw 'Enable restore was not byte-identical.' }
 
+    $recoveryEvidence = Join-Path $fixture 'restart-recovery-evidence'
+    $recoveryEnabled = & $script enable -ProfilePath $profile -ModName 'Enable Test Mod' -EvidenceDirectory $recoveryEvidence -BlockingProcessNames $fixtureProcessNames | ConvertFrom-Json
+    $recoveryReceiptPath = Join-Path $recoveryEvidence 'modlist-control.receipt.json'
+    $recoveryReceipt = Get-Content -LiteralPath $recoveryReceiptPath -Raw | ConvertFrom-Json
+    $recoveryJournalPath = [string]$recoveryReceipt.transactionJournalPath
+    $recoveryJournal = Get-Content -LiteralPath $recoveryJournalPath -Raw | ConvertFrom-Json
+    Remove-Item -LiteralPath $recoveryReceiptPath -Force
+    $recoveryJournal.phase = 'writing-live'; $recoveryJournal.committedUtc = $null
+    $recoveryJournal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $recoveryJournalPath -Encoding utf8
+    $recoveryJournal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath ([string]$recoveryJournal.evidenceJournalPath) -Encoding utf8
+    $recoveryTriggered = $false
+    try { $null = & $script enable -ProfilePath $profile -ModName 'Enable Test Mod' -BlockingProcessNames $fixtureProcessNames -Confirm:$false }
+    catch { $recoveryTriggered = $_.Exception.Message -match 'EvidenceDirectory' }
+    $recoveredAuthority = Get-Content -LiteralPath $recoveryJournalPath -Raw | ConvertFrom-Json
+    if (-not $recoveryTriggered -or $recoveredAuthority.phase -ne 'recovered-preimage' -or (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash -ne $originalHash) { throw 'Restart recovery did not restore the exact profile preimage before validating the next request.' }
+
     $rollbackEvidence = Join-Path $fixture 'rollback-evidence'
     New-Item -ItemType Directory -Path (Join-Path $rollbackEvidence 'modlist-control.receipt.json') -Force | Out-Null
     $rollbackObserved = $false
@@ -99,8 +118,9 @@ try {
     $rollbackJournal = Get-Content -LiteralPath $rollbackJournalPath -Raw | ConvertFrom-Json
     if (-not $rollbackObserved -or $rollbackJournal.phase -ne 'rolled-back' -or (Get-FileHash -LiteralPath $profile -Algorithm SHA256).Hash -ne $originalHash) { throw 'Post-write receipt failure did not roll back and journal the exact live preimage.' }
 
-    [pscustomobject]@{ ok = $true; assertions = 28; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
+    [pscustomobject]@{ ok = $true; assertions = 30; restoredSha256 = $enableRestored.sha256 } | ConvertTo-Json
 }
 finally {
+    $env:CSX_MO2_PROFILE_CONTROL_ROOT = $priorControlRoot
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
 }

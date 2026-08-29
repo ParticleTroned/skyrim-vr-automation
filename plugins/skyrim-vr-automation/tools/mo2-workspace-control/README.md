@@ -29,6 +29,16 @@ RootBuilder deployment must be closed before `create`, `resume`, `register-mod`,
 or `retire`. Release any evidence session before mutating the workspace. All
 commands accept `-Compact` for one-line JSON.
 
+Workspace mutations serialize on the control-root transaction lock. Creation,
+resume, and retirement write their recovery journal before the first mutation;
+resume and retirement also persist an exact manifest preimage, and every parent
+operation records the selected-profile subtransaction path in advance. The next
+non-preview command resolves every nonterminal journal before command-specific
+reads. It either finalizes a completely committed creation, restores the exact
+pre-state, or fails closed on unsafe paths or unclassified drift. Recovery is
+bounded by the same traversal budgets and never searches outside the configured
+workspace, profile, and mods roots.
+
 Workspaces are durably owned by `-TaskId` (or `CODEX_THREAD_ID` /
 `CODEX_TASK_ID`), not by one access lease. `create` makes and selects a fresh
 profile. `list-task` reports retained profiles. `resume` rebinds one exact

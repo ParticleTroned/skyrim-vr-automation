@@ -230,8 +230,89 @@ function Write-ProfileJsonAtomic([string]$Path, $Value) {
     Write-BytesAtomically -Path $Path -Bytes $bytes
 }
 
+function Test-ProfilePathWithin([string]$Path, [string]$Parent) {
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $root = [IO.Path]::GetFullPath($Parent).TrimEnd('\')
+    return $candidate.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-ProfileTransactionControl([string]$Path) {
+    $canonical = [IO.Path]::GetFullPath($Path)
+    $identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical.ToUpperInvariant())))
+    $override = [Environment]::GetEnvironmentVariable('CSX_MO2_PROFILE_CONTROL_ROOT')
+    if ([string]::IsNullOrWhiteSpace($override)) {
+        $base = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'CSX-VR-Automation\MO2\profile-transactions'
+    }
+    else {
+        $base = [IO.Path]::GetFullPath($override)
+        $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+        if (-not (Test-ProfilePathWithin -Path $canonical -Parent $temporary) -or -not (Test-ProfilePathWithin -Path $base -Parent $temporary)) {
+            throw 'CSX_MO2_PROFILE_CONTROL_ROOT is fixture-only and requires both the profile and control root beneath the OS temporary directory.'
+        }
+    }
+    $root = Join-Path $base $identity
+    return [pscustomobject][ordered]@{ root = $root; lock = Join-Path $root 'target.lock'; journal = Join-Path $root 'transaction.journal.json'; identity = $identity }
+}
+
+function Write-ProfileJournal($Control, $Journal) {
+    Write-ProfileJsonAtomic -Path $Control.journal -Value $Journal
+    if ($Journal.PSObject.Properties['evidenceJournalPath'] -and -not [string]::IsNullOrWhiteSpace([string]$Journal.evidenceJournalPath)) {
+        Write-ProfileJsonAtomic -Path ([string]$Journal.evidenceJournalPath) -Value $Journal
+    }
+}
+
+function Resolve-PendingProfileTransaction([string]$Path, $Control, [switch]$NoMutation) {
+    if (-not (Test-Path -LiteralPath $Control.journal -PathType Leaf)) { return $null }
+    $journal = Get-Content -LiteralPath $Control.journal -Raw | ConvertFrom-Json -Depth 20
+    if ([string]$journal.phase -in @('committed', 'recovered-committed', 'rolled-back', 'recovered-preimage')) { return $journal }
+    if ([string]$journal.contractVersion -cne '2.0.0' -or [IO.Path]::GetFullPath([string]$journal.profilePath) -cne [IO.Path]::GetFullPath($Path)) {
+        throw 'Authoritative MO2 profile journal has an unsupported contract or different target.'
+    }
+    if ($NoMutation) { throw "A nonterminal MO2 profile transaction requires recovery before this preview: $($Control.journal)" }
+    $active = @(Get-LiveProcesses -Names $BlockingProcessNames)
+    if ($active.Count -gt 0) { throw "MO2 profile recovery requires MO2 and Skyrim to be closed. Active: $($active.name -join ', ')." }
+    $beforeHash = [string]$journal.beforeSha256
+    $intendedHash = [string]$journal.intendedSha256
+    $preimagePath = if ($journal.PSObject.Properties['backupPath']) { [string]$journal.backupPath } else { [string]$journal.preimagePath }
+    if ([string]::IsNullOrWhiteSpace($preimagePath) -or -not (Test-Path -LiteralPath $preimagePath -PathType Leaf) -or (Get-Sha256 $preimagePath) -cne $beforeHash) {
+        throw 'MO2 profile recovery cannot verify the exact retained preimage.'
+    }
+    $liveHash = Get-Sha256 $Path
+    if ($liveHash -ceq $beforeHash) {
+        $journal.phase = 'recovered-preimage'
+    }
+    elseif ($liveHash -ceq $intendedHash) {
+        $receiptValid = $false
+        if ($journal.PSObject.Properties['receiptPath'] -and -not [string]::IsNullOrWhiteSpace([string]$journal.receiptPath) -and (Test-Path -LiteralPath ([string]$journal.receiptPath) -PathType Leaf)) {
+            try {
+                $receipt = Get-Content -LiteralPath ([string]$journal.receiptPath) -Raw | ConvertFrom-Json
+                $receiptValid = [string]$receipt.beforeSha256 -ceq $beforeHash -and [string]$receipt.resultSha256 -ceq $intendedHash
+            }
+            catch { $receiptValid = $false }
+        }
+        if ($receiptValid -or [string]$journal.operation -ceq 'restore') {
+            $journal.phase = 'recovered-committed'
+        }
+        else {
+            Write-BytesAtomically -Path $Path -Bytes ([IO.File]::ReadAllBytes($preimagePath))
+            if ((Get-Sha256 $Path) -cne $beforeHash) { throw 'MO2 profile recovery failed exact preimage verification.' }
+            $journal.phase = 'recovered-preimage'
+        }
+    }
+    else {
+        $journal.phase = 'recovery-required'; $journal | Add-Member -NotePropertyName recoveryError -NotePropertyValue 'Live profile matches neither exact preimage nor intended result.' -Force
+        Write-ProfileJournal -Control $Control -Journal $journal
+        throw "MO2 profile recovery requires manual review because the live modlist has unclassified drift: $($Control.journal)"
+    }
+    $journal | Add-Member -NotePropertyName recoveredUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+    Write-ProfileJournal -Control $Control -Journal $journal
+    return $journal
+}
+
 function Invoke-WithProfileTransactionLock([string]$Path, [scriptblock]$Action, [int]$TimeoutMilliseconds = $TransactionLockTimeoutMilliseconds) {
-    $lockPath = "$Path.transaction.lock"
+    $control = Get-ProfileTransactionControl $Path
+    New-Item -ItemType Directory -Path $control.root -Force | Out-Null
+    $lockPath = $control.lock
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     $stream = $null
     while ($null -eq $stream) {
@@ -243,7 +324,7 @@ function Invoke-WithProfileTransactionLock([string]$Path, [scriptblock]$Action, 
             Start-Sleep -Milliseconds 50
         }
     }
-    try { return & $Action }
+    try { return & $Action $control }
     finally { $stream.Dispose() }
 }
 
@@ -262,6 +343,8 @@ function Invoke-ProfileMutationTransaction {
     $expectedBeforeHash = Get-BytesSha256 $ExpectedBeforeBytes
     $expectedAfterHash = Get-BytesSha256 $AfterBytes
     return Invoke-WithProfileTransactionLock -Path $Path -Action {
+        param($control)
+        Resolve-PendingProfileTransaction -Path $Path -Control $control | Out-Null
         if (-not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null }
         if (Test-Path -LiteralPath $BackupPath -PathType Leaf) { throw "Refusing to overwrite an existing exact backup: $BackupPath" }
         if (Test-Path -LiteralPath $ReceiptPath -PathType Leaf) { throw "Refusing to overwrite an existing transaction receipt: $ReceiptPath" }
@@ -270,24 +353,26 @@ function Invoke-ProfileMutationTransaction {
         if ($currentHash -cne $expectedBeforeHash) { throw 'The profile changed after planning and before commit; no live bytes were written.' }
 
         $transactionId = [guid]::NewGuid().ToString('N')
-        $journalPath = Join-Path $EvidenceRoot "modlist-control.$transactionId.journal.json"
+        $journalPath = $control.journal
+        $evidenceJournalPath = Join-Path $EvidenceRoot "modlist-control.$transactionId.journal.json"
         $journal = [pscustomobject][ordered]@{
             contractVersion = '2.0.0'; transactionId = $transactionId; operation = [string]$Receipt.operation
             phase = 'preparing'; profilePath = $Path; backupPath = $BackupPath; receiptPath = $ReceiptPath
             beforeSha256 = $expectedBeforeHash; intendedSha256 = $expectedAfterHash
+            evidenceJournalPath = $evidenceJournalPath
             preparedUtc = [DateTime]::UtcNow.ToString('o'); liveWriteStartedUtc = $null; committedUtc = $null
             rollback = $null
         }
         [IO.File]::WriteAllBytes($BackupPath, $ExpectedBeforeBytes)
         if ((Get-Sha256 $BackupPath) -cne $expectedBeforeHash) { throw 'Exact backup verification failed before profile mutation.' }
         $journal.phase = 'prepared'
-        Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+        Write-ProfileJournal -Control $control -Journal $journal
 
         $liveWritten = $false
         try {
             $journal.phase = 'writing-live'
             $journal.liveWriteStartedUtc = [DateTime]::UtcNow.ToString('o')
-            Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+            Write-ProfileJournal -Control $control -Journal $journal
             Write-BytesAtomically -Path $Path -Bytes $AfterBytes
             $liveWritten = $true
             if ((Get-Sha256 $Path) -cne $expectedAfterHash) { throw 'Atomic profile replacement did not produce the intended hash.' }
@@ -306,7 +391,7 @@ function Invoke-ProfileMutationTransaction {
 
             $journal.phase = 'committed'
             $journal.committedUtc = [DateTime]::UtcNow.ToString('o')
-            Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+            Write-ProfileJournal -Control $control -Journal $journal
             return [pscustomobject]@{ receipt = $Receipt; journalPath = $journalPath; transactionId = $transactionId }
         }
         catch {
@@ -323,7 +408,7 @@ function Invoke-ProfileMutationTransaction {
             }
             $journal.phase = if ($rollbackOk) { 'rolled-back' } else { 'recovery-required' }
             $journal.rollback = [pscustomobject][ordered]@{ attempted = $liveWritten; verified = $rollbackOk; error = $rollbackError; completedUtc = [DateTime]::UtcNow.ToString('o') }
-            try { Write-ProfileJsonAtomic -Path $journalPath -Value $journal } catch { $rollbackError = "${rollbackError}; journal: $($_.Exception.Message)" }
+            try { Write-ProfileJournal -Control $control -Journal $journal } catch { $rollbackError = "${rollbackError}; journal: $($_.Exception.Message)" }
             if (-not $rollbackOk) { throw "Profile transaction failed and rollback requires recovery. $failure Rollback: $rollbackError" }
             throw "Profile transaction failed; exact preimage restored. $failure"
         }
@@ -341,24 +426,28 @@ function Invoke-ProfileRestoreTransaction {
     )
 
     return Invoke-WithProfileTransactionLock -Path $Path -Action {
+        param($control)
+        Resolve-PendingProfileTransaction -Path $Path -Control $control | Out-Null
         if ((Get-Sha256 $Path) -cne $ExpectedCurrentHash) { throw 'Current modlist changed before restore commit; no live bytes were written.' }
         $transactionId = [guid]::NewGuid().ToString('N')
         $preimagePath = Join-Path $EvidenceRoot "modlist.restore-before.$transactionId.bin"
-        $journalPath = Join-Path $EvidenceRoot "modlist-restore.$transactionId.journal.json"
+        $journalPath = $control.journal
+        $evidenceJournalPath = Join-Path $EvidenceRoot "modlist-restore.$transactionId.journal.json"
         [IO.File]::WriteAllBytes($preimagePath, $CurrentBytes)
         $journal = [pscustomobject][ordered]@{
             contractVersion = '2.0.0'; transactionId = $transactionId; operation = 'restore'; phase = 'prepared'
             profilePath = $Path; preimagePath = $preimagePath; beforeSha256 = $ExpectedCurrentHash; intendedSha256 = $ExpectedRestoreHash
+            evidenceJournalPath = $evidenceJournalPath
             preparedUtc = [DateTime]::UtcNow.ToString('o'); committedUtc = $null; rollback = $null
         }
-        Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+        Write-ProfileJournal -Control $control -Journal $journal
         $liveWritten = $false
         try {
             Write-BytesAtomically -Path $Path -Bytes $RestoreBytes
             $liveWritten = $true
             if ((Get-Sha256 $Path) -cne $ExpectedRestoreHash) { throw 'Restore postcondition hash failed.' }
             $journal.phase = 'committed'; $journal.committedUtc = [DateTime]::UtcNow.ToString('o')
-            Write-ProfileJsonAtomic -Path $journalPath -Value $journal
+            Write-ProfileJournal -Control $control -Journal $journal
             return [pscustomobject]@{ journalPath = $journalPath; transactionId = $transactionId }
         }
         catch {
@@ -373,7 +462,7 @@ function Invoke-ProfileRestoreTransaction {
             }
             $journal.phase = if ($rollbackOk) { 'rolled-back' } else { 'recovery-required' }
             $journal.rollback = [pscustomobject][ordered]@{ attempted = $liveWritten; verified = $rollbackOk; error = $rollbackError; completedUtc = [DateTime]::UtcNow.ToString('o') }
-            try { Write-ProfileJsonAtomic -Path $journalPath -Value $journal } catch { }
+            try { Write-ProfileJournal -Control $control -Journal $journal } catch { }
             if (-not $rollbackOk) { throw "Profile restore failed and rollback requires recovery. $failure Rollback: $rollbackError" }
             throw "Profile restore failed; exact preimage restored. $failure"
         }
@@ -403,6 +492,19 @@ if (-not (Test-Path -LiteralPath $resolvedProfile -PathType Leaf)) {
 }
 Assert-NoReparsePointPath -Path $resolvedProfile -Purpose 'Profile modlist'
 $profileName = [IO.Path]::GetFileName($profileDirectory)
+
+if ($Command -ne 'inspect') {
+    if ($WhatIfPreference) {
+        $previewControl = Get-ProfileTransactionControl $resolvedProfile
+        if (Test-Path -LiteralPath $previewControl.journal -PathType Leaf) { Resolve-PendingProfileTransaction -Path $resolvedProfile -Control $previewControl -NoMutation | Out-Null }
+    }
+    else {
+        $null = Invoke-WithProfileTransactionLock -Path $resolvedProfile -Action {
+            param($control)
+            Resolve-PendingProfileTransaction -Path $resolvedProfile -Control $control
+        }
+    }
+}
 
 $beforeBytes = [IO.File]::ReadAllBytes($resolvedProfile)
 $beforeMatches = @(Get-ModLineMatches -Bytes $beforeBytes -Name $ModName)
