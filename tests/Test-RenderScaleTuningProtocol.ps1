@@ -249,6 +249,31 @@ foreach ($token in @(
     Assert-Contains $amdProtocol $token 'AMD adversarial guard'
 }
 
+foreach ($protocol in @(
+    [pscustomobject]@{ Name = 'NVIDIA'; Text = $nvidiaProtocol },
+    [pscustomobject]@{ Name = 'AMD'; Text = $amdProtocol }
+)) {
+    foreach ($token in @(
+        'exactly one live DevBench transport lane',
+        'controller was selected as the sole live lane',
+        'without changing the shared 30-second measurement deadline',
+        '`-MaxTransientRetries 0`',
+        '`requestTimeoutSeconds`',
+        '`qualification_status`',
+        'do not replay the waiter',
+        'terminal receipt cannot be recovered',
+        'does not by itself make control unsafe',
+        'must remain `PASS`',
+        '`nativeGenerationEvidence: INCONCLUSIVE`',
+        'qualification-terminal row failure is not a producer terminal failure',
+        '`NOT RUN`, never `BLOCKED`',
+        '`INTERRUPTED`'
+    )) {
+        Assert-Contains $protocol.Text $token "$($protocol.Name) shared waiter/verdict guard"
+    }
+    Assert-True (-not $protocol.Text.Contains('bundled-controller fallback lane', [StringComparison]::Ordinal)) "$($protocol.Name) introduces a second DevBench lane."
+}
+
 # Guard the separate protocol explicitly: this change must not absorb or alter
 # Simple CSM's canonical 25-step contract.
 $simpleCsmSkill = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\SKILL.md') -Raw

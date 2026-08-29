@@ -43,6 +43,15 @@ Nested `error.code`, `status`, and `result.state` values are classified. Use
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
 exponential retry and are preserved under `transportRetries`.
 
+`call` uses a 15-second request timeout by default. When the top-level tool
+arguments contain `timeoutMs`, the controller automatically raises the request
+timeout to at least `ceil(timeoutMs / 1000) + 5` seconds and reports the
+effective value as `requestTimeoutSeconds`. This transport envelope does not
+extend the server's measurement deadline; it only leaves bounded time for the
+terminal receipt to return. Use `-MaxTransientRetries 0` for ownership-bearing
+or otherwise non-replayable actions. If their response is lost, recover their
+existing owner/status instead of sending the action again.
+
 Each controller invocation closes its owned Streamable HTTP MCP session before
 returning and reports the outcome under `sessionCleanup`. This prevents serial
 protocol steps from exhausting DevBench's bounded session table. A cleanup 404

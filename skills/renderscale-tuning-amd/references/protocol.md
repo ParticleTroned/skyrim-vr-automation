@@ -210,6 +210,22 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    controller requested/stable render-scale projections may be `none` and are
    retained as telemetry, not used to reject that API target. Configured runtime
    matching and physical backend proof remain separate and `none` is a failure.
+   The client transport envelope must exceed the current server waiter budget
+   by five seconds without changing the shared 30-second measurement deadline.
+   When the controller was selected as the sole live lane, use
+   `-MaxTransientRetries 0`; its `requestTimeoutSeconds` must be at least
+   `ceil(remaining timeoutMs / 1000) + 5`. A successful waiter still returns
+   immediately and never waits out that envelope.
+
+   If the waiter response is lost after dispatch, do not replay the waiter,
+   classify the row, cancel its owner, or start telemetry cleanup. Read
+   `qualification_status` for the same owner and transition on the selected
+   lane until the original shared deadline. Allow at most five additional
+   seconds only to retrieve the already-terminal `lastEvidence`; this is
+   receipt recovery, not a second measurement window. Require `active: false`
+   and matching terminal evidence before classification or cleanup. If the
+   terminal receipt cannot be recovered, preserve the IDs and transport
+   receipt, stop future DevBench calls, and ask the user.
 6. For None and TAA, do not call a vendor qualification waiter or manufacture
    an FSR target. Call DevBench `upscalingStable` in Dragonsreach exactly once
    with only the shared deadline's remaining budget and the complete normalized
@@ -240,6 +256,15 @@ row or retry it. Continue with the next matrix row only when the game remains
 responsive, the qualification owner is closed, the final snapshot has no active
 operation or unresolved physical mutation, and exact PID/build ownership still
 holds. Otherwise stop future mutations without attempting repair.
+
+A completed transition-level physical-contract, presentation, lifecycle, or
+both-eye fidelity mismatch makes that row `FAIL`; it does not by itself make
+control unsafe. Once its terminal receipt is preserved and the conditions
+above are clean, continue to the next matrix row so the assay retains the
+build's error history. Stop only for unresolved ownership or mutation, a
+still-active owner/operation, stale or mixed resources still in use, producer
+terminal failure, device loss, OOM, identity loss, or transport loss whose
+terminal receipt cannot be recovered.
 
 Except for the pre-snapshot transport-unavailable path, which asks the user
 before any further call, preserve the terminal receipt first on every stop
@@ -300,6 +325,9 @@ record `generationEvidence: "not_exposed"` and retain raw dimensions but do not
 calculate native or `dimensionsMatch` booleans. Native-generation evidence is
 optional: mark only that evidence facet `INCONCLUSIVE`; do not relabel a core
 `PASS`, make control unsafe, or block the next row solely because it is absent.
+When every required native contract check passes and only exact native
+generation is unavailable, the transition classification must remain `PASS`;
+record `nativeGenerationEvidence: INCONCLUSIVE` with reason `not_exposed`.
 
 None, TAA, and FSR Native AA are distinct contracts: None has neither FSR nor
 TAA, TAA is native non-vendor TAA, and FSR Native AA performs native-resolution
@@ -361,8 +389,19 @@ stale-provider evidence. Never average None, TAA, and FSR Native AA.
 
 Classify every transition and lane `PASS`, `FAIL`, `BLOCKED`, or
 `INCONCLUSIVE`. Preserve semantic anomalies and continue only while control,
-PID, build, required tools, and mutation ownership remain valid. Stop the
-current lane on a scenario abort, transport/control failure, identity mismatch,
-terminal render failure, device loss, OOM, or ownership/fidelity violation;
-do not let one lane's blocked precondition invalidate another lane. Print the
-complete tables and evidence paths, then stop; do not start another protocol.
+PID, build, required tools, and mutation ownership remain valid. A
+qualification-terminal row failure is not a producer terminal failure. Stop
+the current lane on a scenario abort, unrecoverable transport/control failure,
+identity mismatch, device loss, OOM, leaked owner/session, active operation,
+unresolved physical mutation, or stale/mixed resources that remain in use. Do
+not stop solely because a completed row recorded a physical or fidelity
+mismatch, and do not let one lane's blocked precondition invalidate another
+lane.
+
+If a lane ends early, label every entry that was never dispatched `NOT RUN`,
+never `BLOCKED`. Reserve `BLOCKED` for a row whose required admission or
+precondition failed before its mutation. Report that lane as `INTERRUPTED`
+while retaining the exact classifications of completed rows; do not convert it
+to overall `FAIL` merely because later rows were not run. Do not append a
+ledger column for an interrupted lane. Print the complete tables and evidence
+paths, then stop; do not start another protocol.

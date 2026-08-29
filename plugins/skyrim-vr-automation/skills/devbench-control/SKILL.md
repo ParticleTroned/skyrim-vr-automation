@@ -24,23 +24,23 @@ or construct HTTP or MCP requests ad hoc.
    bundled-controller call or offline validation. A direct-only live run does
    not need that controller reference.
 2. State in commentary that this skill governs the DevBench interaction.
-3. On the controller fallback lane, obtain runtime discovery from explicit
+3. On the selected controller lane, obtain runtime discovery from explicit
    `-RuntimePath` or `CSX_DEVBENCH_RUNTIME_PATH`. Never search an arbitrary MO2
    tree for a plausible runtime file or fall back to another endpoint. On the
    direct lane, use its bound tools and do not create or resolve a controller
    runtime file.
 4. On the direct lane, use the exposed direct tool definitions as authoritative
-   schema inventory. On the bundled-controller fallback lane, call `list` before
+   schema inventory. On the selected controller lane, call `list` before
    using a tool whose current name or input schema has not been established.
 5. On the direct lane, call the exact exposed tool with structured arguments.
-   On the controller fallback lane, use
+   On the selected controller lane, use
    `call -Tool <exact-name> -ArgumentsJson <json>`. Parse the structured result
    and preserve errors as evidence; never infer success from a visible in-game
    effect alone.
 6. Keep runtime identity verification enabled. Supply build/artifact
    expectations when testing a newly deployed DLL, and use `-RequireSuccess`
    when a semantic failure must fail the orchestration step.
-7. On the controller fallback lane, prefer
+7. On the selected controller lane, prefer
    `wait -Condition noBlockingMenu` over the server `noMenu` condition when
    Skyrim's permanent HUD is open.
 8. Keep readiness recovery on the selected lane. On the direct lane, repeat
@@ -49,7 +49,7 @@ or construct HTTP or MCP requests ad hoc.
    lane, use `wait -Condition toolAvailable -Tool <exact-name>` or
    `serviceReady` with a read-only `-ArgumentsJson` action and an explicit
    bounded timeout. Never cross transports to perform a readiness wait.
-9. On the controller fallback lane, use `-ExpectedErrorCode` for deliberate
+9. On the selected controller lane, use `-ExpectedErrorCode` for deliberate
    guard tests such as `producer_mismatch`; do not reinterpret an unrequested
    API failure as a pass on either lane.
 10. Preserve the controller's `sessionCleanup` receipt with the command result.
@@ -60,6 +60,12 @@ or construct HTTP or MCP requests ad hoc.
     transport error, preserve that receipt as a runner-path anomaly. Continue
     on the already-selected direct lane; do not start a controller availability
     wait or classify the live DevBench service as unavailable.
+12. A server action's client transport envelope must exceed its `timeoutMs`.
+    The selected controller derives `ceil(timeoutMs / 1000) + 5` seconds and
+    reports it as `requestTimeoutSeconds`; this never extends the server
+    measurement deadline. Set `-MaxTransientRetries 0` for ownership-bearing
+    actions. If their response is lost, inspect the existing owner on the same
+    lane and never replay the action or clean up its evidence prematurely.
 
 The bundled fallback entry point is:
 

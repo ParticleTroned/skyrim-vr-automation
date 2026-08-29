@@ -25,6 +25,8 @@ param(
     [int]$PollMilliseconds = 250,
     [ValidateRange(0, 10)]
     [int]$MaxTransientRetries = 4,
+    [ValidateRange(1, 3600)]
+    [int]$RequestTimeoutSeconds = 15,
     [ValidateRange(50, 5000)]
     [int]$MaxPollMilliseconds = 5000,
     [string[]]$AcceptedState = @('ready', 'idle', 'available', 'completed', 'success', 'ok'),
@@ -50,6 +52,7 @@ $headers = $null
 $runtimeIdentity = $null
 $transportRetries = [Collections.Generic.List[object]]::new()
 Import-Module (Join-Path $PSScriptRoot 'DevBenchControl.psm1') -Force
+$script:requestTimeoutSecondsForRpc = $RequestTimeoutSeconds
 
 function Invoke-McpRequest {
     param([string]$Endpoint, [hashtable]$Headers, $Payload)
@@ -59,7 +62,7 @@ function Invoke-McpRequest {
     while ($true) {
         $attempt++
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $Headers -Body $body -TimeoutSec 15
+            $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $Headers -Body $body -TimeoutSec $script:requestTimeoutSecondsForRpc
             return [pscustomobject]@{ response = $response; json = ($response.Content | ConvertFrom-Json -Depth 50); attempts = $attempt }
         }
         catch {
@@ -68,7 +71,7 @@ function Invoke-McpRequest {
             if ($Command -eq 'wait' -and $statusCode -eq 404 -and $Headers.ContainsKey('Mcp-Session-Id') -and $attempt -le $MaxTransientRetries) {
                 try {
                     $resetHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
-                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.4' } } } | ConvertTo-Json -Depth 10 -Compress
+                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.5' } } } | ConvertTo-Json -Depth 10 -Compress
                     $resetResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $resetHeaders -Body $resetBody -TimeoutSec 15
                     $resetSessionHeader = $resetResponse.Headers['Mcp-Session-Id']
                     $resetSessionId = if ($resetSessionHeader -is [array]) { [string]$resetSessionHeader[0] } else { [string]$resetSessionHeader }
@@ -184,7 +187,7 @@ function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
     try {
         $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
             jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{
-                protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.4' }
+                protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.5' }
             }
         }
         $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
@@ -378,6 +381,18 @@ try {
         if ([string]::IsNullOrWhiteSpace($Tool)) { throw 'Tool is required for call.' }
         if (@($tools | Where-Object name -eq $Tool).Count -ne 1) { throw "Tool '$Tool' is not present in the authoritative tools/list response." }
         try { $arguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
+        $script:requestTimeoutSecondsForRpc = $RequestTimeoutSeconds
+        if ($arguments.ContainsKey('timeoutMs') -and $null -ne $arguments.timeoutMs) {
+            $serverTimeoutMilliseconds = [double]$arguments.timeoutMs
+            if ($serverTimeoutMilliseconds -gt 0) {
+                # Transport must outlive the server wait so cleanup cannot destroy its evidence.
+                $serverTimeoutSeconds = [int][Math]::Ceiling($serverTimeoutMilliseconds / 1000.0)
+                $script:requestTimeoutSecondsForRpc = [Math]::Max(
+                    $RequestTimeoutSeconds,
+                    $serverTimeoutSeconds + 5
+                )
+            }
+        }
         $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers
         $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
         if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
@@ -691,6 +706,7 @@ try {
         evidencePath = $evidencePath
         semantic = $semantic
         transportRetries = @($transportRetries)
+        requestTimeoutSeconds = $script:requestTimeoutSecondsForRpc
         data = $data
         errors = $(if ($semanticFailure) { @($semantic.reasons) } else { @() })
     }
@@ -706,6 +722,7 @@ catch {
         evidencePath = $null
         semantic = $null
         transportRetries = @($transportRetries)
+        requestTimeoutSeconds = $script:requestTimeoutSecondsForRpc
         data = $null
         errors = @($_.Exception.Message)
     }
