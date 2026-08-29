@@ -7,49 +7,20 @@ run the Simple CSM matrix and never mutates a profile through
 ## 1. Bind and prepare
 
 Apply the shared render-scale tuning fast-start contract exactly. It owns
-identity binding, direct control discovery, the single runtime-only
-`prepare_coc`, asynchronous Dragonsreach positioning, post-position admission,
-telemetry resets, and the baseline-to-measured ownership handoff. Reuse every
-receipt it names; do not repeat its reads or stateful calls.
+the only live admission reads, runtime-only `prepare_coc`, Dragonsreach
+positioning, baseline, and measured-owner handoff. Reuse its receipts; do not
+repeat its reads or add another preflight phase.
 
 Use the installed plugin's direct DevBench MCP tools exclusively for every
-NVIDIA baseline, transition, evidence read, and guarded cleanup. Search the
-complete callable tool catalog, including deferred tools, for the
-`mcp__devbench_vr__` prefix before declaring the lane unavailable. Treat the
-direct MCP tool descriptions as the callable action and input-schema inventory,
-not an output schema. The direct
-`communityshaders.renderscale` schema must expose `qualification_wait` and its
-`target.method` enum must contain `none`, `taa`, `dlss`, and `fsr`. If either
-native method is absent, stop before any stateful call with
-`plugin_contract_outdated`, report that the running CSX/DevBench producer needs
-a newer build, and ask the user. Never search for a separate
-`upscalingStable` tool.
-
-If the plugin tools are absent or direct `inspect health` fails its bounded
-readiness check, stop before any stateful call, report
-`plugin_direct_unavailable`, and
-ask the user to repair the plugin connection or restart Codex. Never open,
-execute, or wait on the bundled controller in this assay. There is no fallback
-transport, controller availability wait, or lane switching.
-Do not generate or edit task-local orchestration scripts during live preflight
-or baseline setup; evidence files remain permitted.
+NVIDIA baseline, transition, evidence read, and guarded cleanup. Do not
+enumerate tools, audit schemas, use a controller, switch lanes, or generate a
+local orchestration script. If one of the named direct calls is unavailable,
+stop with `plugin_direct_unavailable`; there is no fallback transport.
 
 Require `status.adapter.available: true` and NVIDIA vendor ID `0x10DE`/4318 in
 the shared startup `communityshaders.renderscale status` receipt. This is the
 bound active D3D adapter; do not substitute generic process inventory or a
-description string. Require the live
-`communityshaders.upscaling_api` description to expose `registry`,
-`capabilities`, `snapshot`, `apply`, `operation`, and `events`, plus guarded
-`expectedBuildId`, `expectedStateRevision`, `clientId`, `commandId`, `target`,
-`purpose`, and `persistence` inputs. Retain the tool description and registry,
-producer, capability, session, and Build-ID receipts. Never select the lane
-from an unbound inventory entry.
-
-Require `communityshaders.upscaling_api` to be executable as a DevBench
-scenario `tool` step, not merely callable as a top-level client tool. The
-unmeasured positioning scenario is the only `async: true` scenario. Every
-other scenario uses `async: false` and `continueOnError: false`; a missing
-scenario registration or a non-synchronous mutation receipt is `BLOCKED`.
+description string. Retain the three shared startup receipts.
 
 Require public capabilities to expose DLSS, FSR, every matrix quality mode,
 and FSR3 before the baseline. Missing capability is `BLOCKED`; do not replace a
@@ -67,13 +38,9 @@ controller's applied/stable resource records are separate physical evidence.
 At native resolution they remain inactive with backend `none`, but retain the
 exact logical method and never replace a public profile.
 
-After the positioning `runId` is accepted, load `matrix.v1.json` relative to
-this installed skill during the scenario's 10-second wait. Require schema
-version 1, adapter vendor `nvidia`, exactly 33 entries with ordinals 1 through 33, a
-5,000 ms pace, and a 30,000 ms completion upper bound. Do not reorder,
-deduplicate, replace, or infer entries.
-After exact-cell positioning, reuse the shared contract's measurement admission
-and reset receipts. Never repeat them before the baseline mutation.
+After the positioning `runId` is accepted, load the packaged `matrix.v1.json`
+during the 10-second wait and execute it unchanged. Its structure is an offline
+package invariant; do not revalidate or summarize it during live startup.
 
 ## 2. Establish the NVIDIA baseline
 
@@ -83,12 +50,12 @@ Clone the effective profile through its
 `name` fields, set only `method: dlss`,
 `qualityMode: hoshipa`, `renderScaleMode: true`, and dormant
 `fsrRuntime: fsr3`, and preserve `dlssProfile`. Run one synchronous
-(`async: false`), fail-closed mutation scenario: start the short baseline-only
-stress session, `qualification_begin`, then
+(`async: false`), fail-closed mutation scenario: reset then start the short
+baseline-only stress session, `qualification_begin`, then
 `qualification_dispatch` with `startPerformanceTelemetry: false`, then the
 public API `apply` as the immediately following step, then the strict DLSS
 Hoshipa `qualification_wait` as the final step. Use the shared contract's exact
-five labels and wrapper paths. Bind the apply to the
+six labels and wrapper paths. Bind the apply to the
 snapshot's exact `stateRevision`, exact Build ID, unique baseline client and
 command IDs, `purpose: direct`, and `persistence: runtime_only`.
 
@@ -109,12 +76,13 @@ baseline-only stress owner and arm the fresh measured stress, texture lifetime,
 load presentation, and profiler owners in its short ownership sequence.
 An unsatisfied or missing waiter subreceipt bypasses handoff and permits only
 the baseline stress owner's guarded stop.
-Reuse the CPU/GPU reset receipts from measurement admission, require both
-captures inactive, and do not issue another CPU/GPU reset during pass 1.
-Retain each stateful receipt;
+Do not issue a separate CPU/GPU reset during pass 1. Transition 1 dispatch
+requires both captures inactive and atomically resets/starts them. Retain each
+stateful receipt;
 provider lifecycle, resource publication, preparation, fidelity, stereo,
 retry, failure, memory, and queue remain status evidence. In the first measured
-mutation scenario, start the profiler immediately before dispatch; dispatch
+mutation scenario, start the profiler with `clearHistory: true` immediately
+before dispatch; dispatch
 then starts CPU/GPU capture on its QPC/frame. That first measured apply, not
 the positioning COC or initial-state apply, is their timing origin.
 

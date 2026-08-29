@@ -31,13 +31,13 @@ restart, fault injection, another protocol, or any
 outside this assay.
 
 Require the shared startup render-scale status receipt to identify the bound
-active adapter as NVIDIA. Tool descriptions prove callable actions and inputs;
-validate required output fields only in the structured producer receipt that
-owns them. A mismatch or missing core field is `BLOCKED`. Preserve missing
+active adapter as NVIDIA. Validate required output fields only in the
+structured producer receipt that owns them. A mismatch or missing core field
+is `BLOCKED`. Preserve missing
 optional native-presentation generation evidence as a tooling gap; never invent
 it.
 
 The installed plugin's direct `mcp__devbench_vr__*` tools are the only permitted
-DevBench transport. Search the complete callable tool catalog, including
-deferred tools, before declaring them unavailable. Never use the bundled
-controller for this assay.
+DevBench transport. Do not enumerate the tool catalog or inspect fallback
+transports during startup. If a named direct tool is not callable, stop; never
+use the bundled controller for this assay.

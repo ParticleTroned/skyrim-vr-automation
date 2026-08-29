@@ -31,12 +31,12 @@ restart, unsafe pressure/fault injection, another protocol, or any
 outside this assay.
 
 Require the shared startup render-scale status receipt to identify the bound
-active adapter as AMD. Tool descriptions prove callable actions and inputs;
-validate required output fields only in the structured producer receipt that
-owns them. A mismatch or missing core field is `BLOCKED`. Never fabricate FSR4
+active adapter as AMD. Validate required output fields only in the structured
+producer receipt that owns them. A mismatch or missing core field is
+`BLOCKED`. Never fabricate FSR4
 support or an FSR4-unavailable condition.
 
 The installed plugin's direct `mcp__devbench_vr__*` tools are the only permitted
-DevBench transport. Search the complete callable tool catalog, including
-deferred tools, before declaring them unavailable. Never use the bundled
-controller for this assay.
+DevBench transport. Do not enumerate the tool catalog or inspect fallback
+transports during startup. If a named direct tool is not callable, stop; never
+use the bundled controller for this assay.

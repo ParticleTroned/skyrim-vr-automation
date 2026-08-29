@@ -43,10 +43,38 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
-foreach ($token in @('one parallel read-only batch', 'first live action', 'parallel five-read', 'Start it immediately', 'Before that batch, do not create a', '`.gitkeep`', 'do not run a local command', 'No local evidence setup may delay the first DevBench request', 'After all five read-only responses return', 'continue directly to `prepare_coc` and positioning', 'without a local evidence action', 'mandatory 10,000 ms settle', 'five startup responses', 'positioning-acceptance receipt', 'Create required parent directories implicitly', 'Do not create an empty directory tree or placeholder files first', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`startupReadElapsedMs`', '`slow_startup_reads`', 'not an admission failure', 'continue directly to', 'without progress commentary', '`positioningDispatchElapsedMs`', 'efficiency target, not an admission gate', '`slow_positioning_dispatch`', '`positioning_dispatch_timer_not_started`', 'store the elapsed value as `null`', 'Only failure to obtain an accepted positioning `runId`', "transition 1's authoritative CPU/GPU timing origin", 'absolute tolerance `0.000001`', 'ordinary binary32 serialization drift', 'Require all booleans, readiness, logging, and persistence fields exactly', 'same orchestrated turn', 'return for model deliberation', 'Do not add `ping`', 'Do not add a pre-position API snapshot', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'one synchronous fail-closed scenario', 'Do not query profiler `registry` or `snapshot`', 'do not run a deliberately', 'DevBench offline tests', 'continue directly into the', 'in the same orchestrated action turn', 'full dispatch-relative `timeoutMs: 30000`', 'Never calculate or pass a client-side remaining', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'does not require byte-for-byte equality', 'final on-disk files are authoritative', '`Get-Item` and `Get-FileHash -Algorithm SHA256`', 'Do not compare a file against an in-memory serialization', 'client JavaScript encoding or crypto APIs', 'a failure of a non-required helper is not an evidence failure', 'stop before the post-position reset and baseline only', 'allow the positioning scenario', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
+foreach ($token in @(
+    'Minimal live admission', 'named plugin-provided', 'Do not enumerate the tool catalog',
+    'Do not measure, classify, or report startup duration',
+    "transition 1's `qualification_dispatch`", 'parallel three-read',
+    'no local file, timer, script, progress message', 'After all three responses return',
+    'continue directly to `prepare_coc` and positioning', 'three decoded responses',
+    'mandatory 10,000 ms settle', 'only direct `inspect health`',
+    '`communityshaders.upscaling_api capabilities`',
+    '`communityshaders.renderscale status`', 'contains registry and producer data',
+    'do not call `registry` separately', 'Do not call `ping`, `inspect state`',
+    '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098',
+    'retry only that read once', 'Do not sleep', 'absolute tolerance `0.000001`',
+    'ordinary binary32 serialization drift', 'Validate the decoded response in memory',
+    'Persist it during the settle', 'do not write or rehash it first',
+    '`async: true`', 'coc WhiterunDragonsreach', 'fixed 10,000 ms wait',
+    'three startup responses', 'positioning-acceptance receipt',
+    'Create required parent directories implicitly',
+    'Do not create an empty directory tree or placeholder files first',
+    '`receipt-index.json`', 'exact decoded JSON response body',
+    'does not require byte-for-byte equality', 'final on-disk files are authoritative',
+    '`Get-Item` and `Get-FileHash -Algorithm SHA256`',
+    'Do not compare a file against an in-memory serialization',
+    'client JavaScript encoding or crypto APIs',
+    'a failure of a non-required helper is not an evidence failure',
+    'allow the positioning scenario', 'stop before the baseline',
+    'Do not run a separate post-position admission',
+    'terminal baseline waiter receipt', '`milestoneTimings`',
+    '`replacementTimeline`', 'never durable evidence paths'
+)) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
-foreach ($token in @('five labeled tool steps in this exact order', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'Stop only the baseline stress session')) {
+foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '`clearHistory: true`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session')) {
     Assert-Contains $fastStart $token 'Shared server-owned waiter contract'
 }
 foreach ($forbidden in @(
@@ -65,6 +93,15 @@ foreach ($forbidden in @(
     'render-scale tool description to advertise independent',
     'generic process inventory, adapter description string, or upscaling API receipt is authoritative',
     'one local evidence action before `prepare_coc`',
+    '`startupReadElapsedMs`',
+    '`positioningDispatchElapsedMs`',
+    '`slow_startup_reads`',
+    '`slow_positioning_dispatch`',
+    'parallel five-read',
+    '`menu list`',
+    '`cpu_performance_reset`',
+    '`gpu_performance_reset`',
+    'profiler `clear_history`',
     'Reissue the identical `qualification_wait` once immediately',
     '`qualification_wait_active`'
 )) {
@@ -132,9 +169,10 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'does not authorize' $variant.Name
     Assert-Contains $skill 'VR FPS Stabilizer settings remain' $variant.Name
     Assert-Contains $skill 'direct `mcp__devbench_vr__*` tools are the only permitted' $variant.Name
-    Assert-Contains $skill 'including deferred tools' $variant.Name
+    Assert-Contains $skill 'Do not enumerate the tool catalog' $variant.Name
+    Assert-Contains $skill 'If a named direct tool is not callable' $variant.Name
     Assert-Contains $skill 'Never use the bundled' $variant.Name
-    Assert-Contains $skill 'Tool descriptions prove callable actions and inputs' $variant.Name
+    Assert-Contains $skill 'Validate required output fields only' $variant.Name
     Assert-Contains $skill 'structured producer receipt that owns them' $variant.Name
     Assert-Contains $skill '../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
     Assert-Contains $skill 'As soon as its `runId` is accepted' $variant.Name
@@ -143,27 +181,25 @@ foreach ($variant in $variants) {
 
     foreach ($token in @(
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
-        '`target.method` enum must contain `none`, `taa`, `dlss`, and `fsr`',
-        '`plugin_contract_outdated`',
-        'running CSX/DevBench producer needs a newer build',
-        'Never search for a separate',
         'Apply the shared render-scale tuning fast-start contract exactly',
+        'only live admission reads', 'do not repeat its reads',
+        'Do not enumerate', 'audit schemas', '`plugin_direct_unavailable`',
+        'no fallback transport',
         'only `async: true` scenario',
         'After the positioning `runId` is accepted',
-        'reuse the shared contract''s measurement admission',
-        'one synchronous handoff scenario',
+        'offline package invariant', 'do not revalidate or summarize it',
+        'reset then start the short', 'exact six',
+        'one synchronous fail-closed handoff scenario',
         '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
         '`expectedStateRevision`', '`clientId`', '`commandId`',
         '`persistence: runtime_only`', 'server-owned 5,000 ms settling scenario',
         '`timeoutMs: 30000`', 'one shared 30,000 ms monotonic deadline',
         'full dispatch-relative', 'client-side remaining budget',
         'return upon its first successful receipt',
-        '`async: false`', 'scenario `tool` step', 'poll `operation`',
+        '`async: false`', 'poll `operation`',
         '`qualification_begin`', '`qualification_dispatch`',
         '`startPerformanceTelemetry: true`', '`qualification_cancel`',
-        'continueOnError: false', 'embedded tool error as step `ok: false`',
-        'Never call the profiler service',
-        'After exact-cell positioning',
+        'continueOnError: false',
         'before the', 'baseline mutation',
         'name` fields only', 'Never submit a raw wrapper object',
         'effective profile''s `name` fields',
@@ -186,20 +222,13 @@ foreach ($variant in $variants) {
         '`actualRuntimeFallbackObserved`', '`dispatchSerial`',
         'resource key remains inactive with backend `none`',
         'Scenario steps cannot interpolate earlier',
-        'short ownership sequence', 'CPU/GPU reset receipts from',
-        'measurement admission',
+        'short ownership sequence', 'Do not issue a separate',
+        'atomically resets/starts', '`clearHistory: true`',
         'selected live lane''s short', 'pre_snapshot_transport_unavailable',
         'send no further DevBench', 'ask the user immediately',
         'Do not attempt cleanup until',
-        'exactly one live DevBench transport lane',
-        'plugin-provided direct MCP tools are callable',
-        'direct MCP tool descriptions as the callable action and input-schema inventory',
-        'not an output schema', 'shared startup `communityshaders.renderscale status` receipt',
+        'shared startup `communityshaders.renderscale status` receipt',
         'they are output evidence',
-        'do not open the bundled', 'Never switch or mix transport lanes',
-        'A direct run never starts a controller availability wait',
-        'Do not generate or edit task-local orchestration scripts',
-        'not DevBench unavailability',
         'Except for the pre-snapshot transport-unavailable path',
         'Native-generation evidence is optional',
         'do not relabel a core `PASS`',
@@ -253,12 +282,12 @@ foreach ($variant in $variants) {
         'After the positioning `runId` is accepted',
         [StringComparison]::Ordinal
     )
-    $measurementAdmissionPosition = $protocol.IndexOf(
-        'After exact-cell positioning',
+    $baselinePosition = $protocol.IndexOf(
+        'authoritative post-position API snapshot',
         [StringComparison]::Ordinal
     )
     Assert-True ($positioningPosition -ge 0 -and
-        $measurementAdmissionPosition -gt $positioningPosition) "$($variant.Name) measurement admission does not follow positioning."
+        $baselinePosition -gt $positioningPosition) "$($variant.Name) baseline does not follow positioning."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
@@ -337,12 +366,10 @@ foreach ($protocol in @(
 )) {
     foreach ($token in @(
         "installed plugin's direct DevBench MCP tools exclusively",
-        'including deferred tools',
-        '`mcp__devbench_vr__` prefix',
-        'direct `inspect health` fails its bounded',
+        'Do not enumerate',
+        'audit schemas',
         '`plugin_direct_unavailable`',
-        'Never open, execute, or wait on the bundled controller',
-        'There is no fallback transport',
+        'no fallback transport',
         'without changing the shared 30-second measurement deadline',
         '`qualification_status`',
         'Never replay the',
@@ -363,7 +390,11 @@ foreach ($protocol in @(
         '`requestTimeoutSeconds`',
         'direct `ping` fails its bounded',
         'Call DevBench `upscalingStable`',
-        '`-ExpectedProfileJson`'
+        '`-ExpectedProfileJson`',
+        'including deferred tools',
+        'complete callable tool catalog',
+        'direct MCP tool descriptions as the callable action',
+        'measurement admission and reset receipts'
     )) {
         Assert-True (-not $protocol.Text.Contains($forbidden, [StringComparison]::Ordinal)) "$($protocol.Name) permits the controller transport: $forbidden"
     }
