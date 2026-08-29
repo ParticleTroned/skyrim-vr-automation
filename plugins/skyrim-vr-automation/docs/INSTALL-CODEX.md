@@ -45,14 +45,14 @@ Verify the contract before installation is considered ready:
 ```
 
 The first command must return `fixture-valid`; the doctor check
-`prime-profile-world-entry` must pass. A missing, stale, or mismatched fixture
+`prime-profile-world-entry-integrity` must pass. A missing, stale, or mismatched fixture
 blocks fresh workspace creation. Only one save is required because guarded
 `coc`/`cow` transitions can reach other locations after world entry.
 
 Every fresh task profile receives the complete prime-profile save tree and a
-verified copy of that baseline. A resumed task profile is intentionally left
-untouched and is not requalified after the task changes its own mod or save
-state.
+verified copy of that baseline. This is exact static integrity, not proof of a
+successful runtime load. A resumed task profile is intentionally left untouched
+and is not reverified after the task changes its own mod or save state.
 
 ## Upgrade
 

@@ -80,7 +80,7 @@ try {
                 $machineConfig = Get-Content -LiteralPath $resolution.path -Raw | ConvertFrom-Json
                 $fixtureInput = if ($machineConfig.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$machineConfig.defaults.newGameFixtureManifest } else { '' }
                 if ([string]::IsNullOrWhiteSpace($fixtureInput)) {
-                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry' 'fail' 'The maintained source profile has no configured world-entry save. Set defaults.newGameFixtureManifest and qualify its default fixture before creating task profiles.' ([pscustomobject][ordered]@{
+                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry-integrity' 'fail' 'The maintained source profile has no configured world-entry save. Set defaults.newGameFixtureManifest and verify its default fixture before creating task profiles.' ([pscustomobject][ordered]@{
                         configurationProperty = 'defaults.newGameFixtureManifest'
                         exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
                     })))
@@ -105,11 +105,11 @@ try {
                         exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
                         fixtureStatus = $fixtureStatus
                     }
-                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry' $(if ($fixtureValid) { 'pass' } else { 'fail' }) $(if ($fixtureValid) { "The maintained source profile has a valid world-entry save fixture '$($fixtureStatus.data.fixtureId)'." } else { 'The maintained source profile world-entry save is missing, stale, or invalid. Run fixture-status and repair or refresh it before creating task profiles.' }) $fixtureEvidence))
+                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry-integrity' $(if ($fixtureValid) { 'pass' } else { 'fail' }) $(if ($fixtureValid) { "The maintained source profile has an integrity-verified world-entry save fixture '$($fixtureStatus.data.fixtureId)'. No live-load qualification is inferred." } else { 'The maintained source profile world-entry save is missing, stale, or invalid. Run fixture-status and repair or refresh it before creating task profiles.' }) $fixtureEvidence))
                 }
             }
             catch {
-                $checks.Add((New-DoctorCheck 'prime-profile-world-entry' 'fail' "Could not qualify the maintained source profile world-entry save: $($_.Exception.Message)"))
+                $checks.Add((New-DoctorCheck 'prime-profile-world-entry-integrity' 'fail' "Could not verify the maintained source profile world-entry save integrity: $($_.Exception.Message)"))
             }
         }
 

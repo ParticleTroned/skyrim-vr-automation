@@ -189,7 +189,11 @@ function Test-DevBenchServiceReady {
     $retryable = $semantic.transient -or ($state -in $RetryableStates)
     $terminalFailure = -not $semantic.ok -and -not $retryable
     $probeReturnedContent = @($Content).Count -gt 0
-    $ready = if ($state) { $state -in $AcceptedStates } elseif ($semantic.known) { $semantic.ok -and -not $retryable } else { $probeReturnedContent }
+    # Transport success or arbitrary non-empty content proves only that the
+    # tool answered. Readiness requires a recognized positive contract state;
+    # otherwise polling an unknown payload could repeatedly dispatch work and
+    # then promote the unclassified response to ready.
+    $ready = if ($state) { $state -in $AcceptedStates } elseif ($semantic.known) { $semantic.ok -and -not $retryable } else { $false }
     return [pscustomobject][ordered]@{
         ready = $ready
         retryable = $retryable
@@ -248,12 +252,12 @@ function Resolve-DevBenchServiceProbeArguments {
     )
 
     if ($ArgumentsSupplied) {
-        return [pscustomobject][ordered]@{ arguments = $Arguments; source = 'explicit'; synthesizedAction = $null }
+        throw "serviceReady does not accept explicit -ArgumentsJson because an arbitrary action cannot be proven read-only across retries. Use toolAvailable for registration-only waits or omit -ArgumentsJson so the controller can synthesize a qualified probe."
     }
 
     $schemaProperty = $ToolDefinition.PSObject.Properties['inputSchema']
     if (-not $schemaProperty -or $null -eq $schemaProperty.Value) {
-        throw "serviceReady cannot safely probe '$ToolName' without -ArgumentsJson because tools/list did not publish an inputSchema."
+        throw "serviceReady cannot safely probe '$ToolName' because tools/list did not publish an inputSchema. Use toolAvailable when registration is sufficient."
     }
     $schema = $schemaProperty.Value
     $requiredProperty = $schema.PSObject.Properties['required']
@@ -272,7 +276,7 @@ function Resolve-DevBenchServiceProbeArguments {
     $supportedEnvelope = @('contractMajor', 'clientId', 'commandId', 'action')
     $unknownRequired = @($missing | Where-Object { $_ -notin $supportedEnvelope })
     if ($unknownRequired.Count -gt 0) {
-        throw "serviceReady cannot synthesize a safe probe for '$ToolName'. Supply -ArgumentsJson; required field(s) are not part of the registry envelope: $($unknownRequired -join ', ')."
+        throw "serviceReady cannot synthesize a qualified read-only probe for '$ToolName'; required field(s) are not part of the registry envelope: $($unknownRequired -join ', '). Use toolAvailable or add a reviewed tool-specific probe adapter."
     }
 
     $propertiesProperty = $schema.PSObject.Properties['properties']
@@ -285,7 +289,7 @@ function Resolve-DevBenchServiceProbeArguments {
         if ($allowedActions.Count -eq 0 -or $allowedActions -contains 'registry') { $action = 'registry' }
         elseif ($allowedActions -contains 'capabilities') { $action = 'capabilities' }
         else {
-            throw "serviceReady cannot synthesize a non-mutating probe for '$ToolName'. Supply -ArgumentsJson; action supports neither registry nor capabilities."
+            throw "serviceReady cannot synthesize a qualified read-only probe for '$ToolName'; action supports neither registry nor capabilities. Use toolAvailable or add a reviewed tool-specific probe adapter."
         }
     }
 

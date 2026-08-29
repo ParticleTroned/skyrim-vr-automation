@@ -5,13 +5,15 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 ## Unreleased
 
 - Require every fresh MO2 task clone to inherit a hash- and
-  profile-fingerprint-qualified default world-entry save, make the doctor fail
-  unqualified setup, and preserve resumed task profiles without making a
-  post-edit save warranty.
+  profile-fingerprint-verified default world-entry save, make the doctor fail
+  invalid setup, keep static integrity distinct from runtime qualification, and
+  preserve resumed task profiles without making a post-edit save warranty.
+  Bound all related traversal, hashing, copy, and verification work with one
+  total deadline plus file, byte, depth, directory, and reparse-point limits.
 - Make deprecated workspace `release` fail closed, add collision-resistant
   registration evidence names, let blocking DevBench calls consume their
-  declared bounded timeout, and accept successful unclassified inspect payloads
-  as `serviceReady` evidence.
+  declared bounded timeout, and require recognized positive contract evidence
+  for `serviceReady`.
 - Separate MO2's public lease identity from its bearer credential in status
   results, bind live session ownership to PID plus process start time, and make
   feedback amendments and maintainer transitions carry explicit actor roles.
@@ -21,8 +23,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   a versioned shared-memory control/acknowledgement contract, independent
   application-facing OpenVR qualification, transactional installation, and
   null-runtime readiness enforcement. Controllers remain unavailable.
-- Synthesize schema-valid, non-mutating registry envelopes when a versioned
-  DevBench `serviceReady` wait omits arguments; preserve explicit arguments.
+- Synthesize schema-valid, non-mutating registry envelopes for versioned
+  DevBench `serviceReady` waits, reject arbitrary explicit probe arguments, and
+  keep unknown non-empty responses unready.
 - Disable SteamVR dashboard input in the null-HMD transaction, report the
   deliberately unavailable controller/controlled-pose contract, retain a
   surviving dashboard process as telemetry, and reject Windows PowerShell with

@@ -29,8 +29,9 @@ co-save exist and match their recorded hashes. If it is stale, repair the
 maintained base profile or use the guarded `refresh-fixture` workflow before
 creating the task profile. Fresh creation is blocked otherwise.
 
-This qualification belongs to the maintained source at clone time. Once a task
-changes its profile, mods, or saves, the toolkit cannot guarantee that its
-retained save remains loadable. A later `resume` therefore preserves that
-workspace as-is; it does not overwrite it with the primary profile or silently
-renew the guarantee.
+This integrity verification belongs to the maintained source at clone time. It
+does not by itself prove a successful load under a particular game, plugin, or
+HMD runtime. Once a task changes its profile, mods, or saves, the toolkit cannot
+guarantee that its retained save remains loadable. A later `resume` therefore
+preserves that workspace as-is; it does not overwrite it with the primary
+profile or silently renew the guarantee.

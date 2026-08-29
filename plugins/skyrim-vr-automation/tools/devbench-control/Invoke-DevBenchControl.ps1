@@ -572,7 +572,7 @@ try {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
         $requiredTool = if ($Condition -eq 'noBlockingMenu') { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
         $waitArguments = @{}
-        $waitArgumentsResolved = $Condition -ne 'serviceReady' -or $argumentsJsonSupplied
+        $waitArgumentsResolved = $Condition -ne 'serviceReady'
         $serviceProbe = $null
         if ($Condition -eq 'serviceReady') {
             try { $waitArguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
@@ -679,7 +679,7 @@ try {
                     try {
                         if (-not $waitArgumentsResolved) {
                             $targetDefinition = @($currentTools | Where-Object name -eq $Tool | Select-Object -First 1)[0]
-                            $serviceProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $targetDefinition -Arguments $waitArguments -ArgumentsSupplied:$false -ToolName $Tool
+                            $serviceProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $targetDefinition -Arguments $waitArguments -ArgumentsSupplied:$argumentsJsonSupplied -ToolName $Tool
                             $waitArguments = $serviceProbe.arguments
                             $waitArgumentsResolved = $true
                         }

@@ -14,8 +14,7 @@ client.
   -Tool communityshaders.profiler_api -TimeoutSeconds 600 `
   -ProgressLogPath C:\Evidence\CommunityShaders.log
 .\Invoke-DevBenchControl.ps1 wait -Condition serviceReady `
-  -Tool communityshaders.upscaling_api `
-  -ArgumentsJson '{"contractMajor":1,"clientId":"test","commandId":"registry-1","action":"registry"}'
+  -Tool communityshaders.upscaling_api
 ```
 
 The client communicates only with the loopback endpoint and reports structured
@@ -79,15 +78,18 @@ actual timeout and final observation. This avoids the server-side `noMenu`
 condition being held open forever by Skyrim's permanent HUD menu.
 
 `toolAvailable` repeatedly refreshes the authoritative tool inventory rather
-than freezing the initial list. `serviceReady` additionally calls the supplied
-read-only action and understands accepted and retryable service states, including
-structured errors that explicitly declare `retryable: true`. When
-`-ArgumentsJson` is omitted, the controller inspects the authoritative
+than freezing the initial list. `serviceReady` additionally calls a controller-
+qualified read-only probe and understands accepted and retryable service states,
+including structured errors that explicitly declare `retryable: true`. The
+controller inspects the authoritative
 `inputSchema`: an empty object is used only when the schema permits it, while a
 versioned service requiring `contractMajor`, `clientId`, `commandId`, and
 `action` receives a generated `registry` (or `capabilities`) envelope. Unknown
-required fields fail with an instruction to supply explicit arguments instead
-of dispatching a malformed probe. Explicit arguments are never rewritten. Both
+required fields fail closed instead of dispatching a malformed or potentially
+mutating probe. Explicit `-ArgumentsJson` is forbidden for `serviceReady`;
+use `toolAvailable` when registration alone is sufficient, or add a reviewed
+tool-specific probe adapter. Arbitrary non-empty responses remain unknown and
+cannot establish readiness. Both
 waits back off to `-MaxPollMilliseconds` and collect bounded PID/CPU/memory and
 optional explicit-log samples. A missing target with increasing CPU is reported
 as `api-waiting-behind-initialization`; a quiet missing target is

@@ -9,6 +9,13 @@ fail-closed unless that source also has one valid default world-entry fixture.
 The fixture is the maintained route into the loaded game world; alternate
 locations may then be reached with guarded `coc`/`cow` commands.
 
+Profile discovery, hashing, fixture verification, copying, and post-copy
+verification share one command-wide tree-operation deadline. The controller
+also enforces explicit file, directory, depth, and aggregate-byte limits and
+rejects reparse points. Exceeding any budget returns a bounded failure before a
+new clone is committed; the limits are configurable through the corresponding
+`-MaxProfile*` and `-TreeOperationTimeoutSeconds` parameters.
+
 Before `create`, run `prepare-source` under the same MO2 access lease. It scans
 overwrite recursively for every directory named `ShaderCache` or beginning
 `ShaderCache.`, including the legacy `ShaderCache.Previous` and
@@ -55,11 +62,13 @@ maintained fallback starting point.
 One default fixture is mandatory for every fresh clone, regardless of
 `SavePolicy`. The installer or list maintainer must first load that save in the
 maintained source profile, record it in `defaults.newGameFixtureManifest`, and
-obtain `fixture-valid`. Creation records the qualification as
-`data.sourceQualification`, reports it as `data.worldEntryFixture`, verifies it
-again in the copied tree, and sets `data.copiedWorldEntrySave`. This is a
-clone-time source guarantee only: `resume` preserves a task's prior profile
-exactly and does not claim its save still works after task-local edits.
+obtain `fixture-valid`. Creation records static integrity as
+`data.sourceIntegrity`, reports the declaration as `data.worldEntryFixture`,
+verifies it again in the copied tree, and sets `data.copiedWorldEntrySave`.
+`integrityVerified` proves exact profile/save bytes; it does not imply
+`runtimeQualified`. This is a clone-time integrity guarantee only: `resume`
+preserves a task's prior profile exactly and does not claim its save still works
+after task-local edits.
 
 `VerifiedFixture` additionally authorizes that exact fixture as the
 deterministic automation form of “new game”. It uses
