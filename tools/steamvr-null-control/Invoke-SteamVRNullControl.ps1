@@ -147,6 +147,104 @@ function Get-JsonSemanticSha256 {
     finally { $algorithm.Dispose() }
 }
 
+function Test-JsonDictionaryContains($Dictionary, [string]$Key) {
+    return $Dictionary -is [Collections.IDictionary] -and $Dictionary.Contains($Key)
+}
+
+function Test-JsonValueEquivalent([AllowNull()]$Expected, [AllowNull()]$Actual) {
+    if ($null -eq $Expected -or $null -eq $Actual) { return $null -eq $Expected -and $null -eq $Actual }
+    if ($Expected -is [Collections.IDictionary] -or $Actual -is [Collections.IDictionary]) {
+        if ($Expected -isnot [Collections.IDictionary] -or $Actual -isnot [Collections.IDictionary]) { return $false }
+        $expectedKeys = @($Expected.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+        $actualKeys = @($Actual.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+        if (($expectedKeys -join "`n") -cne ($actualKeys -join "`n")) { return $false }
+        foreach ($key in $expectedKeys) { if (-not (Test-JsonValueEquivalent $Expected[$key] $Actual[$key])) { return $false } }
+        return $true
+    }
+    $expectedEnumerable = $Expected -is [Collections.IEnumerable] -and $Expected -isnot [string]
+    $actualEnumerable = $Actual -is [Collections.IEnumerable] -and $Actual -isnot [string]
+    if ($expectedEnumerable -or $actualEnumerable) {
+        if (-not $expectedEnumerable -or -not $actualEnumerable) { return $false }
+        $expectedItems = @($Expected); $actualItems = @($Actual)
+        if ($expectedItems.Count -ne $actualItems.Count) { return $false }
+        for ($index = 0; $index -lt $expectedItems.Count; $index++) { if (-not (Test-JsonValueEquivalent $expectedItems[$index] $actualItems[$index])) { return $false } }
+        return $true
+    }
+    if ($Expected -is [string] -or $Actual -is [string]) { return $Expected -is [string] -and $Actual -is [string] -and [string]$Expected -ceq [string]$Actual }
+    return $Expected -eq $Actual
+}
+
+function Get-JsonDifferencePaths([AllowNull()]$Expected, [AllowNull()]$Actual, [string]$Path = '') {
+    $differences = [Collections.Generic.List[string]]::new()
+    if ($Expected -is [Collections.IDictionary] -and $Actual -is [Collections.IDictionary]) {
+        $keys = @(@($Expected.Keys) + @($Actual.Keys) | ForEach-Object { [string]$_ } | Sort-Object -Unique -CaseSensitive)
+        foreach ($key in $keys) {
+            $child = if ([string]::IsNullOrWhiteSpace($Path)) { $key } else { "$Path.$key" }
+            if (-not (Test-JsonDictionaryContains $Expected $key) -or -not (Test-JsonDictionaryContains $Actual $key)) { $differences.Add($child); continue }
+            foreach ($difference in @(Get-JsonDifferencePaths $Expected[$key] $Actual[$key] $child)) { $differences.Add($difference) }
+        }
+        return @($differences)
+    }
+    $expectedEnumerable = $Expected -is [Collections.IEnumerable] -and $Expected -isnot [string]
+    $actualEnumerable = $Actual -is [Collections.IEnumerable] -and $Actual -isnot [string]
+    if ($expectedEnumerable -and $actualEnumerable) {
+        $expectedItems = @($Expected); $actualItems = @($Actual)
+        if ($expectedItems.Count -ne $actualItems.Count) { return @($Path) }
+        for ($index = 0; $index -lt $expectedItems.Count; $index++) {
+            foreach ($difference in @(Get-JsonDifferencePaths $expectedItems[$index] $actualItems[$index] "$Path[$index]")) { $differences.Add($difference) }
+        }
+        return @($differences)
+    }
+    if (-not (Test-JsonValueEquivalent $Expected $Actual)) { return @($Path) }
+    return @()
+}
+
+function Get-NullSettingsExpectation([Collections.IDictionary]$Receipt, [string]$BackupPath) {
+    if (-not $Receipt.Contains('profilePath') -or [string]::IsNullOrWhiteSpace([string]$Receipt['profilePath'])) { throw 'The apply receipt does not identify its null-HMD profile.' }
+    $profilePath = [IO.Path]::GetFullPath([string]$Receipt['profilePath'])
+    if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) { throw "The receipt-bound null-HMD profile is missing: $profilePath" }
+    if ((Get-HashOrNull $profilePath) -ne [string]$Receipt['profileSha256']) { throw 'The null-HMD profile hash differs from the apply receipt.' }
+    $expected = Read-JsonHashtable -Path $BackupPath
+    $profile = Read-JsonHashtable -Path $profilePath
+    $controlled = [Collections.Generic.List[string]]::new()
+    foreach ($section in @('steamvr', 'dashboard', 'driver_null', 'driver_codex_head_pose', 'TrackingOverrides')) {
+        if (-not $expected.Contains($section)) { $expected[$section] = [ordered]@{} }
+        foreach ($key in $profile[$section].Keys) {
+            $expected[$section][$key] = $profile[$section][$key]
+            $controlled.Add("$section.$key")
+        }
+    }
+    return [pscustomobject][ordered]@{ value = $expected; profile = $profile; controlledPaths = @($controlled); semanticSha256 = Get-JsonSemanticSha256 -Value $expected }
+}
+
+function Get-SettingsRestoreValidation([Collections.IDictionary]$Receipt, [string]$BackupPath, [string]$CurrentPath) {
+    $expectation = Get-NullSettingsExpectation -Receipt $Receipt -BackupPath $BackupPath
+    $current = Read-JsonHashtable -Path $CurrentPath
+    $currentHash = Get-HashOrNull $CurrentPath
+    $exactMatch = $currentHash -eq [string]$Receipt['settingsSha256Null']
+    $controlledDifferences = @()
+    foreach ($path in @($expectation.controlledPaths)) {
+        $section, $key = $path -split '[.]', 2
+        if (-not $current.Contains($section) -or $current[$section] -isnot [Collections.IDictionary] -or -not $current[$section].Contains($key) -or -not (Test-JsonValueEquivalent $expectation.profile[$section][$key] $current[$section][$key])) { $controlledDifferences += $path }
+    }
+    $allDifferences = @(Get-JsonDifferencePaths $expectation.value $current)
+    $runtimeManagedPrefixes = @('GpuSpeed', 'LastKnown')
+    $unclassified = @($allDifferences | Where-Object {
+        $candidate = [string]$_
+        @($runtimeManagedPrefixes | Where-Object { $candidate -eq $_ -or $candidate.StartsWith("$_`.", [StringComparison]::Ordinal) }).Count -eq 0
+    })
+    $controlledMatch = $controlledDifferences.Count -eq 0
+    $formattingOnly = -not $exactMatch -and $allDifferences.Count -eq 0
+    $runtimeManagedOnly = -not $exactMatch -and $controlledMatch -and $allDifferences.Count -gt 0 -and $unclassified.Count -eq 0
+    return [pscustomobject][ordered]@{
+        exactMatch = $exactMatch; controlledContractMatch = $controlledMatch; formattingOnlyDriftAccepted = $formattingOnly; runtimeManagedOnlyDriftAccepted = $runtimeManagedOnly
+        authorized = $exactMatch -or $formattingOnly -or $runtimeManagedOnly; authorizationRoute = if ($exactMatch) { 'exact-applied-bytes' } elseif ($formattingOnly) { 'semantic-formatting-only' } elseif ($runtimeManagedOnly) { 'controlled-contract-plus-runtime-managed-fields' } else { 'none' }
+        currentSha256 = $currentHash; expectedSha256 = [string]$Receipt['settingsSha256Null']; expectedSemanticSha256 = $expectation.semanticSha256
+        currentSemanticSha256 = Get-JsonSemanticSha256 -Value $current; controlledDifferences = @($controlledDifferences)
+        runtimeManagedDifferencePaths = @($allDifferences | Where-Object { $_ -notin $unclassified }); unclassifiedDifferencePaths = @($unclassified)
+    }
+}
+
 function Get-IsolatedRegistrationExpectation {
     param(
         [Parameter(Mandatory)][string]$BackupPath,
@@ -953,6 +1051,8 @@ try {
                         backupPath = $backupPath
                         settingsSha256Before = $beforeHash
                         settingsSha256Null = Get-HashOrNull $SettingsPath
+                        settingsSemanticSha256Before = Get-JsonSemanticSha256 -Path $backupPath
+                        settingsSemanticSha256Null = Get-JsonSemanticSha256 -Path $SettingsPath
                         profilePath = $NullProfilePath
                         profileSha256 = Get-HashOrNull $NullProfilePath
                         externalDriverIsolation = [ordered]@{
@@ -982,6 +1082,8 @@ try {
                     receiptPath = $receiptPath
                     settingsSha256Before = $beforeHash
                     settingsSha256Null = Get-HashOrNull $SettingsPath
+                    settingsSemanticSha256Before = Get-JsonSemanticSha256 -Path $backupPath
+                    settingsSemanticSha256Null = Get-JsonSemanticSha256 -Path $SettingsPath
                     effective = $afterEffective
                     externalDriverIsolation = $receipt['externalDriverIsolation']
                 }
@@ -1001,8 +1103,13 @@ try {
             if (-not $receipt.ContainsKey('settingsSha256Null') -or [string]::IsNullOrWhiteSpace([string]$receipt['settingsSha256Null'])) { throw 'The apply receipt does not identify the applied SteamVR settings hash.' }
             $settingsLiveHash = Get-HashOrNull $SettingsPath
             $restoreAlreadyCommitted = $null -ne $pendingRestore -and [string]$pendingRestore['phase'] -eq 'committed' -and $settingsLiveHash -eq $backupHash
-            if (-not $restoreAlreadyCommitted -and $settingsLiveHash -ne [string]$receipt['settingsSha256Null']) {
-                throw 'SteamVR settings changed after apply; refusing to overwrite unclassified settings drift.'
+            $settingsValidation = $null
+            if (-not $restoreAlreadyCommitted) {
+                $settingsValidation = Get-SettingsRestoreValidation -Receipt $receipt -BackupPath $backupPath -CurrentPath $SettingsPath
+                if (-not [bool]$settingsValidation.authorized) {
+                    $details = @($settingsValidation.controlledDifferences + $settingsValidation.unclassifiedDifferencePaths | Select-Object -Unique)
+                    throw "SteamVR settings changed after apply outside the authorized runtime-managed contract; refusing to overwrite drift: $($details -join ', ')"
+                }
             }
             $isolation = if ($receipt.ContainsKey('externalDriverIsolation')) { $receipt['externalDriverIsolation'] } else { $null }
             $restoreExternalDrivers = $null -ne $isolation -and [bool]$isolation['enabled']
@@ -1031,7 +1138,7 @@ try {
                 $result = New-Result -Ok $true -State 'already-restored' -Data @{
                     settingsPath = $SettingsPath; restoredSha256 = $settingsLiveHash; backupPath = $backupPath; backupRetained = $true
                     externalDriverIsolation = $isolation; openVRPathsRestoredSha256 = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }
-                    externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $restoreJournalPath
+                    settingsRestoreValidation = $settingsValidation; externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $restoreJournalPath
                 }
             }
             if ($WhatIf) {
@@ -1040,6 +1147,7 @@ try {
                     settingsPath = $SettingsPath
                     expectedSha256 = $backupHash
                     backupRetained = $true
+                    settingsRestoreValidation = $settingsValidation
                     externalDriverIsolation = $isolation
                     externalDriverIsolationValidation = $isolationValidation
                     wouldRestoreOpenVRPaths = if ($restoreExternalDrivers) { $openVRPathsBackupPath } else { $null }
@@ -1049,7 +1157,7 @@ try {
                 $transactionId = [guid]::NewGuid().ToString('N')
                 $settingsRollbackPath = Join-Path $EvidenceDirectory ("steamvr.vrsettings.applied.$transactionId")
                 Copy-Item -LiteralPath $SettingsPath -Destination $settingsRollbackPath
-                $rollbackTargets = @([ordered]@{ name = 'steamvr-settings'; path = [IO.Path]::GetFullPath($SettingsPath); backupPath = $settingsRollbackPath; expectedHash = [string]$receipt['settingsSha256Null'] })
+                $rollbackTargets = @([ordered]@{ name = 'steamvr-settings'; path = [IO.Path]::GetFullPath($SettingsPath); backupPath = $settingsRollbackPath; expectedHash = $settingsLiveHash })
                 if ($restoreExternalDrivers) {
                     $openVRRollbackPath = Join-Path $EvidenceDirectory ("openvrpaths.vrpath.isolated.$transactionId")
                     Copy-Item -LiteralPath $OpenVRPathsPath -Destination $openVRRollbackPath
@@ -1075,6 +1183,7 @@ try {
                     Write-JsonAtomic -Path $restoreReceiptPath -Value ([ordered]@{
                         schemaVersion = 1; operation = 'restore'; transactionId = $transactionId; applyTransactionId = [string]$receipt['transactionId']
                         settingsPath = [IO.Path]::GetFullPath($SettingsPath); settingsSha256Restored = $restoredHash
+                        settingsRestoreValidation = $settingsValidation
                         openVRPathsPath = if ($restoreExternalDrivers) { [IO.Path]::GetFullPath($OpenVRPathsPath) } else { $null }
                         openVRPathsSha256Restored = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }; restoredUtc = [DateTime]::UtcNow.ToString('o')
                     })
@@ -1089,7 +1198,7 @@ try {
                 $result = New-Result -Ok $true -State 'restored' -Data @{
                     settingsPath = $SettingsPath; restoredSha256 = $restoredHash; backupPath = $backupPath; backupRetained = $true
                     externalDriverIsolation = $isolation; openVRPathsRestoredSha256 = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }
-                    externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $restoreJournalPath; restoreReceiptPath = $restoreReceiptPath
+                    settingsRestoreValidation = $settingsValidation; externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $restoreJournalPath; restoreReceiptPath = $restoreReceiptPath
                 }
             }
         }

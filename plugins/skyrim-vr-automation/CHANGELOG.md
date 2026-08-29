@@ -42,6 +42,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Accept formatting-only OpenVR registration drift through ordinal canonical
   JSON comparison while deriving the isolated expectation from the exact
   backup; reject duplicate targets and receipt/backup disagreement.
+- Restore SteamVR settings safely after runtime serialization by rebuilding the
+  receipt-bound null contract, accepting only formatting plus allowlisted
+  `GpuSpeed`/`LastKnown` runtime fields, and retaining exact live bytes for
+  rollback while rejecting controlled or unclassified drift.
 - Revalidate the exact MO2 owner through a bounded post-game stability window,
   returning an explicit release-required state if MO2 exits, and add compact
   JSON output to profile control.

@@ -63,6 +63,17 @@ next apply or restore resolves any nonterminal journal before beginning new
 work, and a repeated restore recognizes a committed exact baseline as
 `already-restored`.
 
+SteamVR may rewrite `steamvr.vrsettings` while the null runtime is active. A
+restore therefore reconstructs the applied settings contract from the exact
+pre-apply backup plus the receipt-bound null profile. It accepts byte-only
+formatting changes and runtime-managed changes confined to the top-level
+`GpuSpeed` and `LastKnown` sections only when every controller-owned null-HMD
+setting still matches. Changes to a controller-owned key or any other section
+remain unclassified drift and fail closed. The validation route and exact
+difference paths are returned as `settingsRestoreValidation`; rollback retains
+the exact accepted live bytes rather than assuming they equal the originally
+written serialization.
+
 For a specifically authorized coexistence diagnostic, `start
 -AllowExternalDisplayRedirector` leaves every vendor registration untouched,
 records the exact conflict inventory and override in the runtime receipt, and
