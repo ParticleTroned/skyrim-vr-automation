@@ -20,8 +20,10 @@ Each independent test task owns a durable profile from the explicit
 `defaults.testProfileSource` through `../mo2-workspace-control`. The stable
 source is distinct from the ordinary session default and from experimental
 alternate profiles. Workspaces inherit a verified copy of the stable source's
-complete saves tree, survive access-lease yields, and never own mods that
-predate their creation.
+complete saves tree and its mandatory default world-entry fixture, survive
+access-lease yields, and never own mods that predate their creation. The
+fixture is qualified at fresh-clone time only; a resumed task profile is
+preserved without any promise that its save remains loadable after task edits.
 
 ## Machine configuration
 
@@ -132,10 +134,12 @@ retained WorkspaceId or explicitly request a fresh clone. Pass the returned
 task profile explicitly to `prepare`.
 Source preparation moves every legacy `ShaderCache*` directory out of overwrite
 into a newly enabled stable-source mod; creation refuses to continue if any
-remain:
+remain. Fresh creation also refuses to continue unless `fixture-status` is
+`fixture-valid` for the maintained source's default world-entry save:
 
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> fixture-status -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> list-task -TaskId <stable-task-id> -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -TaskId <stable-task-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> resume -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <exact-retained-workspace-id> -Confirm:$false -Compact

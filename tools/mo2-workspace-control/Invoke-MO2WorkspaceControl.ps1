@@ -26,6 +26,18 @@ param(
     [switch]$CleanupOwnedMods,
     [ValidateRange(100, 60000)]
     [int]$TransactionLockTimeoutMilliseconds = 10000,
+    [ValidateRange(1, 100000)]
+    [int]$MaxProfileFiles = 20000,
+    [ValidateRange(1, 20000)]
+    [int]$MaxProfileDirectories = 4096,
+    [ValidateRange(1, 64)]
+    [int]$MaxProfileDepth = 16,
+    [ValidateRange(1048576, 137438953472)]
+    [long]$MaxProfileBytes = 34359738368,
+    [ValidateRange(5, 600)]
+    [int]$TreeOperationTimeoutSeconds = 120,
+    [ValidateSet('', 'selected-profile-before-cas', 'tree-operation-deadline')]
+    [string]$InternalTestFailurePoint = '',
     [switch]$Compact,
     [switch]$NoExit
 )
@@ -69,11 +81,66 @@ function Get-SafeName([string]$Value) {
     return $safe
 }
 
+function Get-CollisionResistantSafeName([string]$Value) {
+    $readable = Get-SafeName -Value $Value
+    $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($Value))).ToLowerInvariant()
+    return "$readable-$($digest.Substring(0, 8))"
+}
+
 function Assert-NoWorkspaceReparsePoint([string]$Path, [string]$Purpose) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     while ($null -ne $item) {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Purpose traverses a reparse point and is not qualified for workspace mutation: $($item.FullName)" }
         $item = if ($item -is [IO.FileInfo]) { $item.Directory } else { $item.Parent }
+    }
+}
+
+function Get-WorkspaceBytesSha256([byte[]]$Bytes) {
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes))
+}
+
+function Assert-TreeOperationBudget([string]$Purpose) {
+    if ($null -eq $script:TreeOperationDeadlineUtc) { $script:TreeOperationDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TreeOperationTimeoutSeconds) }
+    if ([DateTime]::UtcNow -ge $script:TreeOperationDeadlineUtc) { throw "$Purpose exceeded the shared $TreeOperationTimeoutSeconds-second tree-operation deadline." }
+}
+
+function Get-BoundedTreeInventory([string]$Path, [string]$Purpose) {
+    $resolvedRoot = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) { throw "$Purpose directory does not exist: $resolvedRoot" }
+    Assert-NoWorkspaceReparsePoint -Path $resolvedRoot -Purpose $Purpose
+    Assert-TreeOperationBudget -Purpose $Purpose
+    $queue = [Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue([pscustomobject]@{ path = $resolvedRoot; depth = 0 })
+    $files = [Collections.Generic.List[object]]::new()
+    $directories = [Collections.Generic.List[object]]::new()
+    [long]$bytes = 0
+    while ($queue.Count -gt 0) {
+        Assert-TreeOperationBudget -Purpose "$Purpose traversal"
+        $current = $queue.Dequeue()
+        foreach ($item in Get-ChildItem -LiteralPath ([string]$current.path) -Force) {
+            Assert-TreeOperationBudget -Purpose "$Purpose traversal"
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Purpose contains a reparse point: $($item.FullName)" }
+            $relative = [IO.Path]::GetRelativePath($resolvedRoot, $item.FullName)
+            if ($item.PSIsContainer) {
+                $depth = [int]$current.depth + 1
+                if ($depth -gt $MaxProfileDepth) { throw "$Purpose exceeds maximum depth $MaxProfileDepth at '$relative'." }
+                if ($directories.Count + 1 -gt $MaxProfileDirectories) { throw "$Purpose exceeds maximum directory count $MaxProfileDirectories." }
+                $record = [pscustomobject][ordered]@{ path = $relative; fullPath = $item.FullName; depth = $depth }
+                $directories.Add($record)
+                $queue.Enqueue([pscustomobject]@{ path = $item.FullName; depth = $depth })
+            }
+            else {
+                if ($files.Count + 1 -gt $MaxProfileFiles) { throw "$Purpose exceeds maximum file count $MaxProfileFiles." }
+                $bytes += [long]$item.Length
+                if ($bytes -gt $MaxProfileBytes) { throw "$Purpose exceeds maximum byte count $MaxProfileBytes." }
+                $files.Add([pscustomobject][ordered]@{ path = $relative; fullPath = $item.FullName; bytes = [long]$item.Length })
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        root = $resolvedRoot; files = @($files | Sort-Object path); directories = @($directories | Sort-Object depth, path)
+        fileCount = $files.Count; directoryCount = $directories.Count; bytes = $bytes
+        limits = [pscustomobject][ordered]@{ maxFiles = $MaxProfileFiles; maxDirectories = $MaxProfileDirectories; maxDepth = $MaxProfileDepth; maxBytes = $MaxProfileBytes; timeoutSeconds = $TreeOperationTimeoutSeconds }
     }
 }
 
@@ -94,7 +161,10 @@ function Invoke-WithWorkspaceTransactionLock($Config, [scriptblock]$Action) {
             Start-Sleep -Milliseconds 50
         }
     }
-    try { return & $Action }
+    try {
+        $null = Resolve-PendingSelectedProfileJournals -Config $Config
+        return & $Action
+    }
     finally { $stream.Dispose() }
 }
 
@@ -136,27 +206,33 @@ function Resolve-DirectProfilePath([string]$ProfilesRoot, [string]$ProfileName) 
 }
 
 function Get-ProfileSnapshot([string]$Path) {
-    $records = @()
-    foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Sort-Object FullName)) {
-        $relative = [IO.Path]::GetRelativePath($Path, $file.FullName)
+    $inventory = Get-BoundedTreeInventory -Path $Path -Purpose 'MO2 profile'
+    $records = [Collections.Generic.List[object]]::new()
+    foreach ($file in @($inventory.files)) {
+        Assert-TreeOperationBudget -Purpose 'MO2 profile hashing'
+        $relative = [string]$file.path
         if ($relative -match '^(?i:saves)[\\/]') { continue }
-        $records += [pscustomobject][ordered]@{ path = $relative; bytes = [long]$file.Length; sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
+        $records.Add([pscustomobject][ordered]@{ path = $relative; bytes = [long]$file.bytes; sha256 = (Get-FileHash -LiteralPath ([string]$file.fullPath) -Algorithm SHA256).Hash })
+        Assert-TreeOperationBudget -Purpose 'MO2 profile hashing'
     }
     $canonical = $records | ConvertTo-Json -Compress -Depth 4
     $hashBytes = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical))
-    return [pscustomobject][ordered]@{ files = @($records); sha256 = [Convert]::ToHexString($hashBytes) }
+    return [pscustomobject][ordered]@{ files = @($records); sha256 = [Convert]::ToHexString($hashBytes); traversal = $inventory.limits }
 }
 
 function Get-SaveTreeSnapshot([string]$ProfilePath) {
     $savesPath = [IO.Path]::GetFullPath((Join-Path $ProfilePath 'saves'))
-    $records = @()
+    $records = [Collections.Generic.List[object]]::new()
     if (Test-Path -LiteralPath $savesPath -PathType Container) {
-        foreach ($file in @(Get-ChildItem -LiteralPath $savesPath -File -Recurse -Force | Sort-Object FullName)) {
-            $records += [pscustomobject][ordered]@{
-                path = [IO.Path]::GetRelativePath($savesPath, $file.FullName)
-                bytes = [long]$file.Length
-                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-            }
+        $inventory = Get-BoundedTreeInventory -Path $savesPath -Purpose 'MO2 profile saves'
+        foreach ($file in @($inventory.files)) {
+            Assert-TreeOperationBudget -Purpose 'MO2 save-tree hashing'
+            $records.Add([pscustomobject][ordered]@{
+                path = [string]$file.path
+                bytes = [long]$file.bytes
+                sha256 = (Get-FileHash -LiteralPath ([string]$file.fullPath) -Algorithm SHA256).Hash
+            })
+            Assert-TreeOperationBudget -Purpose 'MO2 save-tree hashing'
         }
     }
     $canonical = ConvertTo-Json -InputObject @($records) -Compress -Depth 4
@@ -181,49 +257,150 @@ function Write-WorkspaceBytesAtomic([string]$Path, [byte[]]$Bytes) {
     finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
+function Get-SelectedProfileFromBytes([byte[]]$Bytes) {
+    $text = [Text.Encoding]::UTF8.GetString($Bytes)
+    $matches = [regex]::Matches($text, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)\r?$')
+    if ($matches.Count -ne 1) { throw "Expected exactly one selected_profile entry in MO2 INI; found $($matches.Count)." }
+    $raw = $matches[0].Groups['value'].Value.Trim()
+    $byteArray = [regex]::Match($raw, '^@ByteArray\((.*)\)$')
+    return [pscustomobject][ordered]@{
+        text = $text; match = $matches[0]
+        value = if ($byteArray.Success) { $byteArray.Groups[1].Value } else { $raw }
+    }
+}
+
+function Write-SelectedProfileReceipt([Collections.IDictionary]$Journal) {
+    $receipt = [pscustomobject][ordered]@{
+        contractVersion = '2.0.0'; operation = [string]$Journal['operation']; iniPath = [string]$Journal['iniPath']
+        targetProfile = [string]$Journal['targetProfile']; selectedProfileBefore = [string]$Journal['selectedProfileBefore']
+        selectedProfileAfter = [string]$Journal['targetProfile']; backupPath = [string]$Journal['backupPath']
+        beforeSha256 = [string]$Journal['beforeSha256']; resultSha256 = [string]$Journal['resultSha256']
+        changedUtc = [DateTime]::UtcNow.ToString('o'); journalPath = [string]$Journal['journalPath']
+    }
+    Write-WorkspaceJsonAtomic -Path ([string]$Journal['receiptPath']) -Value $receipt
+    return $receipt
+}
+
+function Resolve-SelectedProfileJournal($Config, [string]$JournalPath) {
+    $journal = Get-Content -LiteralPath $JournalPath -Raw | ConvertFrom-Json -AsHashtable
+    $phase = [string]$journal['phase']
+    if ($phase -in @('committed', 'recovered-committed', 'rolled-back', 'recovered-preimage', 'aborted-before-mutation', 'compensated-by-parent')) { return $journal }
+    $expectedIni = [IO.Path]::GetFullPath([string]$Config.mo2.ini)
+    if (-not $journal.ContainsKey('iniPath') -or -not [string]::Equals([IO.Path]::GetFullPath([string]$journal['iniPath']), $expectedIni, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Selected-profile recovery journal targets an unexpected MO2 INI: $JournalPath"
+    }
+    $backupPath = [IO.Path]::GetFullPath([string]$journal['backupPath'])
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw "Selected-profile recovery backup is missing: $backupPath" }
+    if ((Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash -cne [string]$journal['beforeSha256']) { throw "Selected-profile recovery backup hash differs from its journal: $JournalPath" }
+    $liveHash = (Get-FileHash -LiteralPath $expectedIni -Algorithm SHA256).Hash
+    if ($liveHash -ceq [string]$journal['resultSha256']) {
+        $selected = Get-SelectedProfileFromBytes -Bytes ([IO.File]::ReadAllBytes($expectedIni))
+        if ([string]$selected.value -cne [string]$journal['targetProfile']) { throw "Selected-profile recovery result hash matched but target value did not: $JournalPath" }
+        if (-not (Test-Path -LiteralPath ([string]$journal['receiptPath']) -PathType Leaf)) { $null = Write-SelectedProfileReceipt -Journal $journal }
+        $journal['phase'] = 'recovered-committed'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
+        Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
+        return $journal
+    }
+    if ($liveHash -ceq [string]$journal['beforeSha256']) {
+        $journal['phase'] = 'recovered-preimage'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
+        Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
+        return $journal
+    }
+    $journal['phase'] = 'recovery-required'; $journal['recoveryError'] = 'Live MO2 INI matches neither the exact preimage nor the planned result.'
+    Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
+    throw "Selected-profile recovery requires manual review because the live MO2 INI has unclassified drift: $JournalPath"
+}
+
+function Resolve-PendingSelectedProfileJournals($Config) {
+    $root = Get-WorkspaceControlRoot -Config $Config
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
+    $inventory = Get-BoundedTreeInventory -Path $root -Purpose 'Workspace selected-profile journal discovery'
+    $resolved = @()
+    foreach ($file in @($inventory.files | Where-Object { [IO.Path]::GetFileName([string]$_.path) -like '*.selected-profile.journal.json' })) {
+        $resolved += Resolve-SelectedProfileJournal -Config $Config -JournalPath ([string]$file.fullPath)
+    }
+    return @($resolved)
+}
+
+function Restore-MO2SelectedProfileTransaction($Transaction) {
+    $iniPath = [IO.Path]::GetFullPath([string]$Transaction.iniPath)
+    $backupPath = [IO.Path]::GetFullPath([string]$Transaction.backupPath)
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw "Selected-profile rollback backup is missing: $backupPath" }
+    $beforeHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+    if ($beforeHash -cne [string]$Transaction.beforeSha256) { throw 'Selected-profile rollback backup differs from its transaction evidence.' }
+    $liveHash = (Get-FileHash -LiteralPath $iniPath -Algorithm SHA256).Hash
+    if ($liveHash -cne $beforeHash) {
+        if ($liveHash -cne [string]$Transaction.resultSha256) { throw 'Selected-profile rollback refused to overwrite live INI drift outside the transaction result.' }
+        Write-WorkspaceBytesAtomic -Path $iniPath -Bytes ([IO.File]::ReadAllBytes($backupPath))
+        if ((Get-FileHash -LiteralPath $iniPath -Algorithm SHA256).Hash -cne $beforeHash) { throw 'Selected-profile rollback did not restore the exact preimage.' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Transaction.journalPath) -and (Test-Path -LiteralPath ([string]$Transaction.journalPath) -PathType Leaf)) {
+        $journal = Get-Content -LiteralPath ([string]$Transaction.journalPath) -Raw | ConvertFrom-Json -AsHashtable
+        $journal['phase'] = 'compensated-by-parent'; $journal['compensatedUtc'] = [DateTime]::UtcNow.ToString('o')
+        Write-WorkspaceJsonAtomic -Path ([string]$Transaction.journalPath) -Value $journal
+    }
+}
+
 function Set-MO2SelectedProfile($Config, [string]$TargetProfile, [string]$Operation, [string]$EvidenceRoot, [switch]$WhatIf) {
     $iniPath = [IO.Path]::GetFullPath([string]$Config.mo2.ini)
     if (-not (Test-Path -LiteralPath $iniPath -PathType Leaf)) { throw "MO2 INI does not exist: $iniPath" }
     $beforeBytes = [IO.File]::ReadAllBytes($iniPath)
-    $beforeText = [Text.Encoding]::UTF8.GetString($beforeBytes)
-    $selectionMatches = [regex]::Matches($beforeText, '(?im)^(?<prefix>\s*selected_profile\s*=\s*)(?<value>[^\r\n]*)\r?$')
-    if ($selectionMatches.Count -ne 1) { throw "Expected exactly one selected_profile entry in MO2 INI; found $($selectionMatches.Count)." }
-    $rawBeforeValue = $selectionMatches[0].Groups['value'].Value.Trim()
-    $byteArrayMatch = [regex]::Match($rawBeforeValue, '^@ByteArray\((.*)\)$')
-    $beforeValue = if ($byteArrayMatch.Success) { $byteArrayMatch.Groups[1].Value } else { $rawBeforeValue }
-    $replacement = $selectionMatches[0].Groups['prefix'].Value + '@ByteArray(' + $TargetProfile + ')'
-    $afterText = $beforeText.Remove($selectionMatches[0].Index, $selectionMatches[0].Length).Insert($selectionMatches[0].Index, $replacement)
+    $selection = Get-SelectedProfileFromBytes -Bytes $beforeBytes
+    $beforeValue = [string]$selection.value
+    $replacement = $selection.match.Groups['prefix'].Value + '@ByteArray(' + $TargetProfile + ')'
+    $afterText = $selection.text.Remove($selection.match.Index, $selection.match.Length).Insert($selection.match.Index, $replacement)
+    $afterBytes = [Text.Encoding]::UTF8.GetBytes($afterText)
+    $beforeHash = Get-WorkspaceBytesSha256 -Bytes $beforeBytes
+    $resultHash = Get-WorkspaceBytesSha256 -Bytes $afterBytes
     $backupPath = Join-Path $EvidenceRoot 'ModOrganizer.before.ini'
     $receiptPath = Join-Path $EvidenceRoot ('selected-profile-' + (Get-SafeName $Operation) + '.receipt.json')
+    $journalPath = Join-Path $EvidenceRoot ('selected-profile-' + (Get-SafeName $Operation) + '.selected-profile.journal.json')
     $record = [pscustomobject][ordered]@{
         iniPath = $iniPath; selectedProfileBefore = $beforeValue; selectedProfileAfter = $TargetProfile
-        backupPath = $backupPath; receiptPath = $receiptPath; changed = $beforeValue -cne $TargetProfile
+        backupPath = $backupPath; receiptPath = $receiptPath; journalPath = $journalPath; beforeSha256 = $beforeHash; resultSha256 = $resultHash; changed = $beforeValue -cne $TargetProfile
     }
     if ($WhatIf) { return $record }
     if (-not (Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null }
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite the exact MO2 INI backup: $backupPath" }
     [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
+    $journal = [ordered]@{
+        contractVersion = '2.0.0'; operation = $Operation; phase = 'prepared'; iniPath = $iniPath
+        targetProfile = $TargetProfile; selectedProfileBefore = $beforeValue; backupPath = $backupPath
+        receiptPath = $receiptPath; journalPath = $journalPath; beforeSha256 = $beforeHash; resultSha256 = $resultHash
+        preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+    }
+    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
+    $mutationApplied = $false
     try {
         if ($beforeValue -cne $TargetProfile) {
-            Write-WorkspaceBytesAtomic -Path $iniPath -Bytes ([Text.Encoding]::UTF8.GetBytes($afterText))
+            if ($InternalTestFailurePoint -eq 'selected-profile-before-cas') { [IO.File]::AppendAllText($iniPath, "; injected concurrent drift`r`n", [Text.UTF8Encoding]::new($false)) }
+            $livePreimage = [IO.File]::ReadAllBytes($iniPath)
+            if ($livePreimage.Length -ne $beforeBytes.Length -or [Convert]::ToBase64String($livePreimage) -cne [Convert]::ToBase64String($beforeBytes)) {
+                throw 'MO2 INI changed after planning and before replacement; no selected-profile mutation was applied.'
+            }
+            Write-WorkspaceBytesAtomic -Path $iniPath -Bytes $afterBytes
+            $mutationApplied = $true
+            $journal['phase'] = 'selection-applied-uncommitted'; Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
         }
-        $verifiedText = [IO.File]::ReadAllText($iniPath, [Text.Encoding]::UTF8)
-        $verifiedMatches = [regex]::Matches($verifiedText, '(?im)^\s*selected_profile\s*=\s*@ByteArray\((?<value>[^\r\n]*)\)\s*\r?$')
-        $verified = if ($verifiedMatches.Count -eq 1) { $verifiedMatches[0].Groups['value'].Value } else { $null }
+        $verifiedBytes = [IO.File]::ReadAllBytes($iniPath)
+        $verified = [string](Get-SelectedProfileFromBytes -Bytes $verifiedBytes).value
         if ($verified -cne $TargetProfile) { throw "MO2 selected profile postcondition did not match '$TargetProfile'." }
-        $receipt = [pscustomobject][ordered]@{
-            contractVersion = '1.1.0'; operation = $Operation; iniPath = $iniPath
-            targetProfile = $TargetProfile; selectedProfileBefore = $beforeValue
-            selectedProfileAfter = $verified; backupPath = $backupPath
-            beforeSha256 = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
-            resultSha256 = (Get-FileHash -LiteralPath $iniPath -Algorithm SHA256).Hash
-            changedUtc = [DateTime]::UtcNow.ToString('o')
-        }
-        Write-WorkspaceJsonAtomic -Path $receiptPath -Value $receipt
+        if ((Get-WorkspaceBytesSha256 -Bytes $verifiedBytes) -cne $resultHash) { throw 'MO2 selected profile result bytes differ from the planned result.' }
+        $null = Write-SelectedProfileReceipt -Journal $journal
+        $journal['phase'] = 'committed'; $journal['committedUtc'] = [DateTime]::UtcNow.ToString('o')
+        Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
     }
     catch {
-        Write-WorkspaceBytesAtomic -Path $iniPath -Bytes $beforeBytes
-        throw "MO2 selected profile transaction '$Operation' failed; the exact INI bytes were restored. $($_.Exception.Message)"
+        $failure = $_.Exception.Message
+        if ($mutationApplied) {
+            Write-WorkspaceBytesAtomic -Path $iniPath -Bytes $beforeBytes
+            $journal['phase'] = 'rolled-back'; $journal['rollback'] = [ordered]@{ verified = (Get-FileHash -LiteralPath $iniPath -Algorithm SHA256).Hash -ceq $beforeHash; completedUtc = [DateTime]::UtcNow.ToString('o') }
+            try { Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal } catch {}
+            throw "MO2 selected profile transaction '$Operation' failed after mutation; the exact INI bytes were restored. $failure"
+        }
+        $journal['phase'] = 'aborted-before-mutation'; $journal['abortedUtc'] = [DateTime]::UtcNow.ToString('o'); $journal['failure'] = $failure
+        try { Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal } catch {}
+        throw "MO2 selected profile transaction '$Operation' failed before mutation; live INI bytes were not overwritten. $failure"
     }
     return $record
 }
@@ -255,6 +432,7 @@ function Resolve-VerifiedSaveFixture($Config, [string]$SourceName, [string]$Sour
     $verifiedFiles = @()
     $essCount = 0
     foreach ($file in $files) {
+        Assert-TreeOperationBudget -Purpose 'World-entry fixture hashing'
         $relative = [string]$file.relativePath
         if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative)) { throw "Fixture '$selectedId' contains a missing or rooted relativePath." }
         $sourceFile = [IO.Path]::GetFullPath((Join-Path $sourceSaves $relative))
@@ -262,6 +440,7 @@ function Resolve-VerifiedSaveFixture($Config, [string]$SourceName, [string]$Sour
         if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "Fixture source file does not exist: $sourceFile" }
         $item = Get-Item -LiteralPath $sourceFile
         $hash = (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash
+        Assert-TreeOperationBudget -Purpose 'World-entry fixture hashing'
         if (-not $file.PSObject.Properties['sha256'] -or $hash -cne [string]$file.sha256) { throw "Fixture source hash does not match for '$relative'." }
         if ($file.PSObject.Properties['bytes'] -and [long]$file.bytes -ne [long]$item.Length) { throw "Fixture source byte count does not match for '$relative'." }
         if ([IO.Path]::GetExtension($relative) -ieq '.ess') { $essCount++ }
@@ -285,9 +464,11 @@ function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$So
     $manifestSource = if (-not [string]::IsNullOrWhiteSpace($RequestedManifestPath)) { 'parameter' } elseif (-not [string]::IsNullOrWhiteSpace($configuredManifest)) { 'configuration' } else { 'none' }
     $exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'save-fixtures.example.json'))
     $guidance = @(
+        'Live-load one known-good save in the maintained source profile before declaring or refreshing the fixture.',
         'Copy and adapt tools/mo2-workspace-control/save-fixtures.example.json outside the checkout.',
         'Set defaults.newGameFixtureManifest in the stable per-user machine configuration, or pass -FixtureManifestPath explicitly.',
-        'Declare one .ess save plus any matching co-save files, then run fixture-status again to validate exact hashes and the stable-profile fingerprint.'
+        'Declare one .ess save plus any matching co-save files, then run fixture-status again to validate exact hashes and the stable-profile fingerprint.',
+        'Fresh workspace creation is blocked until the manifest default fixture is valid.'
     )
     if ([string]::IsNullOrWhiteSpace($manifestInput)) {
         return [pscustomobject][ordered]@{
@@ -319,6 +500,7 @@ function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$So
     $fileStatus = @()
     $essCount = 0
     foreach ($file in @($selected.files)) {
+        Assert-TreeOperationBudget -Purpose 'World-entry fixture status hashing'
         $relative = [string]$file.relativePath
         if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative)) { throw "Fixture '$selectedId' contains a missing or rooted relativePath." }
         $sourceFile = [IO.Path]::GetFullPath((Join-Path $sourceSaves $relative))
@@ -326,6 +508,7 @@ function Get-VerifiedSaveFixtureStatus($Config, [string]$SourceName, [string]$So
         $exists = Test-Path -LiteralPath $sourceFile -PathType Leaf
         $actualBytes = if ($exists) { [long](Get-Item -LiteralPath $sourceFile).Length } else { $null }
         $actualHash = if ($exists) { (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash } else { $null }
+        Assert-TreeOperationBudget -Purpose 'World-entry fixture status hashing'
         $expectedHash = if ($file.PSObject.Properties['sha256']) { [string]$file.sha256 } else { $null }
         $expectedBytes = if ($file.PSObject.Properties['bytes']) { [long]$file.bytes } else { $null }
         if ([IO.Path]::GetExtension($relative) -ieq '.ess') { $essCount++ }
@@ -553,11 +736,16 @@ function Move-OverwriteShaderCachesToStableMod($Config, [string]$SourceName, [st
 }
 
 try {
+    $script:TreeOperationDeadlineUtc = if ($InternalTestFailurePoint -eq 'tree-operation-deadline') { [DateTime]::UtcNow.AddMilliseconds(-1) } else { [DateTime]::UtcNow.AddSeconds($TreeOperationTimeoutSeconds) }
     $resolvedConfig = Resolve-MO2ControlConfigPath -ConfigPath $ConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control')
     if (-not $resolvedConfig.exists) { throw "MO2 configuration was not found: $($resolvedConfig.path)" }
     $config = Read-MO2ControlConfig -ConfigPath $resolvedConfig.path
     $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
     $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
+
+    if ($Command -eq 'release') {
+        throw 'Workspace release is intentionally unavailable because it previously deleted retained task state. Yield scarce MO2 access with Invoke-MO2Control.ps1 release-access; destroy a finished workspace only with the explicit retire command.'
+    }
 
     if ($Command -eq 'list-task') {
         $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
@@ -657,20 +845,41 @@ try {
         $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
         $sourceSaveSnapshot = Get-SaveTreeSnapshot -ProfilePath $sourcePath
         $initialMods = @(Get-ChildItem -LiteralPath $modsRoot -Directory -Force | Select-Object -ExpandProperty Name | Sort-Object)
+        try {
+            # Every fresh clone must inherit one known-good route into the game
+            # world. SavePolicy controls later test authorization, not whether
+            # the maintained source has exact static integrity evidence to seed
+            # task profiles. Runtime world-entry qualification is a separate
+            # observation and is never inferred from hashes alone.
+            $worldEntryFixture = Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId ''
+        }
+        catch {
+            throw "Fresh workspace creation requires a valid default world-entry save in the maintained source profile. Run fixture-status and repair defaults.newGameFixtureManifest before cloning. $($_.Exception.Message)"
+        }
         $fixture = $null
         if ($SavePolicy -eq 'VerifiedFixture') {
-            $fixture = Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
+            $fixture = if ([string]::IsNullOrWhiteSpace($FixtureId)) {
+                $worldEntryFixture
+            } else {
+                Resolve-VerifiedSaveFixture -Config $config -SourceName $sourceName -SourcePath $sourcePath -SourceSnapshot $sourceSnapshot -RequestedManifestPath $FixtureManifestPath -RequestedFixtureId $FixtureId
+            }
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '2.0.0'; workspaceId = $workspaceId; ownershipId = $ownershipId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
+            contractVersion = '2.1.0'; workspaceId = $workspaceId; ownershipId = $ownershipId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
             leaseHistory = @([pscustomobject][ordered]@{ accessId = $AccessId; acquiredForWorkspaceUtc = [DateTime]::UtcNow.ToString('o'); disposition = 'created' })
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
             sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
             profile = $profileName; profilePath = $profilePath; profileName = $profileName; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
-            savePolicy = $SavePolicy; fixtureManifestPath = if ($fixture) { [string]$fixture.manifestPath } else { $null }
+            savePolicy = $SavePolicy; fixtureManifestPath = [string]$worldEntryFixture.manifestPath
+            worldEntryFixture = $worldEntryFixture; sourceIntegrity = [pscustomobject][ordered]@{
+                integrityVerified = $true; runtimeQualified = $false; scope = 'fresh-clone-source'; fixtureId = [string]$worldEntryFixture.id
+                profileFingerprintSha256 = [string]$sourceSnapshot.sha256; cloneVerifiedUtc = [DateTime]::UtcNow.ToString('o')
+                runtimeQualificationEvidence = $null
+                warranty = 'Exact source and save bytes were verified at clone creation. This does not assert a live game load. Resumed task profiles are preserved as-is and are not reverified after task edits.'
+            }
             saveFixture = $fixture; sourceSaveSnapshot = $sourceSaveSnapshot; initialModNames = $initialMods; protectedSharedModNames = $initialMods; createdMods = @(); registeredMods = @(); inheritedSaves = $true
             creationJournalPath = $creationJournalPath
-            saveGuidance = 'Every source-profile save is copied. MainMenuOnly and FreshGame still describe test authorization; use VerifiedFixture for an exact declared load target. See docs/BREEZEHOME-SAVE.md.'
+            saveGuidance = 'Every fresh clone requires and copies an integrity-verified default world-entry fixture plus the complete source saves tree. Static integrity does not assert a successful live load. MainMenuOnly and FreshGame still describe test authorization; use VerifiedFixture for an exact declared load target. Resumed profiles are preserved without save reverification. See docs/BREEZEHOME-SAVE.md.'
             ownershipRule = 'The workspace may change only its cloned profile and mods it created and registered. Existing shared mod directories are immutable; profile-local enable/disable markers are allowed.'
         }
         if ($PSCmdlet.ShouldProcess($profilePath, "clone stable MO2 profile '$sourceName' including its complete saves tree")) {
@@ -689,32 +898,36 @@ try {
                 try {
                     New-Item -ItemType Directory -Path $profilePath -ErrorAction Stop | Out-Null
                     $profileCreated = $true
-                    foreach ($directory in @(Get-ChildItem -LiteralPath $sourcePath -Directory -Recurse -Force)) {
-                        Assert-NoWorkspaceReparsePoint -Path $directory.FullName -Purpose 'Stable source profile directory'
-                        $relative = [IO.Path]::GetRelativePath($sourcePath, $directory.FullName)
-                        New-Item -ItemType Directory -Path (Join-Path $profilePath $relative) -Force | Out-Null
+                    $copyInventory = Get-BoundedTreeInventory -Path $sourcePath -Purpose 'Stable source profile copy'
+                    foreach ($directory in @($copyInventory.directories)) {
+                        New-Item -ItemType Directory -Path (Join-Path $profilePath ([string]$directory.path)) -Force | Out-Null
                     }
-                    foreach ($file in @(Get-ChildItem -LiteralPath $sourcePath -File -Recurse -Force)) {
-                        Assert-NoWorkspaceReparsePoint -Path $file.FullName -Purpose 'Stable source profile file'
-                        $relative = [IO.Path]::GetRelativePath($sourcePath, $file.FullName)
-                        $target = Join-Path $profilePath $relative
+                    foreach ($file in @($copyInventory.files)) {
+                        Assert-TreeOperationBudget -Purpose 'Stable source profile copy'
+                        $target = Join-Path $profilePath ([string]$file.path)
                         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-                        Copy-Item -LiteralPath $file.FullName -Destination $target
+                        Copy-Item -LiteralPath ([string]$file.fullPath) -Destination $target
+                        Assert-TreeOperationBudget -Purpose 'Stable source profile copy'
                     }
                     New-Item -ItemType Directory -Path (Join-Path $profilePath 'saves') -Force | Out-Null
                     $profileSaveSnapshot = Get-SaveTreeSnapshot -ProfilePath $profilePath
                     if ([string]$profileSaveSnapshot.sha256 -cne [string]$sourceSaveSnapshot.sha256 -or [int]$profileSaveSnapshot.fileCount -ne [int]$sourceSaveSnapshot.fileCount) { throw 'Complete source save-tree copy verification failed.' }
                     $manifest | Add-Member -NotePropertyName profileSaveSnapshot -NotePropertyValue $profileSaveSnapshot -Force
-                    if ($fixture) {
+                    $fixturesToVerify = @($worldEntryFixture)
+                    if ($fixture -and [string]$fixture.id -cne [string]$worldEntryFixture.id) { $fixturesToVerify += $fixture }
+                    foreach ($copyFixture in $fixturesToVerify) {
                         $targetSaves = [IO.Path]::GetFullPath((Join-Path $profilePath 'saves'))
-                        foreach ($file in @($fixture.files)) {
+                        foreach ($file in @($copyFixture.files)) {
+                            Assert-TreeOperationBudget -Purpose 'Copied world-entry fixture verification'
                             $target = [IO.Path]::GetFullPath((Join-Path $targetSaves ([string]$file.relativePath)))
                             if (-not $target.StartsWith($targetSaves + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Fixture target escapes the task saves directory: $($file.relativePath)" }
                             if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Verified fixture was not present in the complete copied save tree: $target" }
                             if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -cne [string]$file.sha256) { throw "Copied fixture verification failed: $target" }
+                            Assert-TreeOperationBudget -Purpose 'Copied world-entry fixture verification'
                         }
-                        $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true -Force
                     }
+                    $manifest | Add-Member -NotePropertyName copiedWorldEntrySave -NotePropertyValue $true -Force
+                    if ($fixture) { $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true -Force }
                     $manifest | Add-Member -NotePropertyName profileSnapshot -NotePropertyValue (Get-ProfileSnapshot -Path $profilePath) -Force
                     $selectionEvidence = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-create-select')
                     $selection = Set-MO2SelectedProfile -Config $config -TargetProfile $profileName -Operation 'select-created-task-workspace' -EvidenceRoot $selectionEvidence
@@ -726,8 +939,8 @@ try {
                 }
                 catch {
                     $failure = $_.Exception.Message; $rollbackErrors = @()
-                    if ($selection -and (Test-Path -LiteralPath ([string]$selection.backupPath) -PathType Leaf)) {
-                        try { Write-WorkspaceBytesAtomic -Path ([string]$selection.iniPath) -Bytes ([IO.File]::ReadAllBytes([string]$selection.backupPath)) } catch { $rollbackErrors += "selected-profile: $($_.Exception.Message)" }
+                    if ($selection) {
+                        try { Restore-MO2SelectedProfileTransaction -Transaction $selection } catch { $rollbackErrors += "selected-profile: $($_.Exception.Message)" }
                     }
                     if ($profileCreated -and (Test-Path -LiteralPath $profilePath -PathType Container)) {
                         try { Assert-NoWorkspaceReparsePoint -Path $profilePath -Purpose 'Failed task profile'; Remove-Item -LiteralPath $profilePath -Recurse -Force } catch { $rollbackErrors += "profile: $($_.Exception.Message)" }
@@ -803,8 +1016,8 @@ try {
                 catch {
                     $failure = $_.Exception.Message; $rollbackErrors = @()
                     try { Write-WorkspaceBytesAtomic -Path $current.path -Bytes $manifestPreimage } catch { $rollbackErrors += "manifest: $($_.Exception.Message)" }
-                    if ($selection -and (Test-Path -LiteralPath ([string]$selection.backupPath) -PathType Leaf)) {
-                        try { Write-WorkspaceBytesAtomic -Path ([string]$selection.iniPath) -Bytes ([IO.File]::ReadAllBytes([string]$selection.backupPath)) } catch { $rollbackErrors += "selected-profile: $($_.Exception.Message)" }
+                    if ($selection) {
+                        try { Restore-MO2SelectedProfileTransaction -Transaction $selection } catch { $rollbackErrors += "selected-profile: $($_.Exception.Message)" }
                     }
                     $journal.phase = if ($rollbackErrors.Count -eq 0) { 'rolled-back' } else { 'recovery-required' }
                     $journal.rollback = [pscustomobject]@{ verified = $rollbackErrors.Count -eq 0; errors = $rollbackErrors; completedUtc = [DateTime]::UtcNow.ToString('o') }
@@ -876,7 +1089,7 @@ try {
         $ownershipMarker = Assert-WorkspaceOwnerMarker -Workspace $owned -ModName $ModName -ModPath $resolvedMod
         if ([string]$createdMatches[0].markerSha256 -cne [string]$ownershipMarker.sha256) { throw "Task mod ownership marker changed after create-mod: $ModName" }
         Assert-NoWorkspaceReparsePoint -Path $resolvedMod -Purpose 'Task-owned mod directory'
-        $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-register-' + (Get-SafeName $ModName))
+        $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-register-' + (Get-CollisionResistantSafeName $ModName))
         $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
         $winning = @($WinningPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $arguments = @{
@@ -1011,7 +1224,7 @@ try {
                     }
                     if ($profileMoved) { try { if (Test-Path -LiteralPath $profileQuarantine) { Move-Item -LiteralPath $profileQuarantine -Destination $currentProfilePath -ErrorAction Stop } } catch { $rollbackErrors += "profile: $($_.Exception.Message)" } }
                     try { Write-WorkspaceBytesAtomic -Path $current.path -Bytes $manifestPreimage } catch { $rollbackErrors += "manifest: $($_.Exception.Message)" }
-                    if ($profileSelection -and (Test-Path -LiteralPath ([string]$profileSelection.backupPath) -PathType Leaf)) { try { Write-WorkspaceBytesAtomic -Path ([string]$profileSelection.iniPath) -Bytes ([IO.File]::ReadAllBytes([string]$profileSelection.backupPath)) } catch { $rollbackErrors += "selected-profile: $($_.Exception.Message)" } }
+                    if ($profileSelection) { try { Restore-MO2SelectedProfileTransaction -Transaction $profileSelection } catch { $rollbackErrors += "selected-profile: $($_.Exception.Message)" } }
                     $journal.phase = if ($rollbackErrors.Count -eq 0) { 'rolled-back' } else { 'recovery-required' }
                     $journal.rollback = [pscustomobject]@{ verified = $rollbackErrors.Count -eq 0; errors = $rollbackErrors; completedUtc = [DateTime]::UtcNow.ToString('o') }
                     try { Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal } catch { $rollbackErrors += "journal: $($_.Exception.Message)" }
@@ -1044,7 +1257,7 @@ try {
             profileName = [string]$owned.data.profile; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             selectedProfileRelease = $profileSelection; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods
             releaseAccessRequired = $true; manifestPath = $owned.path
-            deprecatedCommand = if ($Command -eq 'release') { 'release is a compatibility alias for destructive retire; use retire. To yield scarce MO2 access while retaining this profile, call MO2 release-access only.' } else { $null }
+            deprecatedCommand = $null
         } }
     }
 }
