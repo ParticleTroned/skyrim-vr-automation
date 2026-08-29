@@ -17,7 +17,13 @@ loopback endpoint. Search the complete callable tool catalog, including
 deferred tools, for the `mcp__devbench_vr__` prefix before declaring the lane
 unavailable; the initial displayed tool list may be abbreviated. Require direct
 `ping`, `scenario`, and every protocol action before `prepare_coc`. Treat their
-tool descriptions as the schema inventory.
+tool descriptions as the schema inventory. The direct
+`communityshaders.renderscale` schema must expose `qualification_wait` and its
+`target.method` enum must contain `none`, `taa`, `dlss`, and `fsr`. If either
+native method is absent, stop before any stateful call with
+`plugin_contract_outdated`, report that the running CSX/DevBench producer needs
+a newer build, and ask the user. Never search for a separate
+`upscalingStable` tool.
 
 If the plugin tools are absent or direct `ping` fails its bounded readiness
 check, stop before any stateful call, report `plugin_direct_unavailable`, and
@@ -200,27 +206,33 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    at most five additional seconds only to retrieve the already-terminal
    `lastEvidence`; this is receipt recovery, not a second measurement window.
    Require `active: false` and matching owner/transition IDs before trace stop
-   or row classification. If no terminal receipt can be recovered, preserve all
+   or row classification. This recovery rule applies to both vendor and native
+   qualification waits. If no terminal receipt can be recovered, preserve all
    task-owned session IDs, stop future calls, and ask the user.
-6. For None and TAA, do not call a vendor qualification waiter or manufacture
-   a DLSS/FSR target. Call DevBench `upscalingStable` in Dragonsreach exactly
-   once with only the shared deadline's remaining budget and the complete
-   normalized apply target as `-ExpectedProfileJson`. The target-correlated
-   native barrier requires the authoritative effective runtime profile to
-   equal that target, render scale to remain disabled, no active operation,
-   and either `idle/idle` or `active/active` native controller state. Native
-   TAA legitimately reports `active/active`; its render-scale controller
-   projection may remain `None` and must not be compared with the effective
-   TAA profile. Do not poll `operation` or start a second 30-second window.
-   Read that apply's operation exactly once after the barrier; require its
-   target and effective profile to match, its state to be `completed`, and the
-   final snapshot to have no active operation before releasing the timing-only
-   owner with `qualification_cancel`. On the next pre-apply snapshot, preserve
+6. For None and TAA, use the same direct `qualification_wait` in Dragonsreach
+   exactly once with only the shared deadline's remaining budget. Pass
+   `milestone: strict` and the exact native target: `method: none` or
+   `method: taa`, `qualityMode: 0`, and `renderScaleMode: false`; omit
+   `dlssProfile` and `fsrRuntime`. This is a native target, not a manufactured
+   DLSS/FSR target. The target-correlated server barrier requires the
+   authoritative effective runtime profile to equal that target, render scale
+   to remain disabled, no active operation, advancing coherent native
+   presentation, and either `idle/idle` or `active/active` native controller
+   state. Native TAA legitimately reports `active/active`; its render-scale
+   controller projection may remain `None` and must not be compared with the
+   effective TAA profile. Do not poll `operation` or start a second 30-second
+   window.
+   Read that apply's operation exactly once after the terminal waiter receipt;
+   require its target and effective profile to match, its state to be
+   `completed`, and the final snapshot to have no active operation. The waiter
+   closes the timing owner; do not call `qualification_cancel` after any
+   terminal waiter receipt. Cancellation is only for an owner that has not
+   entered its waiter. On the next pre-apply snapshot, preserve
    a settled native None controller projection as physical telemetry when there
    is no active operation, its configured/effective API profile matches the
    completed TAA or None target, and requested/stable are inactive None. Do
    not relabel it as an incoherent profile or wait for it to become TAA.
-   That expected cancellation closes the timing bracket and is not a render
+   The terminal waiter receipt closes the timing bracket and is not a render
    failure.
 7. Read the operation, transition-filtered API events, authoritative API
    snapshot, render-scale status, preparation trace, and applicable DLSS
@@ -293,7 +305,7 @@ For None and TAA require the public operation target and effective profile to
 match the complete target; the authoritative effective method to be exact;
 `qualityMode: native_aa`; `renderScaleMode: false`; native physical-contract
 evidence from the producer; advancing coherent in-world target-correlated
-`upscalingStable`; no
+native `qualification_wait` receipt; no
 unresolved physical mutation; and no vendor evaluation treated as the active
 presentation. Their requested/stable controller state may remain the inactive
 native None physical projection; record it separately and never require it to

@@ -97,6 +97,10 @@ foreach ($variant in $variants) {
 
     foreach ($token in @(
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
+        '`target.method` enum must contain `none`, `taa`, `dlss`, and `fsr`',
+        '`plugin_contract_outdated`',
+        'running CSX/DevBench producer needs a newer build',
+        'Never search for a separate',
         '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
         '`expectedStateRevision`', '`clientId`', '`commandId`',
         '`persistence: runtime_only`', 'server-owned 5,000 ms settling scenario',
@@ -115,9 +119,11 @@ foreach ($variant in $variants) {
         'It is telemetry, not', '`pre_snapshot_profile_incoherent`',
         'No wait, snapshot, client round trip, menu action, or other tool may appear',
         'idempotentReplay: false', '`applied_synchronously`', '`queued`',
-        '`no_change`', 'do not call a vendor', 'upscalingStable',
-        '`-ExpectedProfileJson`', 'target-correlated', 'native barrier',
+        '`no_change`', 'same direct `qualification_wait`',
+        '`method: none`', '`method: taa`', '`qualityMode: 0`',
+        'target-correlated server barrier', 'advancing coherent native presentation',
         '`active/active` native controller state',
+        'do not call `qualification_cancel` after any terminal waiter receipt',
         'must not be compared with the effective',
         'recorded transition `FAIL` or `INCONCLUSIVE`',
         'qualification owner is closed', 'Otherwise stop future mutations',
@@ -280,7 +286,9 @@ foreach ($protocol in @(
         'controller may be the sole live lane',
         'bundled-controller fallback lane',
         '`-MaxTransientRetries 0`',
-        '`requestTimeoutSeconds`'
+        '`requestTimeoutSeconds`',
+        'Call DevBench `upscalingStable`',
+        '`-ExpectedProfileJson`'
     )) {
         Assert-True (-not $protocol.Text.Contains($forbidden, [StringComparison]::Ordinal)) "$($protocol.Name) permits the controller transport: $forbidden"
     }
