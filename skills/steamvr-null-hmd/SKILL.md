@@ -33,7 +33,9 @@ particular drive letter for the plugin itself.
 3. Before `apply` or `restore`, prove SteamVR is closed. Use `stop -Compact`
    first; if it does not close, review the returned exact process inventory
    before using `stop -Force -Compact`.
-4. Create or select one attributable evidence directory for the test. Preview
+4. Create or select one attributable evidence directory for the test. The
+   target-owned transaction journal, rather than this caller-selected folder,
+   is authoritative. Preview
    `apply` or `restore` with `-WhatIf`, then perform the authorized operation
    using the same `-EvidenceDirectory`.
 5. Parse the JSON postcondition. After `apply`, require `state` to be
@@ -53,12 +55,14 @@ particular drive letter for the plugin itself.
 
 ## Safety and recovery
 
-- Inspection is read-only. Do not change runtime state for a diagnostic-only
-  request.
+- Inspection does not initiate a new runtime mutation, but every command takes
+  the target lock and must finish recovery of an already-pending authoritative
+  transaction before reporting state. Preserve the reported recovery evidence.
 - Never apply or restore while any SteamVR process remains. Do not stop Steam,
   Virtual Desktop, OpenComposite, or unrelated same-name processes.
 - `apply` must create a new exact backup and receipt. Never replace an existing
-  backup; use a new evidence directory for a new transaction.
+  backup; use a new evidence directory only after the prior transaction has
+  been restored. An active committed apply owns its original evidence folder.
 - `restore` must use the evidence directory from its corresponding apply and
   must verify the receipt and backup hashes. Isolation restore must fail closed
   on registration or suppressed-manifest drift. Retain all backups afterward.

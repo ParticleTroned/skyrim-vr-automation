@@ -20,6 +20,12 @@ param(
 
     [string]$EvidenceDirectory,
 
+    [ValidateRange(100, 60000)]
+    [int]$TransactionLockTimeoutMilliseconds = 5000,
+
+    [ValidateRange(4096, 4194304)]
+    [int]$LogTailMaxBytes = 262144,
+
     [switch]$WhatIf,
 
     [switch]$Force,
@@ -98,20 +104,106 @@ function Get-HashOrNull {
     return $null
 }
 
-function Get-SharedTextTail([string]$Path, [int]$Count) {
+if (-not (Get-Variable -Scope Script -Name SharedTextTailState -ErrorAction SilentlyContinue)) {
+    $script:SharedTextTailState = @{}
+}
+
+function Get-SharedTextTail {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][ValidateRange(1, 10000)][int]$Count,
+        [Parameter(Mandatory)][ValidateRange(4096, 4194304)][int]$MaxBytes,
+        [DateTime]$DeadlineUtc = [DateTime]::MaxValue
+    )
+    if ([DateTime]::UtcNow -ge $DeadlineUtc) { throw 'SteamVR log-tail deadline expired before opening the log.' }
     $stream = $null
-    $reader = $null
     try {
         $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
-        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
-        $lines = @($reader.ReadToEnd() -split "`r?`n")
-        if ($lines.Count -le $Count) { return $lines }
-        return @($lines[($lines.Count - $Count)..($lines.Count - 1)])
+        $capturedLength = $stream.Length
+        $info = [IO.FileInfo]::new([IO.Path]::GetFullPath($Path))
+        $identity = "$($info.FullName.ToLowerInvariant())|$($info.CreationTimeUtc.Ticks)"
+        $prior = if ($script:SharedTextTailState.ContainsKey($identity)) { $script:SharedTextTailState[$identity] } else { $null }
+        $incremental = $null -ne $prior -and [int64]$prior.offset -le $capturedLength
+        $start = if ($incremental) { [int64]$prior.offset } else { [Math]::Max([int64]0, $capturedLength - $MaxBytes) }
+        if (($capturedLength - $start) -gt $MaxBytes) {
+            $start = $capturedLength - $MaxBytes
+            $incremental = $false
+        }
+        $readLength = [int]($capturedLength - $start)
+        $bytes = [byte[]]::new($readLength)
+        $stream.Position = $start
+        $read = 0
+        while ($read -lt $readLength) {
+            if ([DateTime]::UtcNow -ge $DeadlineUtc) { throw 'SteamVR log-tail deadline expired while reading the log.' }
+            $current = $stream.Read($bytes, $read, $readLength - $read)
+            if ($current -le 0) { break }
+            $read += $current
+        }
+        $text = if ($read -gt 0) { [Text.Encoding]::UTF8.GetString($bytes, 0, $read) } else { '' }
+        if (-not $incremental -and $start -gt 0) {
+            $firstBreak = $text.IndexOf("`n", [StringComparison]::Ordinal)
+            $text = if ($firstBreak -ge 0) { $text.Substring($firstBreak + 1) } else { '' }
+        }
+        $prefix = if ($incremental) { [string]$prior.residual } else { '' }
+        $combined = $prefix + $text
+        $parts = @($combined -split "`r?`n", -1)
+        $residual = if ($combined.EndsWith("`n", [StringComparison]::Ordinal)) { '' } else { [string]$parts[-1] }
+        $completed = if ($residual.Length -gt 0 -and $parts.Count -gt 1) { @($parts[0..($parts.Count - 2)]) } elseif ($residual.Length -gt 0) { @() } else { @($parts | Select-Object -SkipLast 1) }
+        $lines = @($(if ($incremental) { @($prior.lines) }) + $completed)
+        if ($lines.Count -gt $Count) { $lines = @($lines[($lines.Count - $Count)..($lines.Count - 1)]) }
+        $script:SharedTextTailState.Clear()
+        $script:SharedTextTailState[$identity] = [pscustomobject]@{ offset = $capturedLength; residual = $residual; lines = $lines }
+        $visible = @($lines + $(if ($residual.Length -gt 0) { $residual }))
+        if ($visible.Count -gt $Count) { return @($visible[($visible.Count - $Count)..($visible.Count - 1)]) }
+        return $visible
     }
     finally {
-        if ($reader) { $reader.Dispose() }
-        elseif ($stream) { $stream.Dispose() }
+        if ($stream) { $stream.Dispose() }
     }
+}
+
+function Get-SteamVRTargetControl {
+    param(
+        [Parameter(Mandatory)][string]$Settings,
+        [Parameter(Mandatory)][string]$OpenVRPaths,
+        [Parameter(Mandatory)][string]$ControlRoot
+    )
+    $settingsFull = [IO.Path]::GetFullPath($Settings).TrimEnd('\').ToLowerInvariant()
+    $openVRFull = [IO.Path]::GetFullPath($OpenVRPaths).TrimEnd('\').ToLowerInvariant()
+    $identity = "$settingsFull`n$openVRFull"
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { $key = [Convert]::ToHexString($algorithm.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($identity))).ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+    $directory = Join-Path ([IO.Path]::GetFullPath($ControlRoot)) $key
+    return [pscustomobject][ordered]@{
+        key = $key
+        identity = $identity
+        directory = $directory
+        lockPath = Join-Path $directory 'target.lock'
+        journalPath = Join-Path $directory 'transaction.journal.json'
+    }
+}
+
+function Enter-SteamVRTargetLock {
+    param(
+        [Parameter(Mandatory)]$Control,
+        [Parameter(Mandatory)][int]$TimeoutMilliseconds
+    )
+    [IO.Directory]::CreateDirectory([string]$Control.directory) | Out-Null
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        try {
+            $stream = [IO.File]::Open([string]$Control.lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $owner = [ordered]@{ pid = $PID; acquiredUtc = [DateTime]::UtcNow.ToString('o'); command = $Command; targetKey = [string]$Control.key } | ConvertTo-Json -Compress
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($owner)
+            $stream.SetLength(0); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+            return $stream
+        }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Timed out acquiring the SteamVR target transaction lock after $TimeoutMilliseconds ms: $($Control.lockPath)" }
+            Start-Sleep -Milliseconds 50
+        }
+    } while ($true)
 }
 
 function Read-JsonHashtable {
@@ -472,6 +564,17 @@ function Write-JsonAtomic {
     }
 }
 
+function Write-SteamVRTransactionJournal {
+    param(
+        [Parameter(Mandatory)]$Journal,
+        [Parameter(Mandatory)][string]$AuthoritativePath
+    )
+    Write-JsonAtomic -Path $AuthoritativePath -Value $Journal
+    if ((Test-JsonDictionaryContains $Journal 'evidenceJournalPath') -and -not [string]::IsNullOrWhiteSpace([string]$Journal['evidenceJournalPath'])) {
+        Write-JsonAtomic -Path ([string]$Journal['evidenceJournalPath']) -Value $Journal
+    }
+}
+
 function Restore-SteamVRTransactionTargets {
     param(
         [Parameter(Mandatory)]$Targets,
@@ -494,7 +597,7 @@ function Restore-SteamVRTransactionTargets {
     }
     $Journal['phase'] = if ($errors.Count -eq 0) { 'rolled-back' } else { 'recovery-required' }
     $Journal['rollback'] = [ordered]@{ verified = $errors.Count -eq 0; errors = $errors; completedUtc = [DateTime]::UtcNow.ToString('o') }
-    try { Write-JsonAtomic -Path $JournalPath -Value $Journal } catch { $errors += "journal: $($_.Exception.Message)" }
+    try { Write-SteamVRTransactionJournal -AuthoritativePath $JournalPath -Journal $Journal } catch { $errors += "journal: $($_.Exception.Message)" }
     if ($errors.Count -gt 0) { throw "$FailureContext Rollback requires recovery: $($errors -join '; ')" }
 }
 
@@ -505,8 +608,38 @@ function Resolve-PendingSteamVRJournal([string]$JournalPath) {
     if (-not $journal.ContainsKey('rollbackTargets')) { throw "SteamVR transaction journal requires manual recovery: $JournalPath" }
     Restore-SteamVRTransactionTargets -Targets @($journal['rollbackTargets']) -Journal $journal -JournalPath $JournalPath -FailureContext 'Interrupted SteamVR transaction recovery failed.'
     $journal['phase'] = 'recovered'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
-    Write-JsonAtomic -Path $JournalPath -Value $journal
+    Write-SteamVRTransactionJournal -AuthoritativePath $JournalPath -Journal $journal
     return $journal
+}
+
+function Test-SteamVRJournalTerminal([AllowNull()]$Journal) {
+    return $null -eq $Journal -or [string]$Journal['phase'] -in @('committed', 'rolled-back', 'recovered')
+}
+
+function Assert-SteamVRJournalTargets {
+    param(
+        [Parameter(Mandatory)]$Journal,
+        [Parameter(Mandatory)][string]$ExpectedSettingsPath,
+        [Parameter(Mandatory)][string]$ExpectedOpenVRPathsPath
+    )
+    $settingsFull = [IO.Path]::GetFullPath($ExpectedSettingsPath)
+    $openVRFull = [IO.Path]::GetFullPath($ExpectedOpenVRPathsPath)
+    if (-not (Test-JsonDictionaryContains $Journal 'settingsPath') -or -not [string]::Equals([IO.Path]::GetFullPath([string]$Journal['settingsPath']), $settingsFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The authoritative SteamVR journal settings target does not match its target-owned control directory.'
+    }
+    if ((Test-JsonDictionaryContains $Journal 'openVRPathsPath') -and -not [string]::IsNullOrWhiteSpace([string]$Journal['openVRPathsPath']) -and -not [string]::Equals([IO.Path]::GetFullPath([string]$Journal['openVRPathsPath']), $openVRFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The authoritative SteamVR journal OpenVR target does not match its target-owned control directory.'
+    }
+    if (-not (Test-JsonDictionaryContains $Journal 'rollbackTargets')) { throw 'The authoritative SteamVR journal has no rollback target inventory.' }
+    $allowed = @($settingsFull.ToLowerInvariant(), $openVRFull.ToLowerInvariant())
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($target in @($Journal['rollbackTargets'])) {
+        if (-not (Test-JsonDictionaryContains $target 'path')) { throw 'The authoritative SteamVR journal contains a rollback target without a path.' }
+        $path = [IO.Path]::GetFullPath([string]$target['path'])
+        if ($path.ToLowerInvariant() -notin $allowed) { throw "The authoritative SteamVR journal contains an out-of-contract rollback target: $path" }
+        if (-not $seen.Add($path)) { throw "The authoritative SteamVR journal repeats a rollback target: $path" }
+    }
+    if (-not $seen.Contains($settingsFull)) { throw 'The authoritative SteamVR journal does not contain the SteamVR settings rollback target.' }
 }
 
 function Stop-ExactStartedSteamVRProcesses([DateTime]$StartedUtc) {
@@ -677,7 +810,8 @@ function Get-LogTimestampUtc([string]$Line) {
 function Get-NullRuntimeEvidence {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Processes,
-        [Parameter(Mandatory)]$Profile
+        [Parameter(Mandatory)]$Profile,
+        [DateTime]$DeadlineUtc = [DateTime]::MaxValue
     )
     $resolvedRoot = [IO.Path]::GetFullPath($SteamVRRoot).TrimEnd('\') + '\'
     $owned = @($Processes | Where-Object {
@@ -692,7 +826,7 @@ function Get-NullRuntimeEvidence {
     $headPoseRegistered = $null
     $tail = @()
     if ($serverStartUtc -and (Test-Path -LiteralPath $ServerLogPath -PathType Leaf)) {
-        $tail = @(Get-SharedTextTail -Path $ServerLogPath -Count 2000)
+        $tail = @(Get-SharedTextTail -Path $ServerLogPath -Count 2000 -MaxBytes $LogTailMaxBytes -DeadlineUtc $DeadlineUtc)
         $minimumUtc = $serverStartUtc.AddSeconds(-3)
         foreach ($line in $tail) {
             $timestampUtc = Get-LogTimestampUtc -Line $line
@@ -767,7 +901,45 @@ function Get-RuntimeInputContract {
     return $contract
 }
 
+$targetControl = $null
+$targetLock = $null
+$recoveredTransaction = $null
+$pendingAuthoritativeTransaction = $null
 try {
+    if ([string]::IsNullOrWhiteSpace($OpenVRPathsPath)) { throw 'OpenVRPathsPath is required to identify the complete live transaction target.' }
+    $localApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localApplicationData)) { throw 'The Windows LocalApplicationData folder could not be resolved for target-owned transaction control.' }
+    $transactionControlRoot = Join-Path $localApplicationData 'CSX-VR-Automation\SteamVR\transactions'
+    if (-not [string]::IsNullOrWhiteSpace($env:CSX_STEAMVR_TRANSACTION_ROOT)) {
+        $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        $fixtureSettings = [IO.Path]::GetFullPath($SettingsPath)
+        $fixtureControl = [IO.Path]::GetFullPath($env:CSX_STEAMVR_TRANSACTION_ROOT)
+        if (-not $fixtureSettings.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase) -or -not ($fixtureControl.TrimEnd('\') + '\').StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'CSX_STEAMVR_TRANSACTION_ROOT is test-only and requires both settings and control paths inside the OS temporary directory.'
+        }
+        $transactionControlRoot = $fixtureControl
+    }
+    $targetControl = Get-SteamVRTargetControl -Settings $SettingsPath -OpenVRPaths $OpenVRPathsPath -ControlRoot $transactionControlRoot
+    $targetLock = Enter-SteamVRTargetLock -Control $targetControl -TimeoutMilliseconds $TransactionLockTimeoutMilliseconds
+    if (Test-Path -LiteralPath ([string]$targetControl.journalPath) -PathType Leaf) {
+        $pendingAuthoritativeTransaction = Read-JsonHashtable -Path ([string]$targetControl.journalPath)
+        Assert-SteamVRJournalTargets -Journal $pendingAuthoritativeTransaction -ExpectedSettingsPath $SettingsPath -ExpectedOpenVRPathsPath $OpenVRPathsPath
+    }
+    if (Test-SteamVRJournalTerminal $pendingAuthoritativeTransaction) {
+        $recoveredTransaction = $pendingAuthoritativeTransaction
+    }
+    else {
+        $preRecoveryRoot = [IO.Path]::GetFullPath($SteamVRRoot).TrimEnd('\') + '\'
+        $preRecoveryProcesses = @(Get-SteamVRProcesses | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.path) -and [IO.Path]::GetFullPath([string]$_.path).StartsWith($preRecoveryRoot, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($preRecoveryProcesses.Count -gt 0 -and $Command -ne 'stop') {
+            throw "An interrupted SteamVR target transaction requires recovery, but SteamVR is running from the configured root: $($preRecoveryProcesses.name -join ', ')"
+        }
+        if ($preRecoveryProcesses.Count -eq 0) {
+            $recoveredTransaction = Resolve-PendingSteamVRJournal -JournalPath ([string]$targetControl.journalPath)
+        }
+    }
     if (-not (Test-Path -LiteralPath $SettingsPath -PathType Leaf)) {
         throw "SteamVR settings file does not exist: $SettingsPath"
     }
@@ -789,9 +961,17 @@ try {
     $effective = Get-EffectiveState -Settings $settings -Profile $profile
     $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile
     $externalDrivers = Get-ExternalDriverInventory -Path $OpenVRPathsPath
+    $authoritativeEvidenceDirectory = if ($null -ne $recoveredTransaction -and (Test-JsonDictionaryContains $recoveredTransaction 'evidenceDirectory')) { [string]$recoveredTransaction['evidenceDirectory'] } else { $null }
+    $authoritativeOwnsAppliedState = $effective.active -and $null -ne $recoveredTransaction -and (
+        ([string]$recoveredTransaction['operation'] -eq 'apply' -and [string]$recoveredTransaction['phase'] -eq 'committed') -or
+        ([string]$recoveredTransaction['operation'] -eq 'restore' -and [string]$recoveredTransaction['phase'] -in @('rolled-back', 'recovered'))
+    )
 
     if ($Command -eq 'stop') {
         if ($ownedProcesses.Count -eq 0) {
+            if (-not (Test-SteamVRJournalTerminal $pendingAuthoritativeTransaction)) {
+                $recoveredTransaction = Resolve-PendingSteamVRJournal -JournalPath ([string]$targetControl.journalPath)
+            }
             $result = New-Result -Ok $true -State 'already-stopped' -Data @{ processes = @(); unprovenProcesses = $unprovenProcesses; force = [bool]$Force }
         }
         elseif ($WhatIf) {
@@ -835,6 +1015,9 @@ try {
             } while ($remaining.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
 
             if ($remaining.Count -eq 0) {
+                if (-not (Test-SteamVRJournalTerminal $pendingAuthoritativeTransaction)) {
+                    $recoveredTransaction = Resolve-PendingSteamVRJournal -JournalPath ([string]$targetControl.journalPath)
+                }
                 $result = New-Result -Ok $true -State 'stopped' -Data @{ processesBefore = $ownedProcesses; unprovenProcesses = $unprovenProcesses; remaining = @(); force = [bool]$Force }
             }
             else {
@@ -858,6 +1041,8 @@ try {
             runtime = $runtime
             externalDrivers = $externalDrivers
             inputContract = $inputContract
+            targetControl = $targetControl
+            recoveredTransaction = $recoveredTransaction
         }
     }
     elseif ($Command -eq 'start') {
@@ -887,6 +1072,14 @@ try {
             $result = New-Result -Ok $false -State 'ambiguous-runtime' -Data @{ effective = $effective; runtime = $runtime; processes = $ownedProcesses; unprovenProcesses = $unprovenProcesses } -Errors @('SteamVR processes are running from the configured root, but current-session null-driver activation is not proven. Stop and inspect them before retrying.')
         }
         else {
+            if (-not [string]::IsNullOrWhiteSpace($authoritativeEvidenceDirectory)) {
+                if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+                    $EvidenceDirectory = $authoritativeEvidenceDirectory
+                }
+                elseif (-not [string]::Equals([IO.Path]::GetFullPath($EvidenceDirectory), [IO.Path]::GetFullPath($authoritativeEvidenceDirectory), [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "The live null-HMD transaction is owned by a different evidence directory: $authoritativeEvidenceDirectory"
+                }
+            }
             if ([string]::IsNullOrWhiteSpace($EvidenceDirectory) -or -not (Test-Path -LiteralPath $EvidenceDirectory -PathType Container)) {
                 throw 'start requires an existing -EvidenceDirectory owned by the apply transaction.'
             }
@@ -918,12 +1111,12 @@ try {
                 do {
                     Start-Sleep -Milliseconds 250
                     $processes = @(Get-SteamVRProcesses)
-                    $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile
+                    $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile -DeadlineUtc $deadline
                 } while ((-not $runtime.active -or -not $runtime.headPoseReady) -and [DateTime]::UtcNow -lt $deadline)
-                if ($runtime.active -and $runtime.headPoseReady) {
+                if ($runtime.active -and $runtime.headPoseReady -and [DateTime]::UtcNow.AddMilliseconds(2250) -lt $deadline) {
                     Start-Sleep -Seconds 2
                     $processes = @(Get-SteamVRProcesses)
-                    $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile
+                    $runtime = Get-NullRuntimeEvidence -Processes $processes -Profile $profile -DeadlineUtc $deadline
                 }
                 $runtimeReceiptPath = Join-Path $EvidenceDirectory 'steamvr-null-runtime.receipt.json'
                 $runtimeReceipt = [ordered]@{
@@ -954,6 +1147,14 @@ try {
         }
     }
     else {
+        if ($Command -eq 'restore' -and -not [string]::IsNullOrWhiteSpace($authoritativeEvidenceDirectory)) {
+            if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+                $EvidenceDirectory = $authoritativeEvidenceDirectory
+            }
+            elseif (-not [string]::Equals([IO.Path]::GetFullPath($EvidenceDirectory), [IO.Path]::GetFullPath($authoritativeEvidenceDirectory), [StringComparison]::OrdinalIgnoreCase)) {
+                throw "The live null-HMD transaction is owned by a different evidence directory: $authoritativeEvidenceDirectory"
+            }
+        }
         if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
             throw 'EvidenceDirectory is required for apply and restore.'
         }
@@ -968,9 +1169,22 @@ try {
         $receiptPath = Join-Path $EvidenceDirectory 'steamvr-null-receipt.json'
         $applyJournalPath = Join-Path $EvidenceDirectory 'steamvr-null-apply.journal.json'
         $restoreJournalPath = Join-Path $EvidenceDirectory 'steamvr-null-restore.journal.json'
+        $authoritativeJournalPath = [string]$targetControl.journalPath
 
         if ($Command -eq 'apply') {
-            $null = Resolve-PendingSteamVRJournal -JournalPath $applyJournalPath
+            if ($authoritativeOwnsAppliedState) {
+                $result = New-Result -Ok $true -State 'already-applied' -Data @{
+                    settingsPath = $SettingsPath
+                    receiptPath = if ([string]$recoveredTransaction['operation'] -eq 'apply') { [string]$recoveredTransaction['receiptPath'] } else { Join-Path $authoritativeEvidenceDirectory 'steamvr-null-receipt.json' }
+                    evidenceDirectory = $authoritativeEvidenceDirectory
+                    targetControl = $targetControl
+                    effective = $effective
+                }
+            }
+            elseif ($effective.active) {
+                throw 'SteamVR null settings are already effective but no committed authoritative apply transaction owns them; refusing to create a false baseline.'
+            }
+            else {
             if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
                 throw "Refusing to replace the existing exact backup: $backupPath"
             }
@@ -1012,13 +1226,14 @@ try {
                 $journal = [ordered]@{
                     contractVersion = '1.0.0'; operation = 'apply'; transactionId = $transactionId; phase = 'prepared'
                     settingsPath = [IO.Path]::GetFullPath($SettingsPath); openVRPathsPath = if ($IsolateExternalDisplayRedirectors) { [IO.Path]::GetFullPath($OpenVRPathsPath) } else { $null }
+                    evidenceDirectory = [IO.Path]::GetFullPath($EvidenceDirectory); evidenceJournalPath = [IO.Path]::GetFullPath($applyJournalPath)
                     rollbackTargets = $rollbackTargets; preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
                 }
-                Write-JsonAtomic -Path $applyJournalPath -Value $journal
+                Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                 try {
                     if ($IsolateExternalDisplayRedirectors) {
                         $isolationMutation = Disable-ExternalDriverRegistrations -Path $OpenVRPathsPath -Targets $isolationTargets
-                        $journal['phase'] = 'openvr-isolated-uncommitted'; Write-JsonAtomic -Path $applyJournalPath -Value $journal
+                        $journal['phase'] = 'openvr-isolated-uncommitted'; Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                         if ($InternalTestFailurePoint -eq 'apply-after-openvr') { throw 'Injected apply failure after OpenVR isolation.' }
                         $isolatedInventory = Get-ExternalDriverInventory -Path $OpenVRPathsPath
                         if ($isolatedInventory.errors.Count -gt 0 -or $isolatedInventory.conflicts.Count -gt 0) {
@@ -1037,7 +1252,7 @@ try {
                         foreach ($key in $profile[$section].Keys) { $settings[$section][$key] = $profile[$section][$key] }
                     }
                     Write-JsonAtomic -Path $SettingsPath -Value $settings
-                    $journal['phase'] = 'settings-applied-uncommitted'; Write-JsonAtomic -Path $applyJournalPath -Value $journal
+                    $journal['phase'] = 'settings-applied-uncommitted'; Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                     $afterSettings = Read-JsonHashtable -Path $SettingsPath
                     $afterEffective = Get-EffectiveState -Settings $afterSettings -Profile $profile
                     if (-not $afterEffective.active) { throw 'The written settings do not match the null-HMD profile.' }
@@ -1045,7 +1260,8 @@ try {
                         schemaVersion = 2
                         operation = 'apply'
                         transactionId = $transactionId
-                        journalPath = $applyJournalPath
+                        journalPath = $authoritativeJournalPath
+                        evidenceJournalPath = $applyJournalPath
                         appliedUtc = [DateTime]::UtcNow.ToString('o')
                         settingsPath = $SettingsPath
                         backupPath = $backupPath
@@ -1069,11 +1285,11 @@ try {
                     }
                     Write-JsonAtomic -Path $receiptPath -Value $receipt
                     $journal['phase'] = 'committed'; $journal['committedUtc'] = [DateTime]::UtcNow.ToString('o'); $journal['receiptPath'] = $receiptPath
-                    Write-JsonAtomic -Path $applyJournalPath -Value $journal
+                    Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                 }
                 catch {
                     $failure = $_.Exception.Message
-                    Restore-SteamVRTransactionTargets -Targets $rollbackTargets -Journal $journal -JournalPath $applyJournalPath -FailureContext "Null-HMD apply failed: $failure"
+                    Restore-SteamVRTransactionTargets -Targets $rollbackTargets -Journal $journal -JournalPath $authoritativeJournalPath -FailureContext "Null-HMD apply failed: $failure"
                     throw "Null-HMD apply failed; every exact backup was restored and verified. $failure"
                 }
                 $result = New-Result -Ok $true -State 'null-applied' -Data @{
@@ -1086,11 +1302,13 @@ try {
                     settingsSemanticSha256Null = Get-JsonSemanticSha256 -Path $SettingsPath
                     effective = $afterEffective
                     externalDriverIsolation = $receipt['externalDriverIsolation']
+                    targetControl = $targetControl
                 }
+            }
             }
         }
         else {
-            $pendingRestore = Resolve-PendingSteamVRJournal -JournalPath $restoreJournalPath
+            $pendingRestore = $recoveredTransaction
             if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw "Exact backup is missing: $backupPath" }
             if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw "Apply receipt is missing: $receiptPath" }
             $receipt = Read-JsonHashtable -Path $receiptPath
@@ -1138,7 +1356,7 @@ try {
                 $result = New-Result -Ok $true -State 'already-restored' -Data @{
                     settingsPath = $SettingsPath; restoredSha256 = $settingsLiveHash; backupPath = $backupPath; backupRetained = $true
                     externalDriverIsolation = $isolation; openVRPathsRestoredSha256 = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }
-                    settingsRestoreValidation = $settingsValidation; externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $restoreJournalPath
+                    settingsRestoreValidation = $settingsValidation; externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $authoritativeJournalPath; evidenceJournalPath = $restoreJournalPath; targetControl = $targetControl
                 }
             }
             if ($WhatIf) {
@@ -1167,15 +1385,16 @@ try {
                     contractVersion = '1.0.0'; operation = 'restore'; transactionId = $transactionId; phase = 'prepared'
                     applyTransactionId = [string]$receipt['transactionId']; settingsPath = [IO.Path]::GetFullPath($SettingsPath)
                     openVRPathsPath = if ($restoreExternalDrivers) { [IO.Path]::GetFullPath($OpenVRPathsPath) } else { $null }
+                    evidenceDirectory = [IO.Path]::GetFullPath($EvidenceDirectory); evidenceJournalPath = [IO.Path]::GetFullPath($restoreJournalPath)
                     rollbackTargets = $rollbackTargets; preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
                 }
-                Write-JsonAtomic -Path $restoreJournalPath -Value $journal
+                Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                 try {
                     Copy-FileAtomic -Source $backupPath -Destination $SettingsPath
-                    $journal['phase'] = 'settings-restored-uncommitted'; Write-JsonAtomic -Path $restoreJournalPath -Value $journal
+                    $journal['phase'] = 'settings-restored-uncommitted'; Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                     if ($InternalTestFailurePoint -eq 'restore-after-settings') { throw 'Injected restore failure after settings restoration.' }
                     if ($restoreExternalDrivers) { Copy-FileAtomic -Source $openVRPathsBackupPath -Destination $OpenVRPathsPath }
-                    $journal['phase'] = 'all-targets-restored-uncommitted'; Write-JsonAtomic -Path $restoreJournalPath -Value $journal
+                    $journal['phase'] = 'all-targets-restored-uncommitted'; Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                     $restoredHash = Get-HashOrNull $SettingsPath
                     if ($restoredHash -ne $backupHash) { throw 'Restored SteamVR settings hash does not match the exact backup.' }
                     if ($restoreExternalDrivers -and (Get-HashOrNull $OpenVRPathsPath) -ne [string]$isolation['sha256Before']) { throw 'Restored OpenVR registration hash does not match the exact backup.' }
@@ -1188,24 +1407,27 @@ try {
                         openVRPathsSha256Restored = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }; restoredUtc = [DateTime]::UtcNow.ToString('o')
                     })
                     $journal['phase'] = 'committed'; $journal['committedUtc'] = [DateTime]::UtcNow.ToString('o'); $journal['receiptPath'] = $restoreReceiptPath
-                    Write-JsonAtomic -Path $restoreJournalPath -Value $journal
+                    Write-SteamVRTransactionJournal -AuthoritativePath $authoritativeJournalPath -Journal $journal
                 }
                 catch {
                     $failure = $_.Exception.Message
-                    Restore-SteamVRTransactionTargets -Targets $rollbackTargets -Journal $journal -JournalPath $restoreJournalPath -FailureContext "Null-HMD restore failed: $failure"
+                    Restore-SteamVRTransactionTargets -Targets $rollbackTargets -Journal $journal -JournalPath $authoritativeJournalPath -FailureContext "Null-HMD restore failed: $failure"
                     throw "Null-HMD restore failed; the exact applied state was restored and verified. $failure"
                 }
                 $result = New-Result -Ok $true -State 'restored' -Data @{
                     settingsPath = $SettingsPath; restoredSha256 = $restoredHash; backupPath = $backupPath; backupRetained = $true
                     externalDriverIsolation = $isolation; openVRPathsRestoredSha256 = if ($restoreExternalDrivers) { Get-HashOrNull $OpenVRPathsPath } else { $null }
-                    settingsRestoreValidation = $settingsValidation; externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $restoreJournalPath; restoreReceiptPath = $restoreReceiptPath
+                    settingsRestoreValidation = $settingsValidation; externalDriverIsolationValidation = $isolationValidation; restoreJournalPath = $authoritativeJournalPath; evidenceJournalPath = $restoreJournalPath; restoreReceiptPath = $restoreReceiptPath; targetControl = $targetControl
                 }
             }
         }
     }
 }
 catch {
-    $result = New-Result -Ok $false -State 'blocked' -Data @{ settingsPath = $SettingsPath; profilePath = $NullProfilePath; evidenceDirectory = $EvidenceDirectory } -Errors @($_.Exception.Message)
+    $result = New-Result -Ok $false -State 'blocked' -Data @{ settingsPath = $SettingsPath; profilePath = $NullProfilePath; evidenceDirectory = $EvidenceDirectory; targetControl = $targetControl } -Errors @($_.Exception.Message)
+}
+finally {
+    if ($targetLock) { $targetLock.Dispose() }
 }
 
 $jsonParameters = @{ InputObject = $result; Depth = 20 }

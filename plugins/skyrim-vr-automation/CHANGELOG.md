@@ -4,6 +4,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Serialize every SteamVR/OpenVR command with a bounded lock derived from the
+  canonical live targets, move recovery authority to a deterministic per-user
+  journal independent of caller evidence directories, and replace repeated
+  whole-log reads with deadline-charged incremental bounded-byte tails.
+
 - Require every fresh MO2 task clone to inherit a hash- and
   profile-fingerprint-verified default world-entry save, make the doctor fail
   invalid setup, keep static integrity distinct from runtime qualification, and

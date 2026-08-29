@@ -54,14 +54,27 @@ hash is corroboration, not authority. Duplicate or missing targets and any
 receipt/backup disagreement fail closed.
 The normal fail-closed path remains unchanged when this option is omitted.
 
-Apply and restore are recoverable multi-file transactions. Before changing
-either SteamVR settings or OpenVR registrations, the controller records each
-exact target, preimage, and expected hash in a write-ahead journal. A failed
+Apply and restore are recoverable multi-file transactions. Every command first
+acquires one bounded exclusive lock keyed by the canonical SteamVR-settings and
+OpenVR-registration paths. The authoritative write-ahead journal lives beneath
+the stable per-user `TransactionControlRoot`, not beneath a caller-selected
+evidence directory. Evidence journals are secondary mirrors. Consequently, a
+second caller cannot evade an active operation or its recovery merely by
+choosing a different evidence directory. Before changing either live file, the
+controller records every exact target, preimage, and expected hash. A failed
 operation restores and verifies every target before reporting rollback; an
-incomplete rollback is reported as `recovery-required`, never as success. The
-next apply or restore resolves any nonterminal journal before beginning new
-work, and a repeated restore recognizes a committed exact baseline as
-`already-restored`.
+incomplete rollback is reported as `recovery-required`, never as success. Any
+next command reconciles a nonterminal authoritative journal before proceeding
+(after first stopping SteamVR when required), and a repeated restore recognizes
+a committed exact baseline as `already-restored`. An active committed apply
+retains ownership of its original evidence directory; another apply returns
+`already-applied`, while start/restore reject a conflicting explicit directory.
+
+The control root is fixed beneath the Windows LocalApplicationData folder at
+`CSX-VR-Automation\SteamVR\transactions`; callers cannot select different lock
+domains. The fixture-only `CSX_STEAMVR_TRANSACTION_ROOT` override is rejected
+unless both settings and control paths are inside the OS temporary directory.
+Lock acquisition is bounded by `-TransactionLockTimeoutMilliseconds`.
 
 SteamVR may rewrite `steamvr.vrsettings` while the null runtime is active. A
 restore therefore reconstructs the applied settings contract from the exact
@@ -100,6 +113,11 @@ central bounded-process controller. A probe cannot outlive its timeout. If a
 start or qualification attempt fails, cleanup stops only SteamVR-root-owned
 processes whose creation time belongs to that attempt and reports the verified
 survivor inventory.
+
+Readiness polling keeps an incremental identity/offset cache and reads at most
+`LogTailMaxBytes` from the shared `vrserver` log. Decoding and I/O are charged
+to the startup deadline, so a large historical log cannot turn one poll into an
+unbounded whole-file read.
 
 ```powershell
 .\Invoke-SteamVRNullControl.ps1 apply -EvidenceDirectory <session-evidence> -Compact
