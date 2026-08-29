@@ -35,6 +35,18 @@ foreach ($legacyRoot in $legacyRoots) {
     Assert-True (-not (Test-Path -LiteralPath $legacyRoot)) "Legacy generic tuning protocol remains: $legacyRoot"
 }
 
+$fastStartRelative = 'docs\protocols\renderscale-tuning-fast-start.md'
+$fastStartSource = Join-Path $repositoryRoot $fastStartRelative
+$fastStartPlugin = Join-Path $repositoryRoot "plugins\skyrim-vr-automation\$fastStartRelative"
+Assert-True (Test-Path -LiteralPath $fastStartSource -PathType Leaf) 'Missing shared tuning fast-start contract.'
+Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing packaged tuning fast-start contract.'
+Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
+    (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
+$fastStart = Get-Content -LiteralPath $fastStartSource -Raw
+foreach ($token in @('one parallel read-only batch', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`")) {
+    Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
+}
+
 $variants = @(
     [pscustomobject]@{
         Name = 'renderscale-tuning-nvidia'
@@ -83,17 +95,22 @@ foreach ($variant in $variants) {
 
     $skill = Get-Content -LiteralPath (Join-Path $sourceRoot 'SKILL.md') -Raw
     $protocol = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\protocol.md') -Raw
+    $protocolContract = "$fastStart`n$protocol"
     $matrix = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
 
     Assert-Contains $skill "name: $($variant.Name)" $variant.Name
     Assert-Contains $skill $variant.Trigger $variant.Name
-    Assert-Contains $skill 'Do not execute or alter its 25-step matrix.' $variant.Name
+    Assert-Contains $skill 'Do not execute or alter Simple CSM''s 25-step matrix.' $variant.Name
     Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
     Assert-Contains $skill 'does not authorize' $variant.Name
     Assert-Contains $skill 'VR FPS Stabilizer settings remain' $variant.Name
     Assert-Contains $skill 'direct `mcp__devbench_vr__*` tools are the only permitted' $variant.Name
     Assert-Contains $skill 'including deferred tools' $variant.Name
     Assert-Contains $skill 'Never use the bundled' $variant.Name
+    Assert-Contains $skill '../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
+    Assert-Contains $skill 'As soon as its `runId` is accepted' $variant.Name
+    Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
+    Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
 
     foreach ($token in @(
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
@@ -101,6 +118,11 @@ foreach ($variant in $variants) {
         '`plugin_contract_outdated`',
         'running CSX/DevBench producer needs a newer build',
         'Never search for a separate',
+        'Apply the shared render-scale tuning fast-start contract exactly',
+        'only `async: true` scenario',
+        'After the positioning `runId` is accepted',
+        'reuse the shared contract''s measurement admission',
+        'one synchronous handoff scenario',
         '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
         '`expectedStateRevision`', '`clientId`', '`commandId`',
         '`persistence: runtime_only`', 'server-owned 5,000 ms settling scenario',
@@ -156,7 +178,7 @@ foreach ($variant in $variants) {
         'replacement admission state and all reasons', 'consecutive stretch frames',
         'No external', 'Never average'
     )) {
-        Assert-Contains $protocol $token $variant.Name
+        Assert-Contains $protocolContract $token $variant.Name
     }
     Assert-True (-not $protocol.Contains('communityshaders.menu open', [StringComparison]::Ordinal)) "$($variant.Name) retained menu mutation."
     Assert-True (-not $protocol.Contains('CS-menu-origin render-scale', [StringComparison]::Ordinal)) "$($variant.Name) retained the old render-scale mutation primitive."
@@ -169,9 +191,10 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('refresh telemetry schemas', [StringComparison]::Ordinal)) "$($variant.Name) still performs a redundant post-position schema refresh."
     Assert-True (-not $protocol.Contains("controller's short bounded", [StringComparison]::Ordinal)) "$($variant.Name) still ties recovery to a second transport."
     Assert-True (-not $protocol.Contains('Every bundled DevBench controller invocation', [StringComparison]::Ordinal)) "$($variant.Name) still opens a controller per live call."
+    Assert-True (-not $protocol.Contains('expected timing-owner cancellation after None/TAA stability', [StringComparison]::Ordinal)) "$($variant.Name) still cancels native qualification instead of using the direct waiter."
 
     $positioningPosition = $protocol.IndexOf(
-        'Position once with an `async: false` server scenario',
+        'After the positioning `runId` is accepted',
         [StringComparison]::Ordinal
     )
     $measurementAdmissionPosition = $protocol.IndexOf(

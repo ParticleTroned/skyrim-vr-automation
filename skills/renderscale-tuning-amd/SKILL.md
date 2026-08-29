@@ -8,19 +8,18 @@ description: Run the AMD Skyrim VR public-upscaling-API render-scale tuning assa
 Use this skill only for the exact user command `renderscale-tuning amd` or
 `renderscale-tuning-amd`. Never infer this GPU lane from inventory alone.
 
-Before the first live call, read these files completely in order:
+Before the first live call, read only the shared
+[fast-start contract](../../docs/protocols/renderscale-tuning-fast-start.md)
+completely and follow it through acceptance of the asynchronous positioning
+scenario. As soon as its `runId` is accepted, read these files completely while
+the server performs the required 10-second settle:
 
-1. [Simple COC skill](../simple-coc/SKILL.md)
-2. [Simple COC protocol](../simple-coc/references/protocol.md)
-3. [Simple CSM protocol](../simple-csm/references/protocol.md)
-4. [AMD matrix](references/matrix.v1.json)
-5. [AMD tuning protocol](references/protocol.md)
+1. [AMD matrix](references/matrix.v1.json)
+2. [AMD tuning protocol](references/protocol.md)
 
-Reuse Simple CSM only for binding, preparation, Dragonsreach positioning,
-five-second pacing, telemetry ownership, evidence preservation, cleanup, and
-CSV mechanics. Do not execute or alter its 25-step matrix. This skill's public
-API protocol and three 31-entry lanes replace its mutation sequence,
-qualification handling, grouping, and verdict rules.
+The shared startup and AMD protocol are self-contained. Do not load or inherit
+Simple COC or Simple CSM instructions. Do not execute or alter Simple CSM's
+25-step matrix.
 
 The trigger authorizes one positioning COC to `WhiterunDragonsreach`, one
 initial runtime-only profile apply per runnable lane, and exactly 31 measured

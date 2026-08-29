@@ -6,18 +6,17 @@ profile through `communityshaders.renderscale`.
 
 ## 1. Bind and prepare
 
-Apply Simple COC identity binding, core control discovery, evidence paths, and
-the single runtime-only `prepare_coc` action. The receipt must prove debug
-logging and the FOV/TAA `0.3/0.3/0.7` fixture without changing any upscaling
-or VR FPS Stabilizer setting.
+Apply the shared render-scale tuning fast-start contract exactly. It owns
+identity binding, direct control discovery, the single runtime-only
+`prepare_coc`, asynchronous Dragonsreach positioning, post-position admission,
+telemetry resets, and the baseline-to-measured ownership handoff. Reuse every
+receipt it names; do not repeat its reads or stateful calls.
+
 Use the installed plugin's direct DevBench MCP tools exclusively for every AMD
-lane baseline, transition, evidence read, and guarded cleanup. Confirm its
-manifest points to `.mcp.json`, whose single `devbench_vr` server is the
-loopback endpoint. Search the complete callable tool catalog, including
-deferred tools, for the `mcp__devbench_vr__` prefix before declaring the lane
-unavailable; the initial displayed tool list may be abbreviated. Require direct
-`ping`, `scenario`, and every protocol action before `prepare_coc`. Treat their
-tool descriptions as the schema inventory. The direct
+lane baseline, transition, evidence read, and guarded cleanup. Search the
+complete callable tool catalog, including deferred tools, for the
+`mcp__devbench_vr__` prefix before declaring the lane unavailable. Treat the
+direct MCP tool descriptions as the schema inventory. The direct
 `communityshaders.renderscale` schema must expose `qualification_wait` and its
 `target.method` enum must contain `none`, `taa`, `dlss`, and `fsr`. If either
 native method is absent, stop before any stateful call with
@@ -29,14 +28,9 @@ If the plugin tools are absent or direct `ping` fails its bounded readiness
 check, stop before any stateful call, report `plugin_direct_unavailable`, and
 ask the user to repair the plugin connection or restart Codex. Never open,
 execute, or wait on the bundled controller in this assay. There is no fallback
-transport and no lane switching.
+transport, controller availability wait, or lane switching.
 Do not generate or edit task-local orchestration scripts during live preflight
-or baseline setup; load the installed protocol and matrix once and issue their
-actions directly. Evidence files remain permitted.
-
-Use the exact Simple COC order: `prepare_coc` is the first stateful call and
-runs alone. Never call the profiler service, run the fail-closed proof, or reset
-telemetry before positioning.
+or baseline setup; evidence files remain permitted.
 
 Require the bound active D3D adapter to be AMD. Require the live
 `communityshaders.upscaling_api` description to expose `registry`,
@@ -47,10 +41,10 @@ producer, capability, session, and Build-ID receipts. Never select the lane
 from an unbound inventory entry.
 
 Require `communityshaders.upscaling_api` to be executable as a DevBench
-scenario `tool` step, not merely callable as a top-level client tool. All
-scenarios in this protocol use `async: false`. A missing scenario registration
-or a non-synchronous scenario receipt is `BLOCKED`; the dispatch and apply
-cannot otherwise share one serialized server sequence.
+scenario `tool` step, not merely callable as a top-level client tool. The
+unmeasured positioning scenario is the only `async: true` scenario. Every
+other scenario uses `async: false` and `continueOnError: false`; a missing
+scenario registration or a non-synchronous mutation receipt is `BLOCKED`.
 
 Require public capabilities to expose FSR and every matrix quality mode before
 any baseline. A missing method or quality is `BLOCKED`; do not substitute a
@@ -68,26 +62,14 @@ AA, requested/stable may instead be an inactive native None projection only
 when the API reports no active operation and configured/effective are exact.
 That projection never replaces the public effective target.
 
-Load `matrix.v1.json` relative to this installed skill. Require schema version
-1, adapter vendor `amd`, exactly three named lanes, exactly 31 entries with
+After the positioning `runId` is accepted, load `matrix.v1.json` relative to
+this installed skill during the scenario's 10-second wait. Require schema
+version 1, adapter vendor `amd`, exactly three named lanes, exactly 31 entries with
 ordinals 1 through 31, a 5,000 ms pace, and a 30,000 ms completion upper bound.
 Do not reorder, deduplicate, replace, or infer entries.
 
-Position once with an `async: false` server scenario containing
-`coc WhiterunDragonsreach` and a 10,000 ms wait. Require the exact editor ID, loaded player, advancing
-in-world frames, no blocking menu, and the same Build ID. This is the only COC
-and is not measured.
-
-After exact-cell positioning, complete the Simple COC measurement-admission
-phase once: reuse the selected lane's schema inventory, query the profiler, run
-the one-step negative scenario, and reset supported telemetry lanes serially.
-The proof must report step `ok: false`, scenario `aborted: true`, `stepsRun: 1`,
-and embedded `invalid_field` with `continueOnError: false`. A transient profiler
-read gets only Simple COC's immediate-return 10-second recovery budget on the
-same selected lane. A direct run never starts a controller availability wait.
-If the selected lane does not recover or the proof fails, this protocol is
-`BLOCKED` before any lane baseline mutation. Do not reposition, repeat
-successful admission work, or start a second readiness wait.
+After exact-cell positioning, reuse the shared contract's measurement admission
+and reset receipts. Never repeat them before any lane baseline mutation.
 
 ## 2. Select and isolate the three lanes
 
@@ -112,13 +94,15 @@ blocked lane does not prevent another independently valid lane from running.
 
 ## 3. Establish each lane baseline
 
-Start a short baseline-only stress session, then read one authoritative API
-snapshot. Require complete configured and effective profiles, physical stable
-evidence, and no active operation. Clone the effective profile through its
+For the first lane, reuse the authoritative post-position API snapshot. For a
+later lane, reuse the preceding lane's guarded terminal snapshot. Require
+complete configured and effective profiles, physical stable evidence, and no
+active operation. Clone the effective profile through its
 `name` fields; set only `method: fsr`,
 `qualityMode: hoshipa`, `renderScaleMode: true`, and the lane's configured
 `fsrRuntime`; preserve `dlssProfile`. Run one synchronous (`async: false`),
-fail-closed mutation scenario: `qualification_begin`, then
+fail-closed mutation scenario: start the short baseline-only stress session,
+then `qualification_begin`, then
 `qualification_dispatch` with
 `startPerformanceTelemetry: false`, then the public API `apply` as the
 immediately following step. Bind the apply to the snapshot's exact
@@ -131,16 +115,14 @@ return upon the first successful receipt. Do not add an independent operation
 wait. Require
 coherent FSR evaluation in both eyes, correct scaled dimensions, exact
 generation/resource ownership, the lane's physical backend, clean mutation
-and lifecycle state, and no terminal failure. Stop the baseline-only stress
-session.
+and lifecycle state, and no terminal failure.
 
-Now arm one fresh measured Simple CSM telemetry set for that lane with
-stateful telemetry actions serialized in its short ownership sequence: stress,
-texture lifetime, load presentation, and profiler pre-arm. Require and retain
-each receipt before starting the next stateful action; provider lifecycle,
+Use the shared contract's one synchronous handoff scenario to stop the
+baseline-only stress owner and arm the fresh measured stress, texture lifetime,
+load presentation, and profiler owners in its short ownership sequence.
+Retain each stateful receipt; provider lifecycle,
 resource publication, preparation, fidelity, stereo, retry, failure, memory,
-and queue remain status evidence. Only read-only discovery/status calls may run
-in parallel. For the first lane, reuse the CPU/GPU reset receipts from
+and queue remain status evidence. For the first lane, reuse the CPU/GPU reset receipts from
 measurement admission, require both captures inactive, and do not issue another
 reset. Before each later lane, after the preceding lane's guarded stop receipt,
 serialize exactly one CPU reset and one GPU reset to clear its measurements and
@@ -285,9 +267,8 @@ its exact returned ownership guard. A cleanup failure is a separately recorded
 anomaly and never authorizes another apply, retry, recovery, or substitution.
 
 Every entry has exactly one begin, one dispatch, one apply, and one terminal
-qualification receipt: a strict waiter receipt for an FSR destination or an
-expected timing-owner cancellation after None/TAA stability. The public API is
-the sole mutation path. Do not open the CS menu and do not
+qualification receipt from the same strict waiter for every destination. The
+public API is the sole mutation path. Do not open the CS menu and do not
 call `communityshaders.renderscale` action `apply`. No external frame-timing
 source is used.
 
