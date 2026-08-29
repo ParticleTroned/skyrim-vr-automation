@@ -406,6 +406,35 @@ column, a unique nonempty header, and zero changed pre-existing parsed cell
 values under ordinal comparison. Do not normalize, reorder, or otherwise
 rewrite an existing cell.
 
+Require these five distinct metric rows before composing the candidate:
+`runtime_device_loss_failures`, `runtime_oom_failures`,
+`runtime_producer_terminal_failures`,
+`vendor_native_qualification_failures`, and
+`credible_liveness_timeouts`. If any row is absent, preserve the run evidence,
+do not modify the ledger, and report `ledger_failure_schema_outdated`.
+
+Populate those rows from preserved receipts, never from the number of
+transitions classified `FAIL`:
+
+- Count device loss and OOM only when the runtime reports those exact terminal
+  conditions.
+- Count producer terminal failures only when the producer reports a terminal
+  failure. A qualification-terminal result is not a producer terminal failure.
+- Count a vendor-native qualification failure when native vendor execution
+  proof is absent or mismatched without device loss, OOM, or producer terminal
+  evidence. This records a qualification/observer failure, not a runtime-hard
+  failure.
+- Count a credible liveness timeout only when the shared deadline expires and
+  independent bound-operation or game-progress evidence proves a genuine
+  stall. A transport failure, missing observation, or observer mismatch is not
+  a credible liveness timeout.
+
+Print all five counts separately in the summary and result tables and retain
+the underlying transition reasons. The legacy `hard_transition_failures` and
+`hard_failures_oom_device_loss` rows are ambiguous; if present, write
+`n/a; legacy aggregate disabled` in the new result cell rather than a failure
+total. Never sum qualification or liveness results into a runtime-hard metric.
+
 Apply the validated candidate with a single in-place `Update File` operation
 for the ledger path. Never combine `Delete File` and `Add File` operations for
 that path in one `apply_patch`, and never delete and recreate the ledger. If the
