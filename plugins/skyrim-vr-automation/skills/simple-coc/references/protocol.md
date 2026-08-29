@@ -80,10 +80,22 @@ Do not count this positioning COC among the 20 measured transitions.
 
 ## 3. Arm all relevant render-scale telemetry
 
-After exact-cell verification, refresh the live schema inventory exactly once
-and discover every required or optional telemetry lane. Only independent
-read-only calls may run concurrently. Do not repeat core discovery that already
-returned a complete receipt.
+Choose exactly one live DevBench transport before the first live call. When the
+plugin-provided direct MCP tools are callable, use them exclusively and treat
+their exposed tool descriptions as the live schema inventory. Do not run the
+bundled controller's `list`, open another loopback session, or switch transport
+lanes during the run. The bundled controller may be the sole live lane only when
+direct MCP was unavailable before the first live call.
+
+After exact-cell verification, query each required or optional telemetry lane
+once through the selected transport. Only independent read-only calls may run
+concurrently. Do not repeat core discovery that already returned a complete
+receipt and do not perform a global schema refresh.
+
+Do not generate or edit task-local orchestration scripts during live preflight
+or baseline setup. Load the installed protocol once, use its fixed actions
+directly, and preserve returned receipts under the evidence directory. Evidence
+files are not orchestration scripts.
 
 When `communityshaders.profiler_api` is exposed, prefer it over the legacy
 profiler tool and complete this measurement-admission gate:
@@ -103,15 +115,21 @@ profiler tool and complete this measurement-admission gate:
    `invalid_field`. This non-mutating proof must pass before any baseline,
    upscaling apply, or measured transition.
 
-Do not call `serviceReady` before positioning. If the first post-positioning
-profiler `registry` or `snapshot` call remains transient after the controller's
-short retry budget, run exactly one `serviceReady` wait for that same read-only
-action with `-TimeoutSeconds 10` and `-MaxTransientRetries 0`. It returns on
-the first successful receipt; ten seconds is its outer budget, not a fixed
-delay. On success, retry only the unresolved read once. If it remains
-unavailable, stop
-before any baseline, apply, or measured transition and ask the user. Do not
-repeat the positioning COC or begin another readiness wait.
+Do not perform any profiler readiness wait before positioning. If the first
+post-positioning profiler `registry` or `snapshot` read is transient, retry only
+that unresolved read on the selected transport within one bounded 10-second
+outer budget and return on its first successful receipt; this is never a fixed
+delay. On the direct lane, issue direct read-only retries and do not open a
+bundled-controller session or call its `toolAvailable`/`serviceReady` waits. On
+the controller fallback lane, one `serviceReady` wait may use
+`-TimeoutSeconds 10` and `-MaxTransientRetries 0` for the same read-only action.
+
+If direct health succeeds while a redundant controller attempt returns a
+transport error, preserve the controller receipt as a runner-path anomaly and
+continue exclusively on the direct lane. Do not start a controller readiness
+wait or classify the assay as blocked. If the selected lane itself remains
+unavailable, stop before any baseline, apply, or measured transition and ask
+the user. Do not repeat the positioning COC or begin another readiness wait.
 
 Do not call `set_enabled` or `start_capture` during discovery or the negative
 proof. When the versioned API is absent, read the legacy profiler status once

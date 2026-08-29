@@ -26,13 +26,15 @@ unmeasured positioning COC, verify only the core control and public-API
 contract needed by the selected assay. Do not query the profiler service or
 reset telemetry there.
 
-After exact-cell positioning, refresh schemas once and complete measurement
-admission: discover telemetry lanes, prove scenario semantic fail-closed
-behavior when `communityshaders.profiler_api` is exposed, and reset each
-supported lane once in serialized order. Then arm captures serially. Only
-independent read-only calls may run concurrently. Never repeat a successful
-setup action. Do not start CPU or GPU counters; transition 1's atomic dispatch
-remains their sole timing origin. Explicitly enable and verify an exposed
+Use exactly one live DevBench transport, with plugin-provided direct MCP tools
+mandatory when callable. After exact-cell positioning, reuse that lane's schema
+inventory and complete measurement admission: query telemetry lanes, prove
+scenario semantic fail-closed behavior when `communityshaders.profiler_api` is
+exposed, and reset each supported lane once in serialized order. Then arm
+captures serially. Only independent read-only calls may run concurrently. Never
+repeat a successful setup action. Do not start CPU or GPU counters; transition
+1's atomic dispatch remains their sole timing origin. Explicitly enable and
+verify an exposed
 profiler API before queuing the measured scenario. `start_capture` must never
 be the first profiler mutation. An exposed API returning `disabled` is a
 failed required lane, not `unsupported` evidence.

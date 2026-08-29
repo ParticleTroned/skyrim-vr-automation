@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourceSkill = Join-Path $repositoryRoot 'skills\simple-coc\SKILL.md'
 $sourceProtocol = Join-Path $repositoryRoot 'skills\simple-coc\references\protocol.md'
+$sourceDevBench = Join-Path $repositoryRoot 'skills\devbench-control\SKILL.md'
 $sourceForensics = Join-Path $repositoryRoot (
     'skills\simple-coc\scripts\Start-FrozenGhidra.ps1'
 )
@@ -18,6 +19,9 @@ $pluginSkill = Join-Path $repositoryRoot (
 $pluginProtocol = Join-Path $repositoryRoot (
     'plugins\skyrim-vr-automation\skills\simple-coc\references\protocol.md'
 )
+$pluginDevBench = Join-Path $repositoryRoot (
+    'plugins\skyrim-vr-automation\skills\devbench-control\SKILL.md'
+)
 $pluginForensics = Join-Path $repositoryRoot (
     'plugins\skyrim-vr-automation\skills\simple-coc\scripts\Start-FrozenGhidra.ps1'
 )
@@ -25,6 +29,7 @@ $pluginForensics = Join-Path $repositoryRoot (
 foreach ($pair in @(
     @($sourceSkill, $pluginSkill),
     @($sourceProtocol, $pluginProtocol),
+    @($sourceDevBench, $pluginDevBench),
     @($sourceForensics, $pluginForensics)
 )) {
     foreach ($path in $pair) {
@@ -40,6 +45,19 @@ foreach ($pair in @(
 
 $skill = Get-Content -LiteralPath $sourceSkill -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocol -Raw
+$devBench = Get-Content -LiteralPath $sourceDevBench -Raw
+foreach ($required in @(
+    'Choose exactly one live transport before the first live call',
+    'mandatory and',
+    'do not run the bundled controller''s `list`',
+    'do not create or resolve a controller',
+    'Never cross transports to perform a readiness wait',
+    'do not start a controller availability'
+)) {
+    if (-not $devBench.Contains($required, [StringComparison]::Ordinal)) {
+        throw "DevBench one-lane contract is missing: $required"
+    }
+}
 foreach ($required in @(
     '`prepare_coc` exactly once as the first stateful call',
     'Before the unmeasured positioning COC',
@@ -73,10 +91,17 @@ foreach ($required in @(
     'do not issue another CPU/GPU reset',
     'never fan out `start`, `reset`, or `set_enabled` calls',
     'run another discovery or reset cycle',
-    'Do not call `serviceReady` before positioning',
+    'exactly one live DevBench transport',
+    'plugin-provided direct MCP tools are callable',
+    'their exposed tool descriptions as the live schema inventory',
+    'Do not run the bundled controller''s `list`',
+    'switch transport lanes during the run',
+    'Do not generate or edit task-local orchestration scripts',
+    'do not open a bundled-controller session',
+    'Do not perform any profiler readiness wait before positioning',
     '`-TimeoutSeconds 10`',
     '`-MaxTransientRetries 0`',
-    'outer budget, not a fixed',
+    'outer budget and return on its first successful receipt',
     'Do not repeat the positioning COC',
     'capture.requiresEnabled: true',
     '`contractMajor: 1`',
@@ -110,7 +135,9 @@ foreach ($required in @(
 }
 foreach ($forbidden in @(
     'bounded setup fan-out',
-    'reset CPU/GPU telemetry'
+    'reset CPU/GPU telemetry',
+    'refresh the live schema inventory exactly once',
+    "after the controller's short retry budget"
 )) {
     if ($protocol.Contains($forbidden, [StringComparison]::Ordinal)) {
         throw "Simple COC retains a redundant or concurrent setup rule: $forbidden"

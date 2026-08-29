@@ -123,13 +123,16 @@ foreach ($variant in $variants) {
         'Scenario steps cannot interpolate earlier',
         'short ownership sequence', 'CPU/GPU reset receipts from',
         'measurement admission',
-        'short bounded retry budget', 'pre_snapshot_transport_unavailable',
+        'selected live lane''s short', 'pre_snapshot_transport_unavailable',
         'send no further DevBench', 'ask the user immediately',
         'Do not attempt cleanup until',
-        'owns exactly one MCP session', '`sessionCleanup`',
-        '`closed`, `already_absent`, and `not_opened`',
-        'not a render result', 'Do not add a wait for',
-        'next ordinary bounded controller call',
+        'exactly one live DevBench transport lane',
+        'plugin-provided direct MCP tools are callable',
+        'direct MCP tool descriptions as the schema inventory',
+        'do not open the bundled', 'Never switch or mix transport lanes',
+        'A direct run never starts a controller availability wait',
+        'Do not generate or edit task-local orchestration scripts',
+        'not DevBench unavailability',
         'Except for the pre-snapshot transport-unavailable path',
         'Native-generation evidence is optional',
         'do not relabel a core `PASS`',
@@ -154,6 +157,9 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('bounded fan-out', [StringComparison]::Ordinal)) "$($variant.Name) still permits concurrent stateful telemetry arming."
     Assert-True (-not $protocol.Contains('stop future mutations, clean up only', [StringComparison]::Ordinal)) "$($variant.Name) still attempts cleanup before prompting on transport loss."
     Assert-True (-not $protocol.Contains('load presentation, CPU/GPU reset', [StringComparison]::Ordinal)) "$($variant.Name) still repeats CPU/GPU reset during initial measured arming."
+    Assert-True (-not $protocol.Contains('refresh telemetry schemas', [StringComparison]::Ordinal)) "$($variant.Name) still performs a redundant post-position schema refresh."
+    Assert-True (-not $protocol.Contains("controller's short bounded", [StringComparison]::Ordinal)) "$($variant.Name) still ties recovery to a second transport."
+    Assert-True (-not $protocol.Contains('Every bundled DevBench controller invocation', [StringComparison]::Ordinal)) "$($variant.Name) still opens a controller per live call."
 
     $positioningPosition = $protocol.IndexOf(
         'Position once with an `async: false` server scenario',

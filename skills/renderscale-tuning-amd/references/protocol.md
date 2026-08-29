@@ -10,14 +10,20 @@ Apply Simple COC identity binding, core control discovery, evidence paths, and
 the single runtime-only `prepare_coc` action. The receipt must prove debug
 logging and the FOV/TAA `0.3/0.3/0.7` fixture without changing any upscaling
 or VR FPS Stabilizer setting.
-Every bundled DevBench controller invocation owns exactly one MCP session and
-must close it before returning. Preserve its `sessionCleanup` receipt;
-`closed`, `already_absent`, and `not_opened` are successful lifecycle states.
-A cleanup failure is a control-plane anomaly, not a render result, and never
-replaces a successful mutation or stability receipt. Do not add a wait for
-server-side session expiry: the next ordinary bounded controller call is the
-availability check. This shared lifecycle applies to every AMD lane baseline,
-transition, evidence read, and guarded cleanup call.
+Select exactly one live DevBench transport lane before the first live call. If
+plugin-provided direct MCP tools are callable, use them exclusively for every
+AMD lane baseline, transition, evidence read, and guarded cleanup. Treat direct
+MCP tool descriptions as the schema inventory; do not open the bundled
+controller, run its `list`, or start its availability waits. The bundled
+controller may be the sole live lane only if direct MCP was unavailable before
+the run. Never switch or mix transport lanes.
+
+If direct health succeeds while a redundant controller attempt returns a
+transport error, retain that receipt as a runner-path anomaly and continue on
+the direct lane. It is not DevBench unavailability and does not block the assay.
+Do not generate or edit task-local orchestration scripts during live preflight
+or baseline setup; load the installed protocol and matrix once and issue their
+actions directly. Evidence files remain permitted.
 
 Use the exact Simple COC order: `prepare_coc` is the first stateful call and
 runs alone. Never call the profiler service, run the fail-closed proof, or reset
@@ -64,14 +70,15 @@ in-world frames, no blocking menu, and the same Build ID. This is the only COC
 and is not measured.
 
 After exact-cell positioning, complete the Simple COC measurement-admission
-phase once: refresh telemetry schemas, query the profiler, run the one-step
-negative scenario, and reset supported telemetry lanes serially. The proof
-must report step `ok: false`, scenario `aborted: true`, `stepsRun: 1`, and
-embedded `invalid_field` with `continueOnError: false`. A transient profiler
-read gets only Simple COC's immediate-return 10-second recovery budget. If it
-does not recover or the proof fails, this protocol is `BLOCKED` before any lane
-baseline mutation. Do not reposition, repeat successful admission work, or
-start a second readiness wait.
+phase once: reuse the selected lane's schema inventory, query the profiler, run
+the one-step negative scenario, and reset supported telemetry lanes serially.
+The proof must report step `ok: false`, scenario `aborted: true`, `stepsRun: 1`,
+and embedded `invalid_field` with `continueOnError: false`. A transient profiler
+read gets only Simple COC's immediate-return 10-second recovery budget on the
+same selected lane. A direct run never starts a controller availability wait.
+If the selected lane does not recover or the proof fails, this protocol is
+`BLOCKED` before any lane baseline mutation. Do not reposition, repeat
+successful admission work, or start a second readiness wait.
 
 ## 2. Select and isolate the three lanes
 
@@ -148,9 +155,9 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    applying/effective/stable/persisted profiles, conditions, operation state,
    and physical dimensions.
    A 429/502/503/504 from this read-only snapshot is a control-plane
-   interruption, not a profile result. Use only the controller's short bounded
-   retry budget for that exact snapshot. While unavailable, do not launch a
-   scenario, cancel, or apply. If it does not recover, record
+   interruption, not a profile result. Use only the selected live lane's short
+   bounded retry budget for that exact snapshot. While unavailable, do not
+   launch a scenario, cancel, or apply. If it does not recover, record
    `pre_snapshot_transport_unavailable`, stop future mutations, preserve the
    exact error receipt and task-owned session IDs, send no further DevBench
    calls, and ask the user immediately to repair or restart the control plane.
