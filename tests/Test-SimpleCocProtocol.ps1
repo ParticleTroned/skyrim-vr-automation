@@ -42,9 +42,12 @@ $skill = Get-Content -LiteralPath $sourceSkill -Raw
 $protocol = Get-Content -LiteralPath $sourceProtocol -Raw
 foreach ($required in @(
     '`prepare_coc` exactly once as the first stateful call',
-    'only independent read-only calls may run concurrently',
-    'reset each supported lane once',
-    'Never overlap stateful calls',
+    'Before the unmeasured positioning COC',
+    'Do not query the profiler service or',
+    'After exact-cell positioning',
+    'complete measurement',
+    'reset each supported lane once in serialized order',
+    'Only independent read-only calls may run concurrently',
     'transition 1''s atomic dispatch remains their sole timing origin',
     '`persisted: false`',
     'developer/debug logging',
@@ -65,11 +68,16 @@ foreach ($required in @(
     'Only independent read-only calls may run concurrently',
     'stateful reset calls one at a time',
     'each exposed trace, lifetime, and probe capture, then pre-arm',
+    'measurement-admission CPU/GPU reset',
     'short ownership sequence',
-    'binding-phase CPU/GPU reset receipts',
     'do not issue another CPU/GPU reset',
     'never fan out `start`, `reset`, or `set_enabled` calls',
     'run another discovery or reset cycle',
+    'Do not call `serviceReady` before positioning',
+    '`-TimeoutSeconds 10`',
+    '`-MaxTransientRetries 0`',
+    'outer budget, not a fixed',
+    'Do not repeat the positioning COC',
     'capture.requiresEnabled: true',
     '`contractMajor: 1`',
     'but omits only the required `frameCount`',
@@ -138,6 +146,27 @@ $positioningPosition = $protocol.IndexOf(
 if ($bindPosition -lt 0 -or $preparePosition -le $bindPosition -or
     $positioningPosition -le $preparePosition) {
     throw 'Simple COC fixture setup is not inside the DevBench binding phase.'
+}
+
+$bindingSection = $protocol.Substring(
+    $bindPosition,
+    $positioningPosition - $bindPosition
+)
+foreach ($forbidden in @(
+    'communityshaders.profiler_api',
+    '`serviceReady`',
+    'reset each supported telemetry lane'
+)) {
+    if ($bindingSection.Contains($forbidden, [StringComparison]::Ordinal)) {
+        throw "Simple COC binding still gates positioning on measurement service: $forbidden"
+    }
+}
+$measurementAdmissionPosition = $protocol.IndexOf(
+    'complete this measurement-admission gate',
+    [StringComparison]::Ordinal
+)
+if ($measurementAdmissionPosition -le $positioningPosition) {
+    throw 'Simple COC measurement admission must follow positioning.'
 }
 
 [pscustomobject][ordered]@{

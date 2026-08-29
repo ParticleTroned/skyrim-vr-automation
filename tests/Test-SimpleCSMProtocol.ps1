@@ -51,6 +51,10 @@ foreach ($required in @(
 foreach ($required in @(
     'exactly 25 Community Shaders menu applies',
     '`coc WhiterunDragonsreach`',
+    'Do not query the profiler service or reset telemetry',
+    'after exact-cell verification',
+    'measurement-admission schema refresh',
+    'measurement-admission CPU/GPU reset',
     '{ "wait": 5000 }',
     '`timeoutMs: 30000`',
     '`startPerformanceTelemetry: true` only on transition 1',

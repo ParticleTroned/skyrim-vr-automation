@@ -103,6 +103,10 @@ foreach ($variant in $variants) {
         '`qualification_begin`', '`qualification_dispatch`',
         '`startPerformanceTelemetry: true`', '`qualification_cancel`',
         'continueOnError: false', 'embedded tool error as step `ok: false`',
+        'Never call the profiler service',
+        'After exact-cell positioning',
+        'immediate-return 10-second recovery budget',
+        'before the', 'baseline mutation',
         'name` fields only', 'Never submit a raw wrapper object',
         'effective profile''s `name` fields', 'native None projection',
         'It is telemetry, not', '`pre_snapshot_profile_incoherent`',
@@ -117,7 +121,8 @@ foreach ($variant in $variants) {
         'vendor_native', 'requested/stable render-scale projections may be `none`',
         '`none` is a failure',
         'Scenario steps cannot interpolate earlier',
-        'short ownership sequence', 'binding-phase CPU/GPU reset',
+        'short ownership sequence', 'CPU/GPU reset receipts from',
+        'measurement admission',
         'short bounded retry budget', 'pre_snapshot_transport_unavailable',
         'send no further DevBench', 'ask the user immediately',
         'Do not attempt cleanup until',
@@ -145,6 +150,23 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains('bounded fan-out', [StringComparison]::Ordinal)) "$($variant.Name) still permits concurrent stateful telemetry arming."
     Assert-True (-not $protocol.Contains('stop future mutations, clean up only', [StringComparison]::Ordinal)) "$($variant.Name) still attempts cleanup before prompting on transport loss."
     Assert-True (-not $protocol.Contains('load presentation, CPU/GPU reset', [StringComparison]::Ordinal)) "$($variant.Name) still repeats CPU/GPU reset during initial measured arming."
+
+    $positioningPosition = $protocol.IndexOf(
+        'Position once with an `async: false` server scenario',
+        [StringComparison]::Ordinal
+    )
+    $measurementAdmissionPosition = $protocol.IndexOf(
+        'After exact-cell positioning',
+        [StringComparison]::Ordinal
+    )
+    $negativeProofPosition = $protocol.IndexOf(
+        'run the one-step',
+        $measurementAdmissionPosition,
+        [StringComparison]::Ordinal
+    )
+    Assert-True ($positioningPosition -ge 0 -and
+        $measurementAdmissionPosition -gt $positioningPosition -and
+        $negativeProofPosition -ge $measurementAdmissionPosition) "$($variant.Name) profiler proof does not follow positioning."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
@@ -226,7 +248,7 @@ Assert-Contains $simpleCsmSkill 'name: simple-csm' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'exactly 25 Community Shaders menu applies' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'tools/render-scale-qualification/protocol.v1.json' 'Simple CSM regression guard'
 Assert-Contains $simpleCsmProtocol 'short ownership sequence' 'Simple CSM regression guard'
-Assert-Contains $simpleCsmProtocol 'binding-phase CPU/GPU reset receipts' 'Simple CSM regression guard'
+Assert-Contains $simpleCsmProtocol 'measurement-admission CPU/GPU reset' 'Simple CSM regression guard'
 Assert-True (-not $simpleCsmProtocol.Contains('one concurrent bounded fan-out', [StringComparison]::Ordinal)) 'Simple CSM permits concurrent stateful telemetry arming.'
 Assert-True (-not $simpleCsmProtocol.Contains('reset CPU/GPU telemetry', [StringComparison]::Ordinal)) 'Simple CSM repeats CPU/GPU reset during measured arming.'
 Assert-True ((Get-FileHash -LiteralPath (Join-Path $repositoryRoot 'skills\simple-csm\references\protocol.md') -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $simpleCsmPluginProtocolPath -Algorithm SHA256).Hash) 'Simple CSM source/package parity failed for telemetry arming.'

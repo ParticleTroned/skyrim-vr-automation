@@ -15,12 +15,13 @@
 - Qualification: one strict waiter per transition, 30,000 ms timeout, no
   target profile. VR FPS Stabilizer owns profile selection.
 - Scenario: one async DevBench scenario with `continueOnError: false`.
-- Setup: `prepare_coc` first and alone; concurrent work is read-only; reset
-  supported lanes once in serialized order; no repeated successful preflight
-  calls after positioning.
+- Setup: `prepare_coc` first and alone; position after core readiness; perform
+  profiler proof, telemetry reset, and capture arming only after exact-cell
+  positioning; never repeat successful setup.
 - Profiler: when `communityshaders.profiler_api` is exposed, prove embedded
   errors abort a scenario, preserve its initial enabled state, and enable it
-  before the measured scenario. A `disabled` arm receipt is fatal.
+  before the measured scenario. A `disabled` arm receipt is fatal, but
+  profiler readiness never gates the unmeasured positioning COC.
 - Output: append one commit-headed column to
   `docs/development/vr-render-scale-comparison-ledger.csv`.
 
@@ -38,36 +39,12 @@ As soon as health and the exact Build ID are bound, start one direct
 `communityshaders.menu` call with
 `{"action":"prepare_coc","expectedBuildId":"<exact Build ID>"}` as the first
 stateful call. Require its successful, fully valid receipt before making
-another stateful call. Then refresh the live schemas and discover every
-required or optional telemetry lane. Only independent read-only calls may run
-concurrently.
-
-When `communityshaders.profiler_api` is exposed, prefer it over the legacy
-profiler tool. After read-only discovery:
-
-1. Call `registry` and `snapshot` with `contractMajor: 1`, unique
-   `clientId`/`commandId` values, and the exact Build ID. Require registry
-   `capture.requiresEnabled: true`, snapshot `ok: true`,
-   `result.status: "success"`, and `result.available: true`. Preserve
-   `result.enabled` as the initial state.
-2. Run one synchronous, one-step scenario with `continueOnError: false` whose
-   only step calls `communityshaders.profiler_api` `start_capture` with
-   `contractMajor: 1`, unique client/command identity, and the exact Build ID,
-   but omits only the required `frameCount`. Require scenario `ok: false`,
-   `aborted: true`, `stepsRun: 1`, step `ok: false`, and embedded error code
-   `invalid_field`. This is a non-mutating proof that the installed DevBench
-   fails closed on extension-domain errors. If it does not, stop before the
-   positioning COC.
-
-Do not call `set_enabled` or `start_capture` during discovery.
-
-After the negative proof passes, or immediately after discovery when the
-versioned API is absent, reset each supported telemetry lane whose contract
-defines a reset. Run those stateful reset calls one at a time, require and keep
-each receipt, and do not retry a reset that succeeded. Do not defer them until
-after the Windhelm positioning COC or repeat a successful reset later. Do not
-start any capture here; in particular, CPU and GPU counters start only from
-transition 1's atomic dispatch.
+another stateful call. Then refresh only the live scenario, console, menu,
+inspect, and selected-assay public-API contracts needed to position safely.
+Only independent read-only core calls may run concurrently. Do not call the
+profiler service, run its negative scenario, or reset, start, or arm telemetry
+before positioning. A telemetry-only 503 must not block the unmeasured
+positioning COC.
 
 Require `ready: true`, `promptRequired: false`, and `persisted: false`. The
 `after` receipt must prove:
@@ -103,9 +80,51 @@ Do not count this positioning COC among the 20 measured transitions.
 
 ## 3. Arm all relevant render-scale telemetry
 
-Use the live schemas and reset receipts obtained during the binding sequence.
-Refresh or reset an individual lane again only when its earlier call explicitly
-reported stale state or absence. Required capture lanes are:
+After exact-cell verification, refresh the live schema inventory exactly once
+and discover every required or optional telemetry lane. Only independent
+read-only calls may run concurrently. Do not repeat core discovery that already
+returned a complete receipt.
+
+When `communityshaders.profiler_api` is exposed, prefer it over the legacy
+profiler tool and complete this measurement-admission gate:
+
+1. Call `registry` and `snapshot` with `contractMajor: 1`, unique
+   `clientId`/`commandId` values, and the exact Build ID. Require registry
+   `capture.requiresEnabled: true`, snapshot `ok: true`,
+   `result.status: "success"`, and `result.available: true`. Preserve
+   `result.enabled` as the initial state. These two read-only calls may run
+   concurrently.
+2. After both reads pass, run one synchronous, one-step scenario alone with
+   `continueOnError: false` whose
+   only step calls `communityshaders.profiler_api` `start_capture` with
+   `contractMajor: 1`, unique client/command identity, and the exact Build ID,
+   but omits only the required `frameCount`. Require scenario `ok: false`,
+   `aborted: true`, `stepsRun: 1`, step `ok: false`, and embedded error code
+   `invalid_field`. This non-mutating proof must pass before any baseline,
+   upscaling apply, or measured transition.
+
+Do not call `serviceReady` before positioning. If the first post-positioning
+profiler `registry` or `snapshot` call remains transient after the controller's
+short retry budget, run exactly one `serviceReady` wait for that same read-only
+action with `-TimeoutSeconds 10` and `-MaxTransientRetries 0`. It returns on
+the first successful receipt; ten seconds is its outer budget, not a fixed
+delay. On success, retry only the unresolved read once. If it remains
+unavailable, stop
+before any baseline, apply, or measured transition and ask the user. Do not
+repeat the positioning COC or begin another readiness wait.
+
+Do not call `set_enabled` or `start_capture` during discovery or the negative
+proof. When the versioned API is absent, read the legacy profiler status once
+and preserve its initial enabled state.
+
+After the negative proof passes, or immediately after discovery when the
+versioned API is absent, reset each supported telemetry lane whose contract
+defines a reset. Run those stateful reset calls one at a time, require and keep
+each receipt, and do not retry a reset that succeeded. Do not start a capture
+during reset; CPU and GPU counters start only from transition 1's atomic
+dispatch.
+
+Required capture lanes are:
 
 - render-scale stress events and transition metrics;
 - strict qualification timing and health receipts;
@@ -124,12 +143,12 @@ reported stale state or absence. Required capture lanes are:
 After exact-cell verification, stateful telemetry actions are serialized in a
 short ownership sequence immediately before transition 1: start stress, then
 each exposed trace, lifetime, and probe capture, then pre-arm the selected
-profiler lane. Before arming, require the binding-phase CPU/GPU reset receipts
-to show both captures inactive; do not issue another CPU/GPU reset. Require and
-preserve each receipt before the next stateful action. Only independent
-read-only schema or status checks may run concurrently; never fan out `start`,
-`reset`, or `set_enabled` calls. Do not retry an action that already returned
-an ownership receipt.
+profiler lane. Before arming, require the measurement-admission CPU/GPU reset
+receipts to show both captures inactive; do not issue another CPU/GPU reset.
+Require and preserve each receipt before the next stateful action. Only
+independent read-only schema or status checks may run concurrently; never fan
+out `start`, `reset`, or `set_enabled` calls. Do not retry an action that
+already returned an ownership receipt.
 
 Pre-arm the selected profiler lane after its preceding stateful receipts:
 

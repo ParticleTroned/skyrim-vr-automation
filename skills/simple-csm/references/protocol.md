@@ -25,11 +25,12 @@ and result grouping.
 
 ## 1. Bind and prepare exactly as Simple COC
 
-Complete Simple COC binding, producer identity, schema discovery, telemetry
-reset, profiler fail-closed proof, and the single runtime-only `prepare_coc`
-call before any COC. The receipt must still prove debug logging and the
-FOV/TAA `0.3/0.3/0.7` fixture. This setup phase must not change method,
-quality, preset, render-scale state, or any VR FPS Stabilizer setting.
+Before the positioning COC, complete only Simple COC health and producer
+binding, core control discovery, and the single runtime-only `prepare_coc`
+call. The receipt must still prove debug logging and the FOV/TAA
+`0.3/0.3/0.7` fixture. Do not query the profiler service or reset telemetry
+until exact-cell positioning has passed. This setup phase must not change
+method, quality, preset, render-scale state, or any VR FPS Stabilizer setting.
 
 Use the active D3D adapter reported by the bound DevBench producer to select
 the matrix: `nvidiaMatrix` for NVIDIA or `amdMatrix` for AMD. Do not use GPU
@@ -62,14 +63,16 @@ transitions.
 
 ## 3. Arm the Simple COC telemetry lanes
 
-Apply Simple COC section 3 after exact-cell verification. Stateful telemetry
-actions are serialized in its short ownership sequence: start the single fresh
-stress session, then texture-lifetime, load-presentation, and each other
-supported capture; then pre-arm but do not start the profiler capture. Reuse
-the binding-phase CPU/GPU reset receipts, require both captures to be inactive,
-and do not issue another reset. Do not start CPU or GPU counters in that
-sequence; transition 1's dispatch remains their sole timing origin. Preserve
-the profiler initial state and pre-arm it exactly as Simple COC requires.
+Apply Simple COC section 3 after exact-cell verification. First complete its
+single measurement-admission schema refresh, profiler fail-closed proof, and
+serialized telemetry resets. Then serialize the short ownership sequence:
+start the single fresh stress session, then texture-lifetime,
+load-presentation, and each other supported capture; then pre-arm but do not
+start the profiler capture. Reuse the measurement-admission CPU/GPU reset
+receipts, require both captures to be inactive, and do not issue another
+reset. Do not start CPU or GPU counters in that sequence; transition 1's
+dispatch remains their sole timing origin. Preserve the profiler initial state
+and pre-arm it exactly as Simple COC requires.
 
 Replace only the base protocol's session-wide DLSS trace ownership:
 

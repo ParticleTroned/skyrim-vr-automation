@@ -6,14 +6,13 @@ profile through `communityshaders.renderscale`.
 
 ## 1. Bind and prepare
 
-Apply Simple COC identity binding, schema discovery, fail-closed scenario
-probe, evidence paths, and the single runtime-only `prepare_coc` action. The
-receipt must prove debug logging and the FOV/TAA `0.3/0.3/0.7` fixture without
-changing any upscaling or VR FPS Stabilizer setting.
+Apply Simple COC identity binding, core control discovery, evidence paths, and
+the single runtime-only `prepare_coc` action. The receipt must prove debug
+logging and the FOV/TAA `0.3/0.3/0.7` fixture without changing any upscaling
+or VR FPS Stabilizer setting.
 Use the exact Simple COC order: `prepare_coc` is the first stateful call and
-runs alone; only independent read-only discovery may run concurrently; the
-fail-closed proof runs alone; and every supported binding-phase telemetry reset
-runs once, in serialized order.
+runs alone. Never call the profiler service, run the fail-closed proof, or reset
+telemetry before positioning.
 
 Require the bound active D3D adapter to be AMD. Require the live
 `communityshaders.upscaling_api` description to expose `registry`,
@@ -32,12 +31,6 @@ cannot otherwise share one serialized server sequence.
 Require public capabilities to expose FSR and every matrix quality mode before
 any baseline. A missing method or quality is `BLOCKED`; do not substitute a
 nearby supported state.
-
-Before any COC or mutation, run the one-step negative scenario required by
-Simple COC. It must report the embedded tool error as step `ok: false`,
-`aborted: true`, and `stepsRun: 1` with `continueOnError: false`. Otherwise
-this protocol is `BLOCKED`; a scenario that masks an embedded API error cannot
-own a measured apply.
 
 The public snapshot serializes each enum as `{ "value", "name" }`. Preserve
 that raw object in evidence, but build the next `apply.target` from the
@@ -60,6 +53,16 @@ Position once with an `async: false` server scenario containing
 `coc WhiterunDragonsreach` and a 10,000 ms wait. Require the exact editor ID, loaded player, advancing
 in-world frames, no blocking menu, and the same Build ID. This is the only COC
 and is not measured.
+
+After exact-cell positioning, complete the Simple COC measurement-admission
+phase once: refresh telemetry schemas, query the profiler, run the one-step
+negative scenario, and reset supported telemetry lanes serially. The proof
+must report step `ok: false`, scenario `aborted: true`, `stepsRun: 1`, and
+embedded `invalid_field` with `continueOnError: false`. A transient profiler
+read gets only Simple COC's immediate-return 10-second recovery budget. If it
+does not recover or the proof fails, this protocol is `BLOCKED` before any lane
+baseline mutation. Do not reposition, repeat successful admission work, or
+start a second readiness wait.
 
 ## 2. Select and isolate the three lanes
 
@@ -112,10 +115,11 @@ texture lifetime, load presentation, and profiler pre-arm. Require and retain
 each receipt before starting the next stateful action; provider lifecycle,
 resource publication, preparation, fidelity, stereo, retry, failure, memory,
 and queue remain status evidence. Only read-only discovery/status calls may run
-in parallel. For the first lane, reuse the binding-phase CPU/GPU reset receipts,
-require both captures to be inactive, and do not issue another reset. Before
-each later lane, after the preceding lane's guarded stop receipt, serialize
-exactly one CPU reset and one GPU reset to clear its measurements and require
+in parallel. For the first lane, reuse the CPU/GPU reset receipts from
+measurement admission, require both captures inactive, and do not issue another
+reset. Before each later lane, after the preceding lane's guarded stop receipt,
+serialize exactly one CPU reset and one GPU reset to clear its measurements and
+require
 both captures inactive. In the first measured mutation scenario, start the
 profiler immediately before dispatch; dispatch then starts CPU/GPU capture on
 its QPC/frame. Stop only that lane's owned sessions after transition 31. Do not

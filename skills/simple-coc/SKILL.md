@@ -21,17 +21,21 @@ authorization from a freeze, timeout, or the original `simple coc` command.
 
 As soon as DevBench health and the exact producer Build ID are bound, call
 `communityshaders.menu` `prepare_coc` exactly once as the first stateful call
-and validate its receipt before making another stateful call. Then refresh
-schemas and discover telemetry lanes; only independent read-only calls may run
-concurrently. After the fail-closed proof below, reset each supported lane once,
-serially, and retain every receipt. Never overlap stateful calls or repeat
-successful setup after positioning. Do not start CPU or GPU counters;
-transition 1's atomic dispatch remains their sole timing origin.
-If `communityshaders.profiler_api` is exposed, prove scenario semantic
-fail-closed behavior and explicitly enable and verify the API before queuing
-the measured scenario. `start_capture` must never be the first profiler
-mutation. An exposed API returning `disabled` is a failed required lane, not
-`unsupported` evidence.
+and validate its receipt before making another stateful call. Before the
+unmeasured positioning COC, verify only the core control and public-API
+contract needed by the selected assay. Do not query the profiler service or
+reset telemetry there.
+
+After exact-cell positioning, refresh schemas once and complete measurement
+admission: discover telemetry lanes, prove scenario semantic fail-closed
+behavior when `communityshaders.profiler_api` is exposed, and reset each
+supported lane once in serialized order. Then arm captures serially. Only
+independent read-only calls may run concurrently. Never repeat a successful
+setup action. Do not start CPU or GPU counters; transition 1's atomic dispatch
+remains their sole timing origin. Explicitly enable and verify an exposed
+profiler API before queuing the measured scenario. `start_capture` must never
+be the first profiler mutation. An exposed API returning `disabled` is a
+failed required lane, not `unsupported` evidence.
 It must leave `persisted: false`, enable developer/debug logging, and establish
 only the runtime FOV/TAA `0.3/0.3/0.7` fixture. VR FPS Stabilizer remains the
 exclusive owner of DLSS and upscaling.
