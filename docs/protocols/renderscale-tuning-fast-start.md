@@ -62,9 +62,16 @@ Before positioning, use only these request rounds:
    `startupReadElapsedMs`; it does not borrow from the fresh positioning
    budget. No fixed sleep or availability waiter is permitted.
 2. Call `communityshaders.menu prepare_coc` exactly once and alone. It is the
-   first stateful call. Require the runtime-only FOV/TAA `0.3/0.3/0.7` fixture,
-   debug logging, and `persisted: false`. It must not change DLSS,
-   FSR, render scale, or any VR FPS Stabilizer setting.
+   first stateful call. Require the runtime-only FOV/TAA `0.3/0.3/0.7`
+   fixture, debug logging, and `persisted: false`. Compare each of
+   `after.foveation.foveatedCenterArea`, `peripheryTAACenterArea`, and
+   `peripheryTAAOuterScale` numerically with absolute tolerance `0.000001`;
+   ordinary binary32 serialization drift within that tolerance is valid.
+   Require all booleans, readiness, logging, and persistence fields exactly.
+   Validate the already-decoded response and rehash its one durable write; do
+   not call another tool, reread the file, or pause for a second fixture check
+   before the positioning scenario. It must not change DLSS, FSR, render
+   scale, or any VR FPS Stabilizer setting.
 3. Immediately submit one `scenario` with `async: true`,
    `continueOnError: false`, and these ordered steps:
    - `console exec` with exactly `coc WhiterunDragonsreach`;
