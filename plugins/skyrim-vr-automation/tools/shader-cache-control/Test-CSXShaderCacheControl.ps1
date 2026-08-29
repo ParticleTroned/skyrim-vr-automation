@@ -18,6 +18,8 @@ $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
 if (-not $resolvedTestRoot.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Test root escaped the temporary directory: $resolvedTestRoot"
 }
+$priorControlRoot = $env:CSX_SHADER_CACHE_CONTROL_ROOT
+$env:CSX_SHADER_CACHE_CONTROL_ROOT = Join-Path $resolvedTestRoot 'target-controls'
 
 try {
     $reference = Join-Path $resolvedTestRoot 'reference'
@@ -52,6 +54,14 @@ try {
     Set-Content -LiteralPath (Join-Path $liveCache 'Info.ini') -Value @('[Cache]', 'ShaderCacheABI = snapshot-abi') -Encoding utf8
     $snap = & $transaction snapshot -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
     Assert-Test ($snap.ok -and (Test-Path -LiteralPath $snap.data.receiptPath -PathType Leaf)) 'transaction snapshots an exact cache with a receipt'
+    $controlDirectory = @(Get-ChildItem -LiteralPath $env:CSX_SHADER_CACHE_CONTROL_ROOT -Directory)[0].FullName
+    $targetLockPath = Join-Path $controlDirectory 'target.lock'
+    $heldTargetLock = [IO.File]::Open($targetLockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $contended = & $transaction snapshot -CachePath $liveCache -EvidenceDirectory $evidence -TransactionLockTimeoutMilliseconds 100 -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    }
+    finally { $heldTargetLock.Dispose() }
+    Assert-Test (-not $contended.ok -and $contended.errors[0] -match 'Timed out acquiring shader-cache target lock') 'a second mutator cannot enter the same canonical live-cache transaction'
     [IO.File]::WriteAllBytes((Join-Path $liveCache 'baseline.bin'), [byte[]](2, 5, 10))
     [IO.File]::WriteAllBytes((Join-Path $liveCache 'new.bin'), [byte[]](7, 8))
     $different = & $transaction verify -CachePath $liveCache -EvidenceDirectory $evidence -NoExit | ConvertFrom-Json
@@ -63,6 +73,9 @@ try {
 
     'rollback-original' | Set-Content -LiteralPath (Join-Path $liveCache 'rollback.txt') -Encoding utf8
     $rollbackOriginal = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    $failedBeforeDisplace = & $transaction restore -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -InternalTestFailurePoint restore-before-displace -Confirm:$false -NoExit | ConvertFrom-Json
+    $beforeDisplaceAfter = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    Assert-Test (-not $failedBeforeDisplace.ok -and $beforeDisplaceAfter.data.treeSha256 -eq $rollbackOriginal.data.treeSha256) 'rollback leaves the exact live original in place when failure precedes displacement'
     $failedRestore = & $transaction restore -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -InternalTestFailurePoint restore-after-activate -Confirm:$false -NoExit | ConvertFrom-Json
     $rollbackAfter = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
     Assert-Test (-not $failedRestore.ok -and $failedRestore.errors[0] -match 'exact original cache was restored') 'restore failure reports verified rollback rather than success'
@@ -91,6 +104,48 @@ try {
         -ExpectedSourceTreeSha256 ('0' * 64) -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
     Assert-Test (-not $wrongHash.ok -and $wrongHash.errors[0] -match 'hash mismatch') 'seed rejects a source whose exact tree hash is not the approved identity'
 
+    $boundedInventory = & $transaction inspect -CachePath $liveCache -MaxInventoryFiles 1 -NoExit | ConvertFrom-Json
+    Assert-Test (-not $boundedInventory.ok -and $boundedInventory.errors[0] -match 'file-count bound') 'inventory fails closed at its explicit file-count bound'
+    $inventoryContract = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    Assert-Test ($inventoryContract.ok -and $inventoryContract.data.entries[0].PSObject.Properties.Name -contains 'bytes' -and $inventoryContract.data.limits.maxFiles -eq 20000) 'inventory reports per-file sizes and the applied traversal limits'
+
+    $originalBeforeInterrupted = $inventoryContract.data
+    $requestedBeforeInterrupted = & $transaction inspect -CachePath (Join-Path $evidence 'cache.before') -NoExit | ConvertFrom-Json
+    $interruptedDisplaced = Join-Path (Split-Path -Parent $liveCache) '.ShaderCache.displaced.interrupted-fixture'
+    $interruptedStaging = Join-Path (Split-Path -Parent $liveCache) '.ShaderCache.seed.interrupted-fixture'
+    Move-Item -LiteralPath $liveCache -Destination $interruptedDisplaced
+    Copy-Item -LiteralPath (Join-Path $evidence 'cache.before') -Destination $liveCache -Recurse
+    $evidenceJournal = Join-Path $evidence 'shader-cache-seed.interrupted-fixture.journal.json'
+    $interruptedJournal = [pscustomobject][ordered]@{
+        contractVersion = '2.0.0'; operation = 'seed'; phase = 'replacement-active-uncommitted'; operationId = 'interrupted-fixture'
+        snapshotTransactionId = [string]$snap.data.inventory.treeSha256; cachePath = $liveCache; sourceCachePath = (Join-Path $evidence 'cache.before')
+        originalTreeSha256 = [string]$originalBeforeInterrupted.treeSha256; requestedTreeSha256 = [string]$requestedBeforeInterrupted.data.treeSha256
+        stagingPath = $interruptedStaging; displacedPath = $interruptedDisplaced; evidenceJournalPath = $evidenceJournal
+        preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+    }
+    $interruptedJournal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $controlDirectory 'transaction.journal.json') -Encoding utf8
+    $interruptedJournal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $evidenceJournal -Encoding utf8
+    $recoveryAttempt = & $transaction seed -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    $recoveredJournal = Get-Content -LiteralPath (Join-Path $controlDirectory 'transaction.journal.json') -Raw | ConvertFrom-Json
+    $recoveredInventory = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    Assert-Test (-not $recoveryAttempt.ok -and $recoveryAttempt.errors[0] -match 'SourceCachePath' -and $recoveredJournal.phase -eq 'recovered') 'a later mutator reconciles a nonterminal target-owned journal before validating new inputs'
+    Assert-Test ($recoveredInventory.data.treeSha256 -eq $originalBeforeInterrupted.treeSha256 -and $recoveredJournal.recovery.verified) 'restart reconciliation restores and verifies the exact displaced original tree'
+
+    $missingLiveDisplaced = Join-Path (Split-Path -Parent $liveCache) '.ShaderCache.displaced.missing-live-fixture'
+    $missingLiveStaging = Join-Path (Split-Path -Parent $liveCache) '.ShaderCache.restore.missing-live-fixture'
+    Move-Item -LiteralPath $liveCache -Destination $missingLiveDisplaced
+    $missingLiveJournal = [pscustomobject][ordered]@{
+        contractVersion = '2.0.0'; operation = 'restore'; phase = 'original-displace-command-uncommitted'; operationId = 'missing-live-fixture'
+        snapshotTransactionId = 'fixture'; cachePath = $liveCache
+        originalTreeSha256 = [string]$originalBeforeInterrupted.treeSha256; requestedTreeSha256 = [string]$requestedBeforeInterrupted.data.treeSha256
+        stagingPath = $missingLiveStaging; displacedPath = $missingLiveDisplaced; evidenceJournalPath = (Join-Path $evidence 'shader-cache-restore.missing-live-fixture.journal.json')
+        preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+    }
+    $missingLiveJournal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $controlDirectory 'transaction.journal.json') -Encoding utf8
+    $missingLiveRecovery = & $transaction seed -CachePath $liveCache -EvidenceDirectory $evidence -BlockingProcessNames @('fixture-process-that-does-not-exist') -Confirm:$false -NoExit | ConvertFrom-Json
+    $missingLiveAfter = & $transaction inspect -CachePath $liveCache -NoExit | ConvertFrom-Json
+    Assert-Test (-not $missingLiveRecovery.ok -and $missingLiveAfter.ok -and $missingLiveAfter.data.treeSha256 -eq $originalBeforeInterrupted.treeSha256) 'restart reconciliation restores an original displaced before the replacement path was activated'
+
     $mods = Join-Path $resolvedTestRoot 'mods'
     $profile = Join-Path $resolvedTestRoot 'modlist.txt'
     New-Item -ItemType Directory -Path (Join-Path $mods 'Enabled Cache\ShaderCache'), (Join-Path $mods 'Disabled Cache\ShaderCache') -Force | Out-Null
@@ -110,6 +165,7 @@ try {
     Assert-Test ($fileProviders.data.providers[0].providerType -eq 'file' -and $fileProviders.data.providers[0].inventory.files -eq 1) 'file provider inventory includes its physical hash record'
 }
 finally {
+    $env:CSX_SHADER_CACHE_CONTROL_ROOT = $priorControlRoot
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {
         Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
     }

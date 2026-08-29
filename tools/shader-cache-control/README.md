@@ -10,8 +10,19 @@ cache path, snapshot and verify an exact tree, seed a verified baseline, or
 restore it while preserving the displaced tree and both inventories. Snapshot,
 seed, and restore refuse to run while MO2, Skyrim, or the SKSE loader is active.
 Recursive inventory is reparse-point-free and bounded by file count, bytes,
-depth, and elapsed time. Snapshot receipts bind the exact cache parent, leaf,
+depth, and an absolute deadline. The shared transaction/catalog primitive emits
+periodic progress, records per-file sizes and hashes, and returns the applied
+limits with its inventory. Snapshot receipts bind the exact cache parent, leaf,
 path, and baseline hash before they authorize a destructive seed or restore.
+Mutation callers serialize through a bounded lock derived from the canonical
+live-cache path. A deterministic per-user control directory owns the
+authoritative journal; evidence journals are mirrors, not ownership
+partitions. Before every snapshot, seed, or restore, the next lock owner
+reconciles any nonterminal operation by accepting only the exact original or
+requested tree, restoring and verifying the displaced original, and retaining
+uncommitted staging/replacement trees in sibling recovery quarantine paths.
+Unknown target drift or a missing exact original fails closed for manual
+recovery.
 
 `Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
 cache management. It stores immutable, content-addressed cache objects and
@@ -164,8 +175,9 @@ deployment resolution to separate VFS evidence.
 
 Restore never silently discards the current tree: it copies the displaced
 contents into the evidence directory, verifies that copy, and only then removes
-the temporary sibling used for the atomic swap. Seed and restore write unique
-operation journals before moving the live tree. Any pre-commit failure first
+the temporary sibling used for the atomic swap. Seed and restore mirror unique
+evidence journals while updating the one target-owned authoritative journal
+before each filesystem move. Any pre-commit failure first
 quarantines the uncommitted replacement, restores and hash-verifies the exact
 displaced original, and reports `recovery-required` if that rollback cannot be
 fully verified.
