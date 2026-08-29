@@ -13,6 +13,13 @@ profile mutation remains a one-shot approval because it overwrites
 path variable, `-Command`, pipeline, or constructed command string.
 Use `-Compact` for a single-line JSON result in orchestration logs.
 
+Every target profile has one deterministic per-user control directory keyed by
+its canonical `modlist.txt` path. Mutations serialize on that target-owned lock
+and persist an authoritative preimage and journal there before replacement;
+caller evidence directories are mirrors, not recovery authority. The next
+command recovers or finalizes a nonterminal transaction before planning against
+the live profile. Unclassified live drift fails closed for manual review.
+
 `-ProfilePath` accepts either the profile directory or its exact `modlist.txt`
 leaf (`-ModListPath` is an alias). Results and receipts preserve the legacy
 `profilePath` leaf while also reporting unambiguous `profileName`,

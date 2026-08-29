@@ -163,6 +163,7 @@ function Invoke-WithWorkspaceTransactionLock($Config, [scriptblock]$Action) {
     }
     try {
         $null = Resolve-PendingSelectedProfileJournals -Config $Config
+        $null = Resolve-PendingWorkspaceJournals -Config $Config
         return & $Action
     }
     finally { $stream.Dispose() }
@@ -339,6 +340,96 @@ function Restore-MO2SelectedProfileTransaction($Transaction) {
         $journal['phase'] = 'compensated-by-parent'; $journal['compensatedUtc'] = [DateTime]::UtcNow.ToString('o')
         Write-WorkspaceJsonAtomic -Path ([string]$Transaction.journalPath) -Value $journal
     }
+}
+
+function Restore-ParentSelectedProfileTransaction([string]$JournalPath) {
+    if ([string]::IsNullOrWhiteSpace($JournalPath) -or -not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $null }
+    $journal = Get-Content -LiteralPath $JournalPath -Raw | ConvertFrom-Json
+    if ([string]$journal.phase -in @('committed', 'recovered-committed')) {
+        Restore-MO2SelectedProfileTransaction -Transaction $journal
+    }
+    return $journal
+}
+
+function Assert-WorkspaceRecoveryPath([string]$Path, [string]$Root, [string]$Purpose) {
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $expectedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (-not $resolved.StartsWith($expectedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "$Purpose escaped its configured root: $resolved" }
+    return $resolved
+}
+
+function Resolve-PendingWorkspaceJournal($Config, [string]$JournalPath) {
+    $journal = Get-Content -LiteralPath $JournalPath -Raw | ConvertFrom-Json -AsHashtable
+    if ([string]$journal['phase'] -in @('committed', 'rolled-back', 'recovered-committed', 'recovered-preimage')) { return $journal }
+    $profilesRoot = [IO.Path]::GetFullPath([string]$Config.mo2.profilesDirectory)
+    $controlRoot = [IO.Path]::GetFullPath((Get-WorkspaceControlRoot -Config $Config))
+    $operation = [string]$journal['operation']
+    if ($operation -notin @('create', 'resume', 'retire')) { throw "Unknown nonterminal workspace operation in $JournalPath" }
+
+    $manifestPath = Assert-WorkspaceRecoveryPath -Path ([string]$journal['manifestPath']) -Root $controlRoot -Purpose 'Workspace manifest recovery target'
+    $profilePath = if ($journal.ContainsKey('profilePath')) { Assert-WorkspaceRecoveryPath -Path ([string]$journal['profilePath']) -Root $profilesRoot -Purpose 'Workspace profile recovery target' } else { $null }
+    $selectedJournalPath = if ($journal.ContainsKey('selectedProfileJournalPath') -and -not [string]::IsNullOrWhiteSpace([string]$journal['selectedProfileJournalPath'])) {
+        Assert-WorkspaceRecoveryPath -Path ([string]$journal['selectedProfileJournalPath']) -Root $controlRoot -Purpose 'Selected-profile recovery journal'
+    } else { $null }
+
+    if ($operation -eq 'create') {
+        $committable = $false
+        if ((Test-Path -LiteralPath $manifestPath -PathType Leaf) -and (Test-Path -LiteralPath $profilePath -PathType Container)) {
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                $committable = [string]$manifest.workspaceId -ceq [string]$journal['workspaceId'] -and [string]$manifest.ownershipId -ceq [string]$journal['ownershipId'] -and [string]$manifest.status -ceq 'ready' -and [IO.Path]::GetFullPath([string]$manifest.profilePath) -ceq $profilePath
+            }
+            catch { $committable = $false }
+        }
+        if ($committable) {
+            $journal['phase'] = 'committed'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
+            Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
+            return $journal
+        }
+        $null = Restore-ParentSelectedProfileTransaction -JournalPath $selectedJournalPath
+        if (Test-Path -LiteralPath $profilePath -PathType Container) { Assert-NoWorkspaceReparsePoint -Path $profilePath -Purpose 'Interrupted workspace profile'; Remove-Item -LiteralPath $profilePath -Recurse -Force }
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { Remove-Item -LiteralPath $manifestPath -Force }
+        $journal['phase'] = 'rolled-back'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
+        Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
+        return $journal
+    }
+
+    $preimagePath = if ($journal.ContainsKey('manifestPreimagePath') -and -not [string]::IsNullOrWhiteSpace([string]$journal['manifestPreimagePath'])) {
+        Assert-WorkspaceRecoveryPath -Path ([string]$journal['manifestPreimagePath']) -Root $controlRoot -Purpose 'Workspace manifest recovery preimage'
+    } else { $null }
+    if ([string]::IsNullOrWhiteSpace($preimagePath) -or -not (Test-Path -LiteralPath $preimagePath -PathType Leaf) -or (Get-FileHash -LiteralPath $preimagePath -Algorithm SHA256).Hash -cne [string]$journal['manifestPreimageSha256']) {
+        throw "Workspace $operation recovery cannot verify its exact manifest preimage: $JournalPath"
+    }
+
+    if ($operation -eq 'retire') {
+        foreach ($move in @($journal['modMoves'])) {
+            $source = Assert-WorkspaceRecoveryPath -Path ([string]$move.source) -Root ([string]$Config.mo2.modsDirectory) -Purpose 'Retirement mod source'
+            $quarantine = Assert-WorkspaceRecoveryPath -Path ([string]$move.quarantine) -Root ([string]$Config.mo2.modsDirectory) -Purpose 'Retirement mod quarantine'
+            if ((Test-Path -LiteralPath $source) -and (Test-Path -LiteralPath $quarantine)) { throw "Retirement recovery found both source and quarantine: $source" }
+            if (-not (Test-Path -LiteralPath $source) -and (Test-Path -LiteralPath $quarantine)) { Move-Item -LiteralPath $quarantine -Destination $source -ErrorAction Stop }
+        }
+        $profileQuarantine = Assert-WorkspaceRecoveryPath -Path ([string]$journal['profileQuarantine']) -Root $profilesRoot -Purpose 'Retirement profile quarantine'
+        if ((Test-Path -LiteralPath $profilePath) -and (Test-Path -LiteralPath $profileQuarantine)) { throw 'Retirement recovery found both the profile and its quarantine.' }
+        if (-not (Test-Path -LiteralPath $profilePath) -and (Test-Path -LiteralPath $profileQuarantine)) { Move-Item -LiteralPath $profileQuarantine -Destination $profilePath -ErrorAction Stop }
+    }
+
+    Write-WorkspaceBytesAtomic -Path $manifestPath -Bytes ([IO.File]::ReadAllBytes($preimagePath))
+    if ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash -cne [string]$journal['manifestPreimageSha256']) { throw "Workspace $operation recovery failed exact manifest verification." }
+    $null = Restore-ParentSelectedProfileTransaction -JournalPath $selectedJournalPath
+    $journal['phase'] = 'rolled-back'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
+    Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
+    return $journal
+}
+
+function Resolve-PendingWorkspaceJournals($Config) {
+    $root = Get-WorkspaceControlRoot -Config $Config
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
+    $inventory = Get-BoundedTreeInventory -Path $root -Purpose 'Workspace operation journal discovery'
+    $resolved = @()
+    foreach ($file in @($inventory.files | Where-Object { [IO.Path]::GetFileName([string]$_.path) -match '\.(creation|resume\.[^.]+|retire\.[^.]+)\.journal\.json$' })) {
+        $resolved += Resolve-PendingWorkspaceJournal -Config $Config -JournalPath ([string]$file.fullPath)
+    }
+    return @($resolved)
 }
 
 function Set-MO2SelectedProfile($Config, [string]$TargetProfile, [string]$Operation, [string]$EvidenceRoot, [switch]$WhatIf) {
@@ -743,6 +834,12 @@ try {
     $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
     $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
 
+    if (-not $WhatIfPreference) {
+        # Recovery precedes command-specific reads so an interrupted operation can never be
+        # mistaken for a stable workspace merely because the next command is read-oriented.
+        Invoke-WithWorkspaceTransactionLock -Config $config -Action { $null } | Out-Null
+    }
+
     if ($Command -eq 'release') {
         throw 'Workspace release is intentionally unavailable because it previously deleted retained task state. Yield scarce MO2 access with Invoke-MO2Control.ps1 release-access; destroy a finished workspace only with the explicit retire command.'
     }
@@ -887,17 +984,20 @@ try {
                 if ((Test-Path -LiteralPath $profilePath) -or (Test-Path -LiteralPath $manifestPath) -or (Test-Path -LiteralPath $creationJournalPath)) { throw 'Workspace creation target appeared after planning; no clone was started.' }
                 Assert-NoWorkspaceReparsePoint -Path $sourcePath -Purpose 'Stable source profile'
                 if ([string](Get-ProfileSnapshot -Path $sourcePath).sha256 -cne [string]$sourceSnapshot.sha256) { throw 'Stable source profile changed after planning; no clone was started.' }
+                $selectionEvidence = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-create-select')
+                $selectedProfileJournalPath = Join-Path $selectionEvidence ('selected-profile-' + (Get-SafeName 'select-created-task-workspace') + '.selected-profile.journal.json')
                 $journal = [pscustomobject][ordered]@{
                     contractVersion = '2.0.0'; operation = 'create'; phase = 'prepared'; workspaceId = $workspaceId; ownershipId = $ownershipId
                     ownerTaskId = $resolvedTaskId; sourceProfile = $sourceName; sourceProfilePath = $sourcePath; sourceSnapshotSha256 = [string]$sourceSnapshot.sha256
                     profileName = $profileName; profilePath = $profilePath; manifestPath = $manifestPath; preparedUtc = [DateTime]::UtcNow.ToString('o')
-                    selectedProfileTransaction = $null; rollback = $null; committedUtc = $null
+                    selectedProfileJournalPath = $selectedProfileJournalPath; selectedProfileTransaction = $null; rollback = $null; committedUtc = $null
                 }
                 Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
                 $profileCreated = $false; $selection = $null
                 try {
                     New-Item -ItemType Directory -Path $profilePath -ErrorAction Stop | Out-Null
                     $profileCreated = $true
+                    $journal.phase = 'profile-copy-uncommitted'; Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
                     $copyInventory = Get-BoundedTreeInventory -Path $sourcePath -Purpose 'Stable source profile copy'
                     foreach ($directory in @($copyInventory.directories)) {
                         New-Item -ItemType Directory -Path (Join-Path $profilePath ([string]$directory.path)) -Force | Out-Null
@@ -929,10 +1029,11 @@ try {
                     $manifest | Add-Member -NotePropertyName copiedWorldEntrySave -NotePropertyValue $true -Force
                     if ($fixture) { $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true -Force }
                     $manifest | Add-Member -NotePropertyName profileSnapshot -NotePropertyValue (Get-ProfileSnapshot -Path $profilePath) -Force
-                    $selectionEvidence = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-create-select')
                     $selection = Set-MO2SelectedProfile -Config $config -TargetProfile $profileName -Operation 'select-created-task-workspace' -EvidenceRoot $selectionEvidence
+                    $journal.phase = 'selection-applied-uncommitted'; $journal.selectedProfileTransaction = $selection; Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
                     $manifest | Add-Member -NotePropertyName selectedProfileTransaction -NotePropertyValue $selection -Force
                     $manifest.status = 'ready'
+                    $journal.phase = 'manifest-write-uncommitted'; Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
                     Write-WorkspaceJsonAtomic -Path $manifestPath -Value $manifest
                     $journal.phase = 'committed'; $journal.committedUtc = [DateTime]::UtcNow.ToString('o'); $journal.selectedProfileTransaction = $selection
                     Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
@@ -985,10 +1086,16 @@ try {
                 $journalPath = Get-WorkspaceOperationJournalPath -Config $config -Id $WorkspaceId -Operation 'resume' -OperationId $operationId
                 $resumeEvidence = Join-Path (Split-Path -Parent $current.path) ($WorkspaceId + '-resume-' + $operationId)
                 $manifestPreimage = [IO.File]::ReadAllBytes($current.path)
+                $manifestPreimagePath = Join-Path (Get-WorkspaceControlRoot -Config $config) ($WorkspaceId + '.resume.' + $operationId + '.manifest-preimage.bin')
+                Write-WorkspaceBytesAtomic -Path $manifestPreimagePath -Bytes $manifestPreimage
+                $manifestPreimageSha256 = Get-WorkspaceBytesSha256 -Bytes $manifestPreimage
+                if ((Get-FileHash -LiteralPath $manifestPreimagePath -Algorithm SHA256).Hash -cne $manifestPreimageSha256) { throw 'Workspace resume manifest preimage did not persist exactly.' }
+                $selectedProfileJournalPath = Join-Path $resumeEvidence ('selected-profile-' + (Get-SafeName 'resume-retained-task-workspace') + '.selected-profile.journal.json')
                 $journal = [pscustomobject][ordered]@{
-                    contractVersion = '1.0.0'; operation = 'resume'; phase = 'prepared'; operationId = $operationId
+                    contractVersion = '2.0.0'; operation = 'resume'; phase = 'prepared'; operationId = $operationId
                     workspaceId = $WorkspaceId; ownershipId = [string]$current.data.ownershipId; manifestPath = $current.path
-                    manifestPreimageSha256 = (Get-FileHash -LiteralPath $current.path -Algorithm SHA256).Hash
+                    manifestPreimagePath = $manifestPreimagePath; manifestPreimageSha256 = $manifestPreimageSha256
+                    profilePath = [string]$current.data.profilePath; selectedProfileJournalPath = $selectedProfileJournalPath
                     targetAccessId = $AccessId; targetProfile = [string]$current.data.profile; preparedUtc = [DateTime]::UtcNow.ToString('o')
                     selectedProfileTransaction = $null; rollback = $null; committedUtc = $null
                 }
@@ -996,6 +1103,8 @@ try {
                 $selection = $null
                 try {
                     $selection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$current.data.profile) -Operation 'resume-retained-task-workspace' -EvidenceRoot $resumeEvidence
+                    $journal.phase = 'selection-applied-uncommitted'; $journal.selectedProfileTransaction = $selection
+                    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     $priorAccessId = [string]$current.data.accessId
                     $createdNames = @($current.data.createdMods | ForEach-Object { [string]$_.name })
                     $protectedNames = if ($current.data.PSObject.Properties['protectedSharedModNames']) { @($current.data.protectedSharedModNames) } else { @($current.data.initialModNames) }
@@ -1008,6 +1117,8 @@ try {
                     $history = if ($current.data.PSObject.Properties['leaseHistory']) { @($current.data.leaseHistory) } else { @() }
                     $current.data | Add-Member -NotePropertyName leaseHistory -NotePropertyValue (@($history) + ,([pscustomobject][ordered]@{ accessId = $AccessId; priorAccessId = $priorAccessId; acquiredForWorkspaceUtc = [DateTime]::UtcNow.ToString('o'); disposition = 'resumed' })) -Force
                     $current.data | Add-Member -NotePropertyName selectedProfileTransaction -NotePropertyValue $selection -Force
+                    $journal.phase = 'manifest-write-uncommitted'
+                    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     Write-WorkspaceJsonAtomic -Path $current.path -Value $current.data
                     $journal.phase = 'committed'; $journal.committedUtc = [DateTime]::UtcNow.ToString('o'); $journal.selectedProfileTransaction = $selection
                     Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
@@ -1182,30 +1293,41 @@ try {
                 $operationId = [guid]::NewGuid().ToString('N')
                 $journalPath = Get-WorkspaceOperationJournalPath -Config $config -Id $WorkspaceId -Operation 'retire' -OperationId $operationId
                 $profileQuarantine = Join-Path (Split-Path -Parent $currentProfilePath) ('.codex-retired-' + $WorkspaceId + '-' + $operationId)
+                $releaseEvidence = Join-Path (Split-Path -Parent $current.path) ($WorkspaceId + '-retire-' + $operationId)
+                $selectedProfileJournalPath = Join-Path $releaseEvidence ('selected-profile-' + (Get-SafeName 'select-stable-before-workspace-retirement') + '.selected-profile.journal.json')
                 $modMoves = @()
                 foreach ($modPath in $currentCleanupMods) {
                     $modMoves += [pscustomobject][ordered]@{ source = $modPath; quarantine = (Join-Path (Split-Path -Parent $modPath) ('.codex-retired-' + (Split-Path -Leaf $modPath) + '-' + $operationId)); moved = $false }
                 }
                 if ((Test-Path -LiteralPath $profileQuarantine) -or @($modMoves | Where-Object { Test-Path -LiteralPath $_.quarantine }).Count -gt 0) { throw 'A retirement quarantine target already exists.' }
                 $manifestPreimage = [IO.File]::ReadAllBytes($current.path)
+                $manifestPreimagePath = Join-Path (Get-WorkspaceControlRoot -Config $config) ($WorkspaceId + '.retire.' + $operationId + '.manifest-preimage.bin')
+                Write-WorkspaceBytesAtomic -Path $manifestPreimagePath -Bytes $manifestPreimage
+                $manifestPreimageSha256 = Get-WorkspaceBytesSha256 -Bytes $manifestPreimage
+                if ((Get-FileHash -LiteralPath $manifestPreimagePath -Algorithm SHA256).Hash -cne $manifestPreimageSha256) { throw 'Workspace retirement manifest preimage did not persist exactly.' }
                 $journal = [pscustomobject][ordered]@{
-                    contractVersion = '1.0.0'; operation = 'retire'; phase = 'prepared'; operationId = $operationId
+                    contractVersion = '2.0.0'; operation = 'retire'; phase = 'prepared'; operationId = $operationId
                     workspaceId = $WorkspaceId; ownershipId = [string]$current.data.ownershipId; manifestPath = $current.path
-                    manifestPreimageSha256 = (Get-FileHash -LiteralPath $current.path -Algorithm SHA256).Hash
+                    manifestPreimagePath = $manifestPreimagePath; manifestPreimageSha256 = $manifestPreimageSha256
                     profilePath = $currentProfilePath; profileQuarantine = $profileQuarantine; modMoves = $modMoves
                     cleanupOwnedMods = [bool]$CleanupOwnedMods; preparedUtc = [DateTime]::UtcNow.ToString('o')
-                    selectedProfileTransaction = $null; rollback = $null; committedUtc = $null; cleanupPending = @()
+                    selectedProfileJournalPath = $selectedProfileJournalPath; selectedProfileTransaction = $null; rollback = $null; committedUtc = $null; cleanupPending = @()
                 }
                 Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                 $profileSelection = $null; $profileMoved = $false
                 try {
-                    $releaseEvidence = Join-Path (Split-Path -Parent $current.path) ($WorkspaceId + '-retire-' + $operationId)
                     $profileSelection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$current.data.sourceProfile) -Operation 'select-stable-before-workspace-retirement' -EvidenceRoot $releaseEvidence
+                    $journal.phase = 'selection-applied-uncommitted'; $journal.selectedProfileTransaction = $profileSelection
+                    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
+                    $journal.phase = 'profile-move-uncommitted'
+                    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     Move-Item -LiteralPath $currentProfilePath -Destination $profileQuarantine -ErrorAction Stop
                     $profileMoved = $true
+                    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     foreach ($move in $modMoves) {
                         Move-Item -LiteralPath ([string]$move.source) -Destination ([string]$move.quarantine) -ErrorAction Stop
                         $move.moved = $true
+                        Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     }
                     $current.data.status = 'retired'
                     $current.data | Add-Member -NotePropertyName retiredUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
@@ -1213,6 +1335,8 @@ try {
                     $current.data | Add-Member -NotePropertyName ownedModsRemoved -NotePropertyValue ([bool]$CleanupOwnedMods) -Force
                     $current.data | Add-Member -NotePropertyName selectedProfileRelease -NotePropertyValue $profileSelection -Force
                     $current.data | Add-Member -NotePropertyName retirementJournalPath -NotePropertyValue $journalPath -Force
+                    $journal.phase = 'manifest-write-uncommitted'
+                    Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     Write-WorkspaceJsonAtomic -Path $current.path -Value $current.data
                     $journal.phase = 'committed'; $journal.committedUtc = [DateTime]::UtcNow.ToString('o'); $journal.selectedProfileTransaction = $profileSelection
                     Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal

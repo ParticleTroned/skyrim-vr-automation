@@ -14,6 +14,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Serialize shader-cache swaps by canonical live target, recover interrupted
   operations from a target-owned journal, and use one deadline-, depth-, byte-,
   file-, and reparse-bounded inventory primitive across transactions and catalogs.
+- Give MO2 profile mutations a deterministic target-owned lock and recovery
+  journal, and recover interrupted workspace create, resume, and retire
+  transactions from durable manifest and selected-profile preimages before any
+  later command reads or changes workspace state.
 
 - Require every fresh MO2 task clone to inherit a hash- and
   profile-fingerprint-verified default world-entry save, make the doctor fail
