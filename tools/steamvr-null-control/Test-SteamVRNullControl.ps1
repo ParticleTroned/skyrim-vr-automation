@@ -14,6 +14,7 @@ if (-not $resolvedFixture.StartsWith($resolvedTemp, [StringComparison]::OrdinalI
 }
 $failures = [Collections.Generic.List[string]]::new()
 $passes = [Collections.Generic.List[string]]::new()
+$priorTransactionRoot = $env:CSX_STEAMVR_TRANSACTION_ROOT
 
 function Assert-Test([bool]$Condition, [string]$Name) {
     if ($Condition) { $passes.Add($Name) } else { $failures.Add($Name) }
@@ -28,6 +29,8 @@ if ($windowsPowerShell) {
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
     $settingsPath = Join-Path $fixture 'steamvr.vrsettings'
+    $transactionRoot = Join-Path $fixture 'target-control'
+    $env:CSX_STEAMVR_TRANSACTION_ROOT = $transactionRoot
     $profilePath = Join-Path $fixture 'null.json'
     $evidence = Join-Path $fixture 'evidence'
     $isolationEvidence = Join-Path $fixture 'evidence-isolation'
@@ -61,6 +64,17 @@ try {
 
     $inspectBefore = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
     Assert-Test ($inspectBefore.ok -and $inspectBefore.state -eq 'null-inactive') 'inspect identifies inactive null profile'
+    Assert-Test ((Test-Path -LiteralPath $inspectBefore.data.targetControl.directory -PathType Container) -and $inspectBefore.data.targetControl.key -match '^[0-9a-f]{64}$') 'canonical live targets map to a deterministic target-owned control directory'
+
+    $heldLock = [IO.File]::Open([string]$inspectBefore.data.targetControl.lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $contended = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -TransactionLockTimeoutMilliseconds 100 -Compact -NoExit | ConvertFrom-Json
+        Assert-Test (-not $contended.ok -and $contended.errors[0] -match 'target transaction lock') 'a second caller cannot inspect or mutate the same live targets while their bounded lock is held'
+    }
+    finally { $heldLock.Dispose() }
+
+    $sourceText = [IO.File]::ReadAllText($entry)
+    Assert-Test ($sourceText -notmatch '\.ReadToEnd\(' -and $sourceText -match 'LogTailMaxBytes') 'SteamVR readiness polling uses a bounded byte tail instead of whole-log reads'
 
     $stop = & $entry stop -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -Compact | ConvertFrom-Json
     Assert-Test ($stop.ok -and $stop.state -eq 'already-stopped') 'stop recognizes an already closed SteamVR state'
@@ -78,6 +92,13 @@ try {
     Assert-Test ($appliedJson['driver_codex_head_pose']['eyeHeightMeters'] -eq 1.68 -and $appliedJson['TrackingOverrides']['/devices/codex_head_pose/CSX-NULL-HMD-POSE-1'] -eq '/user/head') 'apply configures the synthetic head pose and semantic override'
     Assert-Test (Test-Path -LiteralPath (Join-Path $evidence 'steamvr-null-receipt.json')) 'apply writes hash receipt'
     $appliedText = [IO.File]::ReadAllText($settingsPath)
+
+    $secondCallerApply = & $entry apply -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -Compact -NoExit | ConvertFrom-Json
+    Assert-Test ($secondCallerApply.ok -and $secondCallerApply.state -eq 'already-applied' -and $secondCallerApply.data.evidenceDirectory -eq [IO.Path]::GetFullPath($evidence)) 'a second evidence directory cannot establish a false baseline over an active authoritative apply transaction'
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $isolationEvidence 'steamvr.vrsettings.before'))) 'already-applied ownership check creates no second backup'
+
+    $wrongEvidenceStart = & $entry start -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $wrongEvidenceStart.ok -and $wrongEvidenceStart.errors[0] -match 'owned by a different evidence directory') 'start refuses a caller-selected evidence directory that does not own the live transaction'
 
     $otherSettingsPath = Join-Path $fixture 'other-steamvr.vrsettings'
     [IO.File]::WriteAllText($otherSettingsPath, $originalText, [Text.UTF8Encoding]::new($false))
@@ -177,6 +198,8 @@ try {
     $failedRestore = & $entry restore -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $isolationEvidence -InternalTestFailurePoint restore-after-settings -Compact -NoExit | ConvertFrom-Json
     Assert-Test (-not $failedRestore.ok -and $failedRestore.errors[0] -match 'exact applied state was restored') 'two-file restore failure reports verified rollback to the applied state'
     Assert-Test ([IO.File]::ReadAllText($settingsPath) -ceq $appliedText -and [IO.File]::ReadAllText($openVrPathsPath) -ceq $isolatedText) 'two-file restore failure leaves neither target partially restored'
+    $postRollbackApply = & $entry apply -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $failureEvidence -Compact -NoExit | ConvertFrom-Json
+    Assert-Test ($postRollbackApply.ok -and $postRollbackApply.state -eq 'already-applied' -and $postRollbackApply.data.evidenceDirectory -eq [IO.Path]::GetFullPath($isolationEvidence)) 'a rolled-back restore retains authoritative ownership of the applied state'
 
     $drift = Get-Content -LiteralPath $openVrPathsPath -Raw | ConvertFrom-Json -AsHashtable
     $drift['unrelated_test_drift'] = $true
@@ -200,8 +223,46 @@ try {
     $failedApply = & $entry apply -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $failureEvidence -IsolateExternalDisplayRedirectors -InternalTestFailurePoint apply-after-openvr -Compact -NoExit | ConvertFrom-Json
     Assert-Test (-not $failedApply.ok -and $failedApply.errors[0] -match 'every exact backup was restored') 'two-file apply failure reports verified rollback to the original state'
     Assert-Test ([IO.File]::ReadAllText($settingsPath) -ceq $originalText -and [IO.File]::ReadAllText($openVrPathsPath) -ceq $openVrTextBeforeIsolation) 'two-file apply failure leaves neither target partially mutated'
+
+    $recoveryEvidenceA = Join-Path $fixture 'recovery-evidence-a'
+    $recoveryEvidenceB = Join-Path $fixture 'recovery-evidence-b'
+    New-Item -ItemType Directory -Path $recoveryEvidenceA, $recoveryEvidenceB | Out-Null
+    $recoveryBackup = Join-Path $recoveryEvidenceA 'steamvr.vrsettings.before'
+    [IO.File]::WriteAllText($recoveryBackup, $originalText, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($settingsPath, $appliedText, [Text.UTF8Encoding]::new($false))
+    $recoveryMirror = Join-Path $recoveryEvidenceA 'steamvr-null-apply.journal.json'
+    $unrelatedTarget = Join-Path $fixture 'unrelated-target.txt'
+    $unrelatedBackup = Join-Path $recoveryEvidenceA 'unrelated-target.before'
+    [IO.File]::WriteAllText($unrelatedTarget, 'live', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($unrelatedBackup, 'backup', [Text.UTF8Encoding]::new($false))
+    $tamperedJournal = [ordered]@{
+        contractVersion = '1.0.0'; operation = 'apply'; transactionId = [guid]::NewGuid().ToString('N'); phase = 'settings-applied-uncommitted'
+        settingsPath = [IO.Path]::GetFullPath($settingsPath); openVRPathsPath = $null
+        evidenceDirectory = [IO.Path]::GetFullPath($recoveryEvidenceA); evidenceJournalPath = [IO.Path]::GetFullPath($recoveryMirror)
+        rollbackTargets = @([ordered]@{ name = 'unrelated'; path = [IO.Path]::GetFullPath($unrelatedTarget); backupPath = [IO.Path]::GetFullPath($unrelatedBackup); expectedHash = (Get-FileHash -LiteralPath $unrelatedBackup -Algorithm SHA256).Hash })
+        preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+    }
+    $tamperedJournal | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath ([string]$inspectBefore.data.targetControl.journalPath) -Encoding utf8
+    $tamperedRecovery = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $recoveryEvidenceB -Compact -NoExit | ConvertFrom-Json
+    Assert-Test (-not $tamperedRecovery.ok -and $tamperedRecovery.errors[0] -match 'out-of-contract rollback target' -and [IO.File]::ReadAllText($unrelatedTarget) -ceq 'live') 'authoritative recovery rejects a journal that names a live target outside its canonical lock domain'
+
+    $pending = [ordered]@{
+        contractVersion = '1.0.0'; operation = 'apply'; transactionId = [guid]::NewGuid().ToString('N'); phase = 'settings-applied-uncommitted'
+        settingsPath = [IO.Path]::GetFullPath($settingsPath); openVRPathsPath = $null
+        evidenceDirectory = [IO.Path]::GetFullPath($recoveryEvidenceA); evidenceJournalPath = [IO.Path]::GetFullPath($recoveryMirror)
+        rollbackTargets = @([ordered]@{ name = 'steamvr-settings'; path = [IO.Path]::GetFullPath($settingsPath); backupPath = [IO.Path]::GetFullPath($recoveryBackup); expectedHash = (Get-FileHash -LiteralPath $recoveryBackup -Algorithm SHA256).Hash })
+        preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+    }
+    $pending | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath ([string]$inspectBefore.data.targetControl.journalPath) -Encoding utf8
+    $pending | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $recoveryMirror -Encoding utf8
+    $crossEvidenceRecovery = & $entry inspect -SettingsPath $settingsPath -NullProfilePath $profilePath -SteamVRRoot $steamVrRoot -ServerLogPath $serverLogPath -OpenVRPathsPath $openVrPathsPath -EvidenceDirectory $recoveryEvidenceB -Compact | ConvertFrom-Json
+    $recoveredAuthority = Get-Content -LiteralPath ([string]$inspectBefore.data.targetControl.journalPath) -Raw | ConvertFrom-Json
+    $recoveredMirror = Get-Content -LiteralPath $recoveryMirror -Raw | ConvertFrom-Json
+    Assert-Test ($crossEvidenceRecovery.ok -and $crossEvidenceRecovery.data.recoveredTransaction.phase -eq 'recovered' -and [IO.File]::ReadAllText($settingsPath) -ceq $originalText) 'a caller with a different evidence directory recovers the authoritative pending target transaction before inspection'
+    Assert-Test ($recoveredAuthority.phase -eq 'recovered' -and $recoveredMirror.phase -eq 'recovered') 'authoritative recovery is mirrored back to the secondary evidence journal'
 }
 finally {
+    $env:CSX_STEAMVR_TRANSACTION_ROOT = $priorTransactionRoot
     if (Test-Path -LiteralPath $resolvedFixture) { Remove-Item -LiteralPath $resolvedFixture -Recurse -Force }
 }
 
