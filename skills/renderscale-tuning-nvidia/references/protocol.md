@@ -170,10 +170,17 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    native API render-scale state but must still prove fixed-resolution vendor
    evaluation. Its public requested/effective/stable profiles must all equal
    the exact target. Its render-scale controller resource key remains inactive
-   with backend `none`; the waiter separately proves the target method, live
-   presentation upscaling, the exact foveation fixture, and a coherent
-   two-eye native presentation produced only after same-frame vendor dispatch.
-   A missing or mismatched actual vendor provider is a failure.
+   with backend `none`; that resource key is never vendor-execution evidence.
+   The waiter must instead return `nativeVendorExecution.required: true` and
+   `sameFrameBothEyesValid: true`, with each eye's `presentationFrame` equal to
+   its `dispatchFrame`. Both eyes must report the same non-`none`
+   `actualBackend`: exactly `dlss` for DLAA, or `fsr_host`/`fsr_runtime` for
+   FSR Native AA. FSR Native AA must additionally report one shared nonzero
+   `dispatchSerial` for its combined-stereo dispatch. Preserve
+   `actualRuntimeFallbackObserved`; do not derive it or `actualBackend` from
+   the render-scale resource key. The exact foveation fixture and coherent
+   two-eye native presentation remain required. A missing or mismatched native
+   vendor receipt is a failure, not `INCONCLUSIVE`.
    The direct tool transport must outlive the current server waiter budget by
    five seconds without changing the shared 30-second measurement deadline. A
    successful waiter still returns immediately and never waits out that
@@ -270,10 +277,15 @@ provider generation and resource ownership; and strict completion. For
 `vendor_native` DLAA and FSR Native AA, require exact public
 requested/effective/stable profiles plus fixed-resolution vendor execution at
 native dimensions. The render-scale controller resource key is inactive with
-backend `none`; its logical method must still be exact, and the same-frame
-vendor-backed native stereo proof is authoritative for execution. For scaled
-vendor state, also require lifecycle and render-scale fidelity proof. A
-missing or mismatched actual vendor provider is a failure. Record first
+backend `none`; its logical method must still be exact, and
+`qualification_wait.nativeVendorExecution` is authoritative for same-frame,
+both-eye vendor execution. Take `actualBackend`, the per-eye dispatch frames
+and serials, and `actualRuntimeFallbackObserved` directly from that receipt.
+Never substitute the render-scale resource backend. DLAA requires `dlss`; FSR
+Native AA requires `fsr_host` or `fsr_runtime` and one shared nonzero dispatch
+serial. For scaled vendor state, also require lifecycle and render-scale
+fidelity proof. A missing or mismatched native vendor receipt is a failure.
+Record first
 physical-profile match, first coherent stereo presentation,
 `presentationStable`, `cleanupDrained`, and strict completion separately.
 Cleanup may follow presentation and must not replace its timing.

@@ -196,10 +196,19 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    AA target has native API render-scale state but must still prove
    fixed-resolution FSR evaluation. Its public requested/effective/stable
    profiles must all equal the exact target. Its render-scale controller
-   resource key remains inactive with backend `none`; the waiter separately
-   proves the target method, live presentation upscaling, exact foveation, and
-   a coherent two-eye native presentation after same-frame FSR dispatch.
-   A missing or mismatched actual FSR provider is a failure.
+   resource key remains inactive with backend `none`; that resource key is
+   never FSR-execution evidence. The waiter must instead return
+   `nativeVendorExecution.required: true` and
+   `sameFrameBothEyesValid: true`, with each eye's `presentationFrame` equal to
+   its `dispatchFrame` and one shared nonzero `dispatchSerial` for the
+   combined-stereo FSR dispatch. Both eyes and `actualBackend` must identify
+   the same provider accepted by the active lane: `fsr4_runtime` for explicit
+   FSR4, `fsr_host`/`fsr_runtime` for explicit FSR3, or
+   `fsr_host`/`fsr_runtime` with `actualRuntimeFallbackObserved: true` for the
+   FSR4-to-FSR3 fallback lane. Preserve the receipt values; do not derive them
+   from the render-scale resource key. Exact foveation and coherent two-eye
+   native presentation remain required. A missing or mismatched native FSR
+   receipt is a failure, not `INCONCLUSIVE`.
    The direct tool transport must outlive the current server waiter budget by
    five seconds without changing the shared 30-second measurement deadline. A
    successful waiter still returns immediately and never waits out that
@@ -296,9 +305,15 @@ generation and resource ownership; and strict completion. For `vendor_native`
 FSR Native AA, require exact public requested/effective/stable profiles and
 fixed-resolution FSR execution at native dimensions. The render-scale
 controller resource key is inactive with backend `none`; its logical method
-must still be FSR, and the same-frame FSR-backed native stereo proof is
-authoritative for execution. A missing or mismatched actual FSR provider is a
-failure. Record first physical match, first coherent stereo
+must still be FSR, and `qualification_wait.nativeVendorExecution` is
+authoritative for same-frame, both-eye FSR execution. Take `actualBackend`,
+the per-eye dispatch frames and shared serial, and
+`actualRuntimeFallbackObserved` directly from that receipt. Never substitute
+the render-scale resource backend. Apply the active lane's provider rules:
+`fsr4_runtime` for explicit FSR4, `fsr_host`/`fsr_runtime` for explicit FSR3,
+and `fsr_host`/`fsr_runtime` plus observed runtime fallback for the fallback
+lane. A missing or mismatched native FSR receipt is a failure. Record first
+physical match, first coherent stereo
 presentation, `presentationStable`, `cleanupDrained`, and strict completion
 separately.
 
