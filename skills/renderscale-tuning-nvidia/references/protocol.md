@@ -86,27 +86,32 @@ Clone the effective profile through its
 (`async: false`), fail-closed mutation scenario: start the short baseline-only
 stress session, `qualification_begin`, then
 `qualification_dispatch` with `startPerformanceTelemetry: false`, then the
-public API `apply` as the immediately following step. Bind the apply to the
+public API `apply` as the immediately following step, then the strict DLSS
+Hoshipa `qualification_wait` as the final step. Use the shared contract's exact
+five labels and wrapper paths. Bind the apply to the
 snapshot's exact `stateRevision`, exact Build ID, unique baseline client and
 command IDs, `purpose: direct`, and `persistence: runtime_only`.
 
-Without returning for model deliberation, call the strict DLSS Hoshipa waiter
-once in the same orchestrated action turn. Pass the full dispatch-relative
-`timeoutMs: 30000`; never calculate or pass a client-side remaining budget. It
-must return upon the first successful receipt. Do not add an independent
-operation wait. Require
+The final waiter step uses the same owner and transition, the full
+dispatch-relative `timeoutMs: 30000`, exact target and foveation fixture, and
+`milestone: strict`; never calculate or pass a client-side remaining budget.
+Do not add an independent operation wait. After the complete scenario returns,
+require
 coherent DLSS evaluation in both eyes, correct scaled dimensions, exact
 generation/resource ownership, clean mutation and lifecycle state, and no
 terminal failure. Require `milestoneTimings` and `replacementTimeline` in this
 terminal receipt as directed by the shared contract; they are output evidence,
 not tool-description fields.
 
-Use the shared contract's one synchronous handoff scenario to stop the
+Only when that labeled waiter subreceipt is strictly satisfied, use the shared
+contract's one synchronous handoff scenario to stop the
 baseline-only stress owner and arm the fresh measured stress, texture lifetime,
-load presentation, and profiler owners in its short ownership sequence. Reuse
-the CPU/GPU reset receipts from measurement admission, require both captures
-inactive, and do not issue another CPU/GPU reset during pass 1. Retain each
-stateful receipt;
+load presentation, and profiler owners in its short ownership sequence.
+An unsatisfied or missing waiter subreceipt bypasses handoff and permits only
+the baseline stress owner's guarded stop.
+Reuse the CPU/GPU reset receipts from measurement admission, require both
+captures inactive, and do not issue another CPU/GPU reset during pass 1.
+Retain each stateful receipt;
 provider lifecycle, resource publication, preparation, fidelity, stereo,
 retry, failure, memory, and queue remain status evidence. In the first measured
 mutation scenario, start the profiler immediately before dispatch; dispatch
@@ -173,7 +178,9 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    argument before submitting one synchronous (`async: false`) server scenario with
    `continueOnError: false`. Its consecutive mutation steps are
    `qualification_begin`, the transition-1 profiler start when applicable,
-   `qualification_dispatch`, and `communityshaders.upscaling_api` `apply`.
+   `qualification_dispatch`, `communityshaders.upscaling_api` `apply`, and the
+   target-correlated `qualification_wait` as the final step. Label the last two
+   steps `profile-apply` and `qualification-wait`.
    No wait, snapshot, client round trip, menu action, or other tool may appear
    between dispatch and apply. Scenario steps cannot interpolate earlier
    results, so no snapshot-dependent value may be deferred to scenario
@@ -190,8 +197,8 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    non-retryable admission failure is a control failure: cancel the owner only
    if needed, preserve receipts, and stop further mutations. Never retry,
    recover, or substitute a matrix row.
-5. Immediately after the mutation scenario returns, call `qualification_wait`
-   in the same orchestrated action turn. For vendor destinations, pass the full
+5. The final scenario step is `qualification_wait`. For vendor destinations,
+   pass the full
    dispatch-relative `timeoutMs: 30000`; never calculate or pass a client-side
    remaining budget. This is the one shared 30,000 ms monotonic deadline from
    dispatch, not a second window. It must return upon its first successful
@@ -221,18 +228,17 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    successful waiter still returns immediately and never waits out that
    envelope.
 
-   If the waiter response is lost after dispatch, apply the shared contract's
-   owner-correlated recovery rule immediately. Reissue the same waiter at most
-   once only when status proves the exact owner remains in `phase: dispatched`;
-   never reapply the profile. If it is already `waiting`, recover matching
-   terminal `lastEvidence` without replaying the waiter. Require `active: false`
-   and matching owner/transition IDs before trace stop or row classification.
+   If the mutation-and-wait scenario response is lost, apply the shared
+   contract's owner-correlated recovery rule immediately. Never replay the
+   scenario, apply, or waiter. Recover matching terminal `lastEvidence` from
+   the already-running server scenario. Require `active: false` and matching
+   owner/transition IDs before trace stop or row classification.
    This recovery rule applies to both vendor and native qualification waits. If
    no terminal receipt can be recovered within the original deadline plus its
    five-second receipt bound, preserve all task-owned session IDs, stop future
    calls, and ask the user.
-6. For None and TAA, use the same direct `qualification_wait` in Dragonsreach
-   exactly once with the full dispatch-relative `timeoutMs: 30000`. Pass
+6. For None and TAA, use the same final scenario `qualification_wait` in
+   Dragonsreach with the full dispatch-relative `timeoutMs: 30000`. Pass
    `milestone: strict` and the exact native target:
    `method: none` or
    `method: taa`, `qualityMode: 0`, and `renderScaleMode: false`; omit
@@ -260,8 +266,9 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
 
 For each transition, persist the exact decoded response bodies in one local
 batch under `raw/transitions/transition-NN/`: settle scenario, pre-snapshot,
-mutation scenario, terminal `qualification_wait` (or recovered
-`qualification_status.lastEvidence`), operation, API events, final snapshot,
+mutation-and-wait scenario (or recovered
+`qualification_status.lastEvidence` when that scenario response is lost),
+operation, API events, final snapshot,
 render-scale status, preparation trace, and any DLSS trace lifecycle receipts.
 Add and rehash their `receipt-index.json` entries before the next apply. Never
 substitute a transcript reference or MCP/store key for one of these files.

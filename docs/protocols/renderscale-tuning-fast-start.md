@@ -130,8 +130,10 @@ the same state, scene, menu, render-scale, or API reads merely to reconfirm
 them.
 
 Persist the positioning terminal response and the post-position reset scenario
-under `raw/startup`. Persist the baseline begin/dispatch/apply
-scenario, strict waiter, and owner-handoff responses under `raw/baseline`.
+under `raw/startup`. Persist the complete baseline mutation-and-wait scenario
+and, only after strict success, its owner-handoff response under `raw/baseline`.
+The labeled apply and waiter subreceipts remain inside the exact scenario body;
+do not manufacture separate direct-call receipts for them.
 Index and rehash each batch before its next mutation. The evidence bundle is
 invalid if these response bodies exist only in the transcript.
 
@@ -162,37 +164,38 @@ Reuse the post-position public snapshot and its exact `stateRevision` when it
 is complete, has no active operation, and still matches the bound Build ID.
 Admission resets do not justify another snapshot.
 
-Start the baseline with one synchronous fail-closed scenario containing the
-baseline-only stress start, `qualification_begin`, `qualification_dispatch`
-with `startPerformanceTelemetry: false`, and the immediately following public
-API `apply`. Without returning for model deliberation, call the strict
-target-correlated `qualification_wait` once in the same orchestrated action
-turn. Pass the full dispatch-relative `timeoutMs: 30000`; DevBench measures it
-from `qualification_dispatch`. Never calculate or pass a client-side remaining
-timeout. The waiter must return as soon as strict coherence succeeds; do not
-add an operation poll, receipt sleep, progress commentary, or second 30-second
-window.
+Start the baseline with one synchronous fail-closed scenario containing five
+labeled tool steps in this exact order: `baseline-stress-start`,
+`qualification-begin`, `qualification-dispatch`, `profile-apply`, and
+`qualification-wait`. The apply immediately follows dispatch, and the strict
+target-correlated waiter immediately follows apply inside the same server-owned
+scenario. Pass the full dispatch-relative `timeoutMs: 30000`; DevBench measures
+it from `qualification_dispatch`. Never calculate or pass a client-side
+remaining timeout. Do not inspect, validate, persist, or comment on the scenario
+response until the server has executed the waiter and returned the complete
+five-step transcript.
 
-A client-side serialization or receipt-delivery error is not a terminal
-qualification result. Before writing evidence, reporting feedback, cancelling,
-cleaning up, or pausing for commentary, read `qualification_status` once with
-the exact `expectedBuildId`, then validate its returned ownership pair:
+After the scenario returns, read only its fixed wrapper shape. Require
+top-level `ok: true`, `aborted: false`, and `stepsRun: 5`. The apply receipt is
+`results[]` entry `label: profile-apply`, under `result.apply`; its disposition
+is `result.apply.disposition.name`. The waiter receipt is the unique entry
+`label: qualification-wait`, under `result`, with
+`result.action: qualification_wait`. Never search another wrapper location or
+run another waiter because a client-side field lookup failed.
 
-- If that exact owner is active with `phase: dispatched`, no waiter is active.
-  Reissue the identical `qualification_wait` once immediately. Keep the same
-  owner, transition, target, foveation, milestone, and full `timeoutMs: 30000`;
-  the server's dispatch-relative deadline is unchanged. If this reissue returns
-  `qualification_wait_active`, follow the `waiting` branch below.
-- If that exact owner is active with `phase: waiting`, do not replay the
-  waiter. Read only `qualification_status` through the original deadline, then
-  allow at most five additional seconds to retrieve its already-terminal
-  matching `lastEvidence`.
-- If the owner is inactive and matching `lastEvidence` is present, use that as
-  the terminal waiter receipt.
-
-Any different owner, transition, Build ID, or missing terminal evidence after
-that bound stops future mutations and asks the user. Never reapply the profile
-or create a second measurement window. Record the client error after the
+If the containing scenario response is lost or cannot be decoded, do not replay
+the scenario, apply, or waiter. Before writing evidence, reporting feedback,
+cancelling, cleaning up, or pausing for commentary, read
+`qualification_status` once with the exact `expectedBuildId`, then validate its
+returned ownership pair. For the exact active owner in `dispatched` or
+`waiting`, allow the already-running server scenario to reach the original
+deadline and recover matching terminal `lastEvidence`; do not call
+`qualification_wait` independently. If the owner is inactive and matching
+`lastEvidence` is present, use it as the terminal waiter receipt. Allow at most
+five additional seconds only to retrieve already-terminal evidence. Any
+different owner, transition, Build ID, or missing terminal evidence after that
+bound stops future mutations and asks the user. Never reapply the profile or
+create a second measurement window. Record the client error only after the
 qualification owner is terminal. This owner-correlated recovery rule applies
 to every baseline and measured waiter in both vendor assays.
 
@@ -212,5 +215,9 @@ does not start a profiler capture; the lane protocol starts that capture
 immediately before transition 1 dispatch. Retain every owner receipt. CPU and
 GPU performance captures must remain inactive: transition 1's
 `qualification_dispatch` is their sole reset/start and timing origin. A failed
-baseline waiter starts no measured owner; stop only the baseline stress session
-with its ownership guard and follow the lane's terminal failure rules.
+or unsatisfied baseline waiter, a missing waiter subreceipt, or an incomplete
+scenario must never invoke this handoff scenario because it contains measured
+owner start actions. The handoff scenario is never a cleanup path. Stop only
+the baseline stress session with one
+ownership-guarded `stop` call, start no measured owner, and follow the lane's
+terminal failure rules.
