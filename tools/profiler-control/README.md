@@ -11,7 +11,12 @@ Only one capture may own a given runtime metadata target at once. The collector
 uses a deterministic, bounded lease and verifies the complete DevBench process,
 start time, build, and deployed artifact identity on every profiler response.
 If that identity changes, it refuses to mix samples or mutate the replacement
-runtime. Each raw sample carries the verified identity fingerprint.
+runtime. Each raw sample carries the verified identity fingerprint. The lease's
+deterministic control directory also owns a write-ahead transaction journal. A
+later capture discovers a nonterminal predecessor before recording its own
+pre-state: it restores the exact profiler state when the same runtime survives,
+or terminally records that the old process was replaced without toggling the
+new process.
 
 ```powershell
 .\Measure-CSXProfiler.ps1 `

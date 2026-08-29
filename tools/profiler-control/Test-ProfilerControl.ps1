@@ -160,6 +160,15 @@ $listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIF
     $measurementReceipt = Get-Content -LiteralPath $measurement.receiptPath -Raw | ConvertFrom-Json
     Assert-Test (@($measuredRecords.runtimeIdentityFingerprint | Sort-Object -Unique).Count -eq 1 -and @($measurementReceipt.runtimeIdentityObservations).Count -ge 7) 'measurement binds every accepted response and sample to one verified runtime identity'
 
+    $recoveryMirror = Join-Path $resolvedTestRoot 'interrupted-profiler.journal.json'
+    $authoritativeJournal = Join-Path $env:CSX_PROFILER_CONTROL_ROOT 'transaction.journal.json'
+    [ordered]@{contractVersion='1.0.0';operation='measure-profiler';transactionId='interrupted-fixture';phase='sampling';runtimePath=$runtimePath;runtimeIdentityFingerprint=$measurement.summary.runtimeIdentityFingerprint;priorEnabled=$false;evidenceMirrorPath=$recoveryMirror;preparedUtc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $authoritativeJournal -Encoding utf8
+    [IO.File]::WriteAllText($statePath, '{"enabled":true,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
+    $recoveredMeasurement = & $measure -Label restart-recovery -EvidenceDirectory (Join-Path $resolvedTestRoot 'recovery') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | ConvertFrom-Json
+    $recoveredPriorJournal = Get-Content -LiteralPath $recoveryMirror -Raw | ConvertFrom-Json
+    $recoveredFinalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Assert-Test ($recoveredMeasurement.ok -and $recoveredPriorJournal.phase -eq 'recovered-preimage' -and $recoveredPriorJournal.recovery.stateRestored -and -not $recoveredFinalState.enabled) 'next capture discovers a dead capture journal and restores the same runtime exact prior state'
+
     [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
     $env:CSX_PROFILER_TEST_DRIFT_AT_CALL = '3'
     $driftError = $null

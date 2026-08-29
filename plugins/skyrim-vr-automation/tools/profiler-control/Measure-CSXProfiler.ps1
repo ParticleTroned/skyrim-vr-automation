@@ -204,16 +204,78 @@ function Get-ProfilerEnabled($Status) {
     throw 'Profiler status did not report its current enabled state; mutation is not authorized without a restorable preimage.'
 }
 
+function Write-ProfilerTransactionJournal([Collections.IDictionary]$Journal) {
+    Write-JsonAtomic -Path $authoritativeJournalPath -Value $Journal
+    if ($Journal.Contains('evidenceMirrorPath') -and -not [string]::IsNullOrWhiteSpace([string]$Journal.evidenceMirrorPath)) {
+        Write-JsonAtomic -Path ([string]$Journal.evidenceMirrorPath) -Value $Journal
+    }
+}
+
+function Resolve-PendingProfilerTransaction {
+    if (-not (Test-Path -LiteralPath $authoritativeJournalPath -PathType Leaf)) { return $null }
+    $pending = Get-Content -LiteralPath $authoritativeJournalPath -Raw | ConvertFrom-Json -AsHashtable -Depth 80
+    if ([string]$pending.phase -in @('completed', 'rolled-back', 'recovered-preimage', 'recovered-runtime-replaced', 'aborted-before-mutation')) { return $null }
+    if (-not $pending.Contains('runtimePath') -or -not [string]::Equals([IO.Path]::GetFullPath([string]$pending.runtimePath), $RuntimePath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Profiler recovery journal targets an unexpected runtime metadata file: $authoritativeJournalPath"
+    }
+    if ($null -eq $pending.priorEnabled) {
+        $pending.phase = 'aborted-before-mutation'
+        $pending.recoveredUtc = [DateTime]::UtcNow.ToString('o')
+        Write-ProfilerTransactionJournal -Journal $pending
+        return $pending
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$pending.runtimeIdentityFingerprint)) {
+        throw "Profiler recovery cannot identify the runtime whose state may have changed: $authoritativeJournalPath"
+    }
+
+    # Observe first with no inherited expectation. A replacement process owns a distinct
+    # in-memory profiler state and must never be toggled to satisfy the dead process.
+    $script:expectedRuntimeIdentity = $null
+    $script:expectedRuntimeIdentityFingerprint = $null
+    $envelope = Invoke-ProfilerAction 'status' -ForRestore
+    $observedFingerprint = [string]$envelope.runtimeIdentityFingerprint
+    if ($observedFingerprint -cne [string]$pending.runtimeIdentityFingerprint) {
+        $pending.phase = 'recovered-runtime-replaced'
+        $pending.recoveredUtc = [DateTime]::UtcNow.ToString('o')
+        $pending.recovery = [ordered]@{ mutatedReplacement = $false; observedRuntimeIdentityFingerprint = $observedFingerprint }
+        Write-ProfilerTransactionJournal -Journal $pending
+        return $pending
+    }
+
+    $status = Get-ProfilerStatus $envelope
+    $enabled = Get-ProfilerEnabled $status
+    if ($enabled -ne [bool]$pending.priorEnabled) {
+        $null = Invoke-ProfilerAction $(if ([bool]$pending.priorEnabled) { 'enable' } else { 'disable' }) -ForRestore
+        $status = Get-ProfilerStatus (Invoke-ProfilerAction 'status' -ForRestore)
+        $enabled = Get-ProfilerEnabled $status
+    }
+    if ($enabled -ne [bool]$pending.priorEnabled) { throw 'Profiler restart recovery could not restore the exact prior enable state.' }
+    $pending.phase = 'recovered-preimage'
+    $pending.recoveredUtc = [DateTime]::UtcNow.ToString('o')
+    $pending.recovery = [ordered]@{ stateRestored = $true; finalEnabled = $enabled; runtimeIdentityFingerprint = $observedFingerprint }
+    Write-ProfilerTransactionJournal -Journal $pending
+    return $pending
+}
+
 $records = [Collections.Generic.List[object]]::new()
 $runtimeIdentity = $null
 $captureFailure = $null
 $startedUtc = [DateTime]::UtcNow
-$lease = Acquire-ProfilerLease -ControlRoot (Get-ProfilerControlRoot -CanonicalRuntimePath $RuntimePath) -TimeoutSeconds $LeaseTimeoutSeconds
+$controlRoot = Get-ProfilerControlRoot -CanonicalRuntimePath $RuntimePath
+$authoritativeJournalPath = Join-Path $controlRoot 'transaction.journal.json'
+$lease = Acquire-ProfilerLease -ControlRoot $controlRoot -TimeoutSeconds $LeaseTimeoutSeconds
+$transactionJournal = $null
 try {
     $receipt.leasePath = $lease.path
     $receipt.leaseAcquiredUtc = $lease.acquiredUtc
     $receipt.state = 'leased'
+    $receipt.authoritativeJournalPath = $authoritativeJournalPath
     Write-JsonAtomic $receiptPath $receipt
+    $recoveredTransaction = Resolve-PendingProfilerTransaction
+    if ($recoveredTransaction) {
+        $receipt.recoveredTransaction = [ordered]@{ transactionId = [string]$recoveredTransaction.transactionId; phase = [string]$recoveredTransaction.phase; recoveredUtc = [string]$recoveredTransaction.recoveredUtc }
+        Write-JsonAtomic $receiptPath $receipt
+    }
     $initialEnvelope = Invoke-ProfilerAction 'status'
     $initialStatus = Get-ProfilerStatus $initialEnvelope
     $runtimeIdentity = $initialEnvelope.runtimeIdentity
@@ -226,8 +288,21 @@ try {
     $receipt.treatmentFingerprint = Get-CanonicalHash $context.treatment
     $receipt.state = 'prior-state-recorded'
     Write-JsonAtomic $receiptPath $receipt
-    if (-not $priorEnabled) { $null = Invoke-ProfilerAction 'enable' }
+    $transactionJournal = [ordered]@{
+        contractVersion = '1.0.0'; operation = 'measure-profiler'; transactionId = $transactionId; phase = 'prior-state-recorded'
+        runtimePath = $RuntimePath; runtimeIdentityFingerprint = $expectedRuntimeIdentityFingerprint; priorEnabled = $priorEnabled
+        evidenceMirrorPath = (Join-Path $runDirectory 'transaction.journal.json'); receiptPath = $receiptPath
+        preparedUtc = $receipt.preparedUtc; deadlineUtc = $operationDeadlineUtc.ToString('o'); recovery = $null
+    }
+    Write-ProfilerTransactionJournal -Journal $transactionJournal
+    if (-not $priorEnabled) {
+        $transactionJournal.phase = 'enable-dispatch-uncommitted'
+        Write-ProfilerTransactionJournal -Journal $transactionJournal
+        $null = Invoke-ProfilerAction 'enable'
+    }
     $receipt.state = 'sampling'
+    $transactionJournal.phase = 'sampling'
+    Write-ProfilerTransactionJournal -Journal $transactionJournal
     Write-JsonAtomic $receiptPath $receipt
 
     $lastFrame = [long]-1
@@ -276,6 +351,10 @@ finally {
     $restoreErrors = [Collections.Generic.List[string]]::new()
     if ($null -ne $receipt.priorEnabled) {
         try {
+            if ($transactionJournal) {
+                $transactionJournal.phase = 'restore-uncommitted'
+                Write-ProfilerTransactionJournal -Journal $transactionJournal
+            }
             $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status' -ForRestore)
             $finalEnabled = Get-ProfilerEnabled $finalStatus
             if ($finalEnabled -ne [bool]$receipt.priorEnabled) {
@@ -291,6 +370,14 @@ finally {
     }
     $receipt.restoreErrors = @($restoreErrors)
     $receipt.state = if ($restoreErrors.Count -gt 0) { 'recovery-required' } elseif ($captureFailure) { 'rolled-back' } else { 'completed' }
+    if ($transactionJournal) {
+        $transactionJournal.phase = [string]$receipt.state
+        $transactionJournal.completedUtc = [DateTime]::UtcNow.ToString('o')
+        $transactionJournal.finalEnabled = $receipt.finalEnabled
+        $transactionJournal.stateRestored = $receipt.stateRestored
+        $transactionJournal.restoreErrors = @($restoreErrors)
+        Write-ProfilerTransactionJournal -Journal $transactionJournal
+    }
     $receipt.completedUtc = [DateTime]::UtcNow.ToString('o')
     $receipt.leaseReleasedUtc = [DateTime]::UtcNow.ToString('o')
     if ($lease -and $lease.stream) { $lease.stream.Dispose() }
