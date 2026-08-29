@@ -14,16 +14,24 @@ the structured receipt from the action that owns it. Do not inspect plugin
 cache paths, manifests, marketplace files, or the bundled controller during a
 live run. There is no fallback transport and no lane switching.
 
-Before the first live request, create one unique evidence root named
+The first action turn after reading this contract must start evidence
+initialization and the five admission reads below concurrently. In that one
+orchestrated turn, create a unique evidence root named
 `.tmp/renderscale-tuning-<vendor>-<UTC>-evidence` with `raw/startup`,
-`raw/baseline`, `raw/transitions`, and `raw/finalization` children. Create
-`receipt-index.json` there. Each direct MCP response must be written as its
-exact decoded JSON response body before the next mutation; request identity,
-tool/action, lane, transition, relative path, byte length, and SHA-256 belong
-in the index. Transcript references and MCP/store keys are supplemental only
-and are never durable evidence paths. A receipt that cannot be written and
-rehash-verified stops future mutations; preserve the write failure and perform
-only ownership-guarded cleanup that is already safe.
+`raw/baseline`, `raw/transitions`, and `raw/finalization` children, create
+`receipt-index.json`, and dispatch the parallel read-only batch. The local
+initializer and the reads are independent and do not mutate game state. Do not
+run the initializer in an earlier turn, announce that the evidence bundle or
+direct lane is ready, or return for model deliberation before dispatching the
+reads.
+
+Each direct MCP response must be written as its exact decoded JSON response
+body before the next mutation; request identity, tool/action, lane, transition,
+relative path, byte length, and SHA-256 belong in the index. Transcript
+references and MCP/store keys are supplemental only and are never durable
+evidence paths. If initialization, writing, or rehash verification fails, stop
+before `prepare_coc`; preserve the failure. A receipt that fails after assay
+ownership exists permits only ownership-guarded cleanup that is already safe.
 
 Start `startupReadElapsedMs` immediately before dispatching the parallel
 read-only batch and stop it as soon as the final response returns. A result
@@ -31,11 +39,13 @@ over 10,000 ms is the preserved `slow_startup_reads` efficiency anomaly, not
 an admission failure when every required read succeeded and its identity and
 state are coherent. A successful batch never waits out a fixed window.
 
-After the startup receipts pass and are rehash-verified, attempt to start a
-fresh monotonic `positioningDispatchElapsedMs` measurement immediately before
-`prepare_coc`. Its 30,000 ms value is an efficiency target, not an admission
-gate. Record `slow_positioning_dispatch` when an accepted scenario exceeds the
-target. If the timer was not started, record
+After the startup receipts pass and are rehash-verified, continue directly to
+`prepare_coc` without progress commentary, a schema refresh, or another model
+pause. Attempt to start a fresh monotonic `positioningDispatchElapsedMs`
+measurement immediately before `prepare_coc`. Its 30,000 ms value is an
+efficiency target, not an admission gate. Record `slow_positioning_dispatch`
+when an accepted scenario exceeds the target. If the timer was not started,
+record
 `positioning_dispatch_timer_not_started`, store the elapsed value as `null`,
 and dispatch immediately; never stop or delay a valid assay solely because
 this client-side startup metric is unavailable. Only failure to obtain an
@@ -69,16 +79,19 @@ Before positioning, use only these request rounds:
    retry only the failed read once immediately. The retry remains part of
    `startupReadElapsedMs`; it does not borrow from the fresh positioning
    budget. No fixed sleep or availability waiter is permitted.
-2. Call `communityshaders.menu prepare_coc` exactly once and alone. It is the
-   first stateful call. Require the runtime-only FOV/TAA `0.3/0.3/0.7`
+2. Call `communityshaders.menu prepare_coc` exactly once and alone as a
+   request. It is the first stateful call, but it must not occupy a separate
+   model/action turn from the immediately following positioning submission.
+   Require the runtime-only FOV/TAA `0.3/0.3/0.7`
    fixture, debug logging, and `persisted: false`. Compare each of
    `after.foveation.foveatedCenterArea`, `peripheryTAACenterArea`, and
    `peripheryTAAOuterScale` numerically with absolute tolerance `0.000001`;
    ordinary binary32 serialization drift within that tolerance is valid.
    Require all booleans, readiness, logging, and persistence fields exactly.
-   Validate the already-decoded response and rehash its one durable write; do
-   not call another tool, reread the file, or pause for a second fixture check
-   before the positioning scenario. It must not change DLSS, FSR, render
+   Validate the already-decoded response and rehash its one durable write in
+   the same orchestrated turn; do not reread the file, emit progress
+   commentary, return for model deliberation, or pause for a second fixture
+   check before the positioning scenario. It must not change DLSS, FSR, render
    scale, or any VR FPS Stabilizer setting.
 3. Immediately submit one `scenario` with `async: true`,
    `continueOnError: false`, and these ordered steps:
@@ -112,8 +125,8 @@ receipts for post-position admission and the initial baseline. Do not repeat
 the same state, scene, menu, render-scale, or API reads merely to reconfirm
 them.
 
-Persist the positioning terminal response and all three post-position
-admission rounds under `raw/startup`. Persist the baseline begin/dispatch/apply
+Persist the positioning terminal response and the post-position reset scenario
+under `raw/startup`. Persist the baseline begin/dispatch/apply
 scenario, strict waiter, and owner-handoff responses under `raw/baseline`.
 Index and rehash each batch before its next mutation. The evidence bundle is
 invalid if these response bodies exist only in the transcript.
@@ -125,26 +138,19 @@ the sequence.
 
 ## Post-position admission
 
-After exact-cell positioning, perform exactly three client request rounds:
+After exact-cell positioning, run one synchronous fail-closed scenario
+containing each supported reset action exactly once in serial order:
+render-scale `reset`, `texture_lifetime_reset`, `probe_reset`,
+`dlss_trace_reset`, `cpu_performance_reset`, `gpu_performance_reset`, and
+profiler `clear_history`. Retain the per-step receipts and require every
+capture inactive. A failed reset stops before baseline mutation.
 
-1. Query profiler `registry` and `snapshot` together as one parallel read-only
-   batch. A transient response gets only one immediate retry of the failed
-   read within the immediate-return 10-second recovery budget; it does not
-   start an availability waiter or another transport.
-2. Run the one-step negative profiler scenario using profiler `start_capture`
-   with its required identity fields but without `frameCount`. It must return
-   step
-   `ok: false`, scenario `aborted: true`, `stepsRun: 1`, and embedded
-   `invalid_field` for omitted `frameCount` with `continueOnError: false`.
-3. Run one synchronous fail-closed scenario containing each supported reset
-   action exactly once in serial order: render-scale `reset`,
-   `texture_lifetime_reset`, `probe_reset`, `dlss_trace_reset`,
-   `cpu_performance_reset`, `gpu_performance_reset`, and profiler
-   `clear_history`. Retain the per-step receipts and require every capture
-   inactive.
-
-A failed proof or reset stops before baseline mutation. Never repeat successful
-admission work.
+Do not query profiler `registry` or `snapshot`, and do not run a deliberately
+invalid profiler scenario during an assay. Schema validation and embedded-error
+propagation are DevBench offline tests; repeating them here adds latency without
+measuring the running build. On reset success, continue directly into the
+baseline sequence below in the same orchestrated action turn. Do not add
+another read, progress update, or model pause.
 
 ## Baseline and measured-owner handoff
 
@@ -155,10 +161,13 @@ Admission resets do not justify another snapshot.
 Start the baseline with one synchronous fail-closed scenario containing the
 baseline-only stress start, `qualification_begin`, `qualification_dispatch`
 with `startPerformanceTelemetry: false`, and the immediately following public
-API `apply`. Then call the strict target-correlated `qualification_wait` once
-with only the remaining portion of the single 30,000 ms QPC deadline. It must
-return as soon as strict coherence succeeds; do not add an operation poll,
-receipt sleep, or second 30-second window.
+API `apply`. Without returning for model deliberation, call the strict
+target-correlated `qualification_wait` once in the same orchestrated action
+turn. Pass the full dispatch-relative `timeoutMs: 30000`; DevBench measures it
+from `qualification_dispatch`. Never calculate or pass a client-side remaining
+timeout. The waiter must return as soon as strict coherence succeeds; do not
+add an operation poll, receipt sleep, progress commentary, or second 30-second
+window.
 
 The terminal baseline waiter receipt is the first authoritative output-contract
 proof. Require its independent `milestoneTimings` and `replacementTimeline`
@@ -167,8 +176,9 @@ the receipt, stop the baseline stress session with its ownership guard, and
 stop before measured-owner handoff or transition 1. Never infer either object
 from a tool description or later status snapshot.
 
-Only after strict waiter success and that receipt check, use one synchronous
-fail-closed handoff scenario to stop the baseline stress session with its exact
+Only after strict waiter success and that receipt check, continue without a
+model pause into one synchronous fail-closed handoff scenario to stop the
+baseline stress session with its exact
 ownership guard, start the measured stress, texture-lifetime, and
 load-presentation owners, and pre-arm the profiler with `set_enabled`. This
 does not start a profiler capture; the lane protocol starts that capture

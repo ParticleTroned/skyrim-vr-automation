@@ -114,10 +114,11 @@ immediately following step. Bind the apply to the snapshot's exact
 `stateRevision`, exact Build ID, unique lane-baseline client and command IDs,
 `purpose: direct`, and `persistence: runtime_only`.
 
-Use one 30,000 ms monotonic deadline from baseline dispatch. Pass only that
-deadline's remaining QPC budget to the strict FSR Hoshipa waiter; it must
-return upon the first successful receipt. Do not add an independent operation
-wait. Require
+Without returning for model deliberation, call the strict FSR Hoshipa waiter
+once in the same orchestrated action turn. Pass the full dispatch-relative
+`timeoutMs: 30000`; never calculate or pass a client-side remaining budget. It
+must return upon the first successful receipt. Do not add an independent
+operation wait. Require
 coherent FSR evaluation in both eyes, correct scaled dimensions, exact
 generation/resource ownership, the lane's physical backend, clean mutation
 and lifecycle state, and no terminal failure. Require `milestoneTimings` and
@@ -218,11 +219,14 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    non-retryable admission failure is a control failure: cancel the owner only
    if needed, preserve receipts, and stop further mutations. Never retry,
    recover, or substitute a matrix row.
-5. Start one shared 30,000 ms monotonic deadline at the dispatch QPC. For FSR
-   destinations, call `qualification_wait` in Dragonsreach with only the
-   current remaining QPC budget and return upon its first successful receipt. Use the
-   exact FSR target, lane runtime, fixed foveation fixture,
-   `milestone: strict`, and `timeoutMs: 30000`. Map quality strings to values
+5. Immediately after the mutation scenario returns, call `qualification_wait`
+   in the same orchestrated action turn. For FSR destinations, pass the full
+   dispatch-relative `timeoutMs: 30000`; never calculate or pass a client-side
+   remaining budget. This is the one shared 30,000 ms monotonic deadline from
+   dispatch, not a second window. It must return upon its first successful
+   receipt. Use the
+   exact FSR target, lane runtime, fixed foveation fixture, and
+   `milestone: strict`. Map quality strings to values
    `native_aa=0`, `hoshipa=1`, `ultra_quality=2`, `quality=3`, `balanced=4`,
    `performance=5`, and `ultra_performance=6`. The `vendor_native` FSR Native
    AA target has native API render-scale state but must still prove
@@ -257,8 +261,9 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    receipt, stop future DevBench calls, and ask the user.
    This recovery rule applies to both vendor and native qualification waits.
 6. For None and TAA, use the same direct `qualification_wait` in Dragonsreach
-   exactly once with only the shared deadline's remaining budget. Pass
-   `milestone: strict` and the exact native target: `method: none` or
+   exactly once with the full dispatch-relative `timeoutMs: 30000`. Pass
+   `milestone: strict` and the exact native target:
+   `method: none` or
    `method: taa`, `qualityMode: 0`, and `renderScaleMode: false`; omit
    `dlssProfile` and `fsrRuntime`. This is a native target, not a manufactured
    FSR target. The target-correlated server barrier requires the authoritative

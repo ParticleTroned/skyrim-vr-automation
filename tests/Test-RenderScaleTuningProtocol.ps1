@@ -43,10 +43,14 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
-foreach ($token in @('one parallel read-only batch', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`startupReadElapsedMs`', '`slow_startup_reads`', 'not an admission failure', '`positioningDispatchElapsedMs` measurement', 'efficiency target, not an admission gate', '`slow_positioning_dispatch`', '`positioning_dispatch_timer_not_started`', 'store the elapsed value as `null`', 'Only failure to obtain an accepted positioning `runId`', "transition 1's authoritative CPU/GPU timing origin", 'absolute tolerance `0.000001`', 'ordinary binary32 serialization drift', 'Require all booleans, readiness, logging, and persistence fields exactly', 'do not call another tool, reread the file', 'Do not add `ping`', 'Do not add a pre-position API snapshot', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
+foreach ($token in @('one parallel read-only batch', 'first action turn', 'evidence initialization and the five admission reads below concurrently', 'one orchestrated turn', 'do not mutate game state', 'Do not run the initializer in an earlier turn', 'return for model deliberation before dispatching the reads', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`startupReadElapsedMs`', '`slow_startup_reads`', 'not an admission failure', 'continue directly to', 'without progress commentary', '`positioningDispatchElapsedMs`', 'efficiency target, not an admission gate', '`slow_positioning_dispatch`', '`positioning_dispatch_timer_not_started`', 'store the elapsed value as `null`', 'Only failure to obtain an accepted positioning `runId`', "transition 1's authoritative CPU/GPU timing origin", 'absolute tolerance `0.000001`', 'ordinary binary32 serialization drift', 'Require all booleans, readiness, logging, and persistence fields exactly', 'same orchestrated turn', 'return for model deliberation', 'Do not add `ping`', 'Do not add a pre-position API snapshot', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'one synchronous fail-closed scenario', 'Do not query profiler `registry` or `snapshot`', 'do not run a deliberately', 'DevBench offline tests', 'continue directly into the', 'in the same orchestrated action turn', 'full dispatch-relative `timeoutMs: 30000`', 'Never calculate or pass a client-side remaining', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
 foreach ($forbidden in @(
+    'Before the first live request, create one unique evidence root',
+    'Query profiler `registry` and `snapshot` together as one parallel read-only',
+    'Run the one-step negative profiler scenario',
+    'with only the remaining portion of the single 30,000',
     'Start a local monotonic startup budget with the first live request',
     'The positioning scenario must be accepted within 30,000 ms',
     'fresh monotonic `positioningDispatchElapsedMs` budget',
@@ -144,14 +148,14 @@ foreach ($variant in $variants) {
         '`expectedStateRevision`', '`clientId`', '`commandId`',
         '`persistence: runtime_only`', 'server-owned 5,000 ms settling scenario',
         '`timeoutMs: 30000`', 'one shared 30,000 ms monotonic deadline',
-        'remaining QPC budget', 'return upon its first successful receipt',
+        'full dispatch-relative', 'client-side remaining budget',
+        'return upon its first successful receipt',
         '`async: false`', 'scenario `tool` step', 'poll `operation`',
         '`qualification_begin`', '`qualification_dispatch`',
         '`startPerformanceTelemetry: true`', '`qualification_cancel`',
         'continueOnError: false', 'embedded tool error as step `ok: false`',
         'Never call the profiler service',
         'After exact-cell positioning',
-        'immediate-return 10-second recovery budget',
         'before the', 'baseline mutation',
         'name` fields only', 'Never submit a raw wrapper object',
         'effective profile''s `name` fields',
@@ -230,6 +234,8 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains("controller's short bounded", [StringComparison]::Ordinal)) "$($variant.Name) still ties recovery to a second transport."
     Assert-True (-not $protocol.Contains('Every bundled DevBench controller invocation', [StringComparison]::Ordinal)) "$($variant.Name) still opens a controller per live call."
     Assert-True (-not $protocol.Contains('expected timing-owner cancellation after None/TAA stability', [StringComparison]::Ordinal)) "$($variant.Name) still cancels native qualification instead of using the direct waiter."
+    Assert-True (-not $protocol.Contains("deadline's remaining", [StringComparison]::Ordinal)) "$($variant.Name) still passes a client-calculated waiter remainder."
+    Assert-True (-not $protocol.Contains('current remaining QPC budget', [StringComparison]::Ordinal)) "$($variant.Name) still passes a current waiter remainder."
     Assert-True (-not $skill.Contains('live public API to expose every action and field', [StringComparison]::Ordinal)) "$($variant.Name) still treats input metadata as an output contract."
 
     $positioningPosition = $protocol.IndexOf(
@@ -240,14 +246,8 @@ foreach ($variant in $variants) {
         'After exact-cell positioning',
         [StringComparison]::Ordinal
     )
-    $negativeProofPosition = $protocol.IndexOf(
-        'run the one-step',
-        $measurementAdmissionPosition,
-        [StringComparison]::Ordinal
-    )
     Assert-True ($positioningPosition -ge 0 -and
-        $measurementAdmissionPosition -gt $positioningPosition -and
-        $negativeProofPosition -ge $measurementAdmissionPosition) "$($variant.Name) profiler proof does not follow positioning."
+        $measurementAdmissionPosition -gt $positioningPosition) "$($variant.Name) measurement admission does not follow positioning."
 
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
