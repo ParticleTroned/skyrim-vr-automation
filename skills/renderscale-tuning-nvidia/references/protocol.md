@@ -10,6 +10,15 @@ Apply Simple COC identity binding, core control discovery, evidence paths, and
 the single runtime-only `prepare_coc` action. The receipt must prove debug
 logging and the FOV/TAA `0.3/0.3/0.7` fixture without changing any upscaling
 or VR FPS Stabilizer setting.
+Every bundled DevBench controller invocation owns exactly one MCP session and
+must close it before returning. Preserve its `sessionCleanup` receipt;
+`closed`, `already_absent`, and `not_opened` are successful lifecycle states.
+A cleanup failure is a control-plane anomaly, not a render result, and never
+replaces a successful mutation or stability receipt. Do not add a wait for
+server-side session expiry: the next ordinary bounded controller call is the
+availability check. This shared lifecycle applies to every NVIDIA baseline,
+transition, evidence read, and guarded cleanup call.
+
 Use the exact Simple COC order: `prepare_coc` is the first stateful call and
 runs alone. Never call the profiler service, run the fail-closed proof, or reset
 telemetry before positioning.

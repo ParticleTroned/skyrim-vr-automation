@@ -36,6 +36,10 @@ HTTP or MCP requests ad hoc.
    read-only `-ArgumentsJson` action when registration alone is insufficient.
 9. Use `-ExpectedErrorCode` for deliberate guard tests such as
    `producer_mismatch`; do not reinterpret an unrequested API failure as a pass.
+10. Preserve the controller's `sessionCleanup` receipt with the command result.
+   Cleanup is successful when it reports `closed`, `already_absent`, or
+   `not_opened`; a cleanup failure is diagnostic and never changes the primary
+   operation result.
 
 The entry point is:
 

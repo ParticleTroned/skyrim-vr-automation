@@ -46,6 +46,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $endpoint = $null
+$headers = $null
 $runtimeIdentity = $null
 $transportRetries = [Collections.Generic.List[object]]::new()
 Import-Module (Join-Path $PSScriptRoot 'DevBenchControl.psm1') -Force
@@ -67,7 +68,7 @@ function Invoke-McpRequest {
             if ($Command -eq 'wait' -and $statusCode -eq 404 -and $Headers.ContainsKey('Mcp-Session-Id') -and $attempt -le $MaxTransientRetries) {
                 try {
                     $resetHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
-                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.2' } } } | ConvertTo-Json -Depth 10 -Compress
+                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.4' } } } | ConvertTo-Json -Depth 10 -Compress
                     $resetResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $resetHeaders -Body $resetBody -TimeoutSec 15
                     $resetSessionHeader = $resetResponse.Headers['Mcp-Session-Id']
                     $resetSessionId = if ($resetSessionHeader -is [array]) { [string]$resetSessionHeader[0] } else { [string]$resetSessionHeader }
@@ -142,27 +143,71 @@ function Test-WaitRetryableException {
         $message -match '\[(404|429|502|503|504)\]|timed out|temporarily unavailable|connection.*closed|connection.*refused|actively refused|main-thread task did not run|main thread busy'
 }
 
-function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
-    $baseHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
-    $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
-        jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{
-            protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.3' }
+function Close-McpSession {
+    param([string]$Endpoint, [hashtable]$Headers)
+    $sessionId = if ($null -ne $Headers -and $Headers.ContainsKey('Mcp-Session-Id')) {
+        [string]$Headers['Mcp-Session-Id']
+    }
+    else { $null }
+    if ([string]::IsNullOrWhiteSpace($Endpoint) -or [string]::IsNullOrWhiteSpace($sessionId)) {
+        return [pscustomobject][ordered]@{
+            attempted = $false; ok = $true; state = 'not_opened'; sessionId = $sessionId
+            statusCode = $null; error = $null
         }
     }
-    $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
-    $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
-    if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
-    $sessionHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
-    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec 15 | Out-Null
-    $listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $sessionHeaders -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
-    if ($listRpc.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)" }
-    $sessionTools = @($listRpc.json.result.tools)
-    $identity = $null
-    if (-not $SkipRuntimeIdentityVerification) {
-        $identity = Get-RuntimeIdentity -Runtime $Runtime -Headers $sessionHeaders -Tools $sessionTools -AllowDeferredBuildIdentity:$AllowDeferredBuildIdentity
-        if ($identity.errors.Count -gt 0) { throw "DevBench runtime identity verification failed: $($identity.errors -join ' ')" }
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Method Delete -Uri $Endpoint -Headers $Headers -TimeoutSec 2
+        return [pscustomobject][ordered]@{
+            attempted = $true; ok = $true; state = 'closed'; sessionId = $sessionId
+            statusCode = [int]$response.StatusCode; error = $null
+        }
     }
-    return [pscustomobject][ordered]@{ headers = $sessionHeaders; tools = $sessionTools; runtimeIdentity = $identity; sessionId = $sessionId }
+    catch {
+        $statusCode = $null
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = $null }
+        if ($statusCode -eq 404) {
+            return [pscustomobject][ordered]@{
+                attempted = $true; ok = $true; state = 'already_absent'; sessionId = $sessionId
+                statusCode = $statusCode; error = $null
+            }
+        }
+        return [pscustomobject][ordered]@{
+            attempted = $true; ok = $false; state = 'cleanup_failed'; sessionId = $sessionId
+            statusCode = $statusCode; error = $_.Exception.Message
+        }
+    }
+}
+
+function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
+    $baseHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
+    $sessionHeaders = $null
+    try {
+        $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
+            jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{
+                protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.4' }
+            }
+        }
+        $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
+        $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
+        if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
+        $sessionHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
+        Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec 15 | Out-Null
+        $listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $sessionHeaders -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
+        if ($listRpc.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)" }
+        $sessionTools = @($listRpc.json.result.tools)
+        $identity = $null
+        if (-not $SkipRuntimeIdentityVerification) {
+            $identity = Get-RuntimeIdentity -Runtime $Runtime -Headers $sessionHeaders -Tools $sessionTools -AllowDeferredBuildIdentity:$AllowDeferredBuildIdentity
+            if ($identity.errors.Count -gt 0) { throw "DevBench runtime identity verification failed: $($identity.errors -join ' ')" }
+        }
+        return [pscustomobject][ordered]@{ headers = $sessionHeaders; tools = $sessionTools; runtimeIdentity = $identity; sessionId = $sessionId }
+    }
+    catch {
+        if ($null -ne $sessionHeaders) {
+            Close-McpSession -Endpoint $endpoint -Headers $sessionHeaders | Out-Null
+        }
+        throw
+    }
 }
 
 function Get-ListenerPid([int]$Port) {
@@ -314,7 +359,6 @@ try {
     $runtime = Get-Content -LiteralPath $RuntimePath -Raw | ConvertFrom-Json
     if (-not $runtime.PSObject.Properties['port']) { throw 'DevBench runtime metadata has no port.' }
     $endpoint = "http://127.0.0.1:$([int]$runtime.port)/mcp"
-    $headers = $null
     $tools = @()
     $evidencePath = $null
     if ($Command -ne 'wait') {
@@ -666,6 +710,9 @@ catch {
         errors = @($_.Exception.Message)
     }
 }
+
+$sessionCleanup = Close-McpSession -Endpoint $endpoint -Headers $headers
+$result | Add-Member -NotePropertyName sessionCleanup -NotePropertyValue $sessionCleanup
 
 $parameters = @{ InputObject = $result; Depth = 50 }
 if ($Compact) { $parameters['Compress'] = $true }

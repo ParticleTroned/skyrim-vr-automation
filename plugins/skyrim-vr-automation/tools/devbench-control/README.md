@@ -43,6 +43,13 @@ Nested `error.code`, `status`, and `result.state` values are classified. Use
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
 exponential retry and are preserved under `transportRetries`.
 
+Each controller invocation closes its owned Streamable HTTP MCP session before
+returning and reports the outcome under `sessionCleanup`. This prevents serial
+protocol steps from exhausting DevBench's bounded session table. A cleanup 404
+means the server already retired the session and is successful. Any other
+cleanup failure remains diagnostic evidence but does not replace the primary
+call or wait result.
+
 `wait -Condition noBlockingMenu` polls the menu tool client-side, ignores only
 the explicitly listed `-IgnoredMenus` (HUD by default), and always reports the
 actual timeout and final observation. This avoids the server-side `noMenu`
