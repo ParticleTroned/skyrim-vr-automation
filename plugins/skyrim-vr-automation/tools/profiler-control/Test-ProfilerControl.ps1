@@ -133,10 +133,11 @@ try {
     $runtimePath = Join-Path $resolvedTestRoot 'runtime.json'
     $statePath = Join-Path $resolvedTestRoot 'profiler-state.json'
     [IO.File]::WriteAllText($runtimePath, '{}', [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($fakeControl, @'
-param([string]$Command,[string]$Tool,[string]$ArgumentsJson,[string]$RuntimePath,[string]$EvidenceDirectory,[string]$EvidenceLabel,[switch]$RequireSuccess,[switch]$NoExit,[switch]$Compact)
+param([string]$Command,[string]$Tool,[string]$ArgumentsJson,[string]$RuntimePath,[string]$EvidenceDirectory,[string]$EvidenceLabel,[int]$TimeoutSeconds,[switch]$RequireSuccess,[switch]$NoExit,[switch]$Compact)
 $state = Get-Content -LiteralPath $env:CSX_PROFILER_TEST_STATE -Raw | ConvertFrom-Json -AsHashtable
+$state.calls = [int]$state.calls + 1
 $action = ($ArgumentsJson | ConvertFrom-Json).action
 if ($action -eq 'enable') { $state.enabled = $true }
 elseif ($action -eq 'disable') { $state.enabled = $false }
@@ -144,18 +145,54 @@ elseif ($action -eq 'status') { $state.frame = [int]$state.frame + 1 }
 $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:CSX_PROFILER_TEST_STATE -Encoding utf8
 $timer = [pscustomobject]@{name='Synthetic';activeGpu=$true;activeCpu=$true;hasGpu=$true;hasCpu=$true;gpuMs=1.0;topLevelMs=1.0;cpuMs=0.1}
 $status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.1;acquiredSlots=1;slotRefusals=0;timers=@($timer)}
-[pscustomobject]@{ok=$true;runtimeIdentity=[pscustomobject]@{complete=$true;listenerPid=123;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");data=[pscustomobject]@{content=@([pscustomobject]@{ok=$true;status=$status})};errors=@()} | ConvertTo-Json -Depth 20 -Compress
+$listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIFT_AT_CALL) -and [int]$env:CSX_PROFILER_TEST_DRIFT_AT_CALL -eq [int]$state.calls) { 456 } else { 123 }
+[pscustomobject]@{ok=$true;runtimeIdentity=[pscustomobject]@{complete=$true;verified=$true;listenerPid=$listenerPid;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");data=[pscustomobject]@{content=@([pscustomobject]@{ok=$true;status=$status})};errors=@()} | ConvertTo-Json -Depth 20 -Compress
 '@, [Text.UTF8Encoding]::new($false))
     $env:CSX_PROFILER_TEST_STATE = $statePath
+    $env:CSX_PROFILER_CONTROL_ROOT = Join-Path $resolvedTestRoot 'profiler-control'
     $measure = Join-Path $PSScriptRoot 'Measure-CSXProfiler.ps1'
     $contextJson = @{ environment = @{ mo2Profile = 'fixture'; scene = 'still'; hmdMode = 'null'; renderResolution = '100x100' }; treatment = @{ shaderState = 'enabled' } } | ConvertTo-Json -Compress
     $measurement = & $measure -Label fixture -EvidenceDirectory (Join-Path $resolvedTestRoot 'measure') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | ConvertFrom-Json
     $finalProfilerState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     Assert-Test ($measurement.ok -and $measurement.summary.uniqueFreshFrames -eq 3 -and $measurement.summary.profilerStateRestored) 'measurement uses fresh frames and records verified state restoration'
     Assert-Test (-not $finalProfilerState.enabled) 'measurement restores the exact prior profiler enable state'
+    $measuredRecords = @(Get-Content -LiteralPath $measurement.rawPath -Raw | ConvertFrom-Json)
+    $measurementReceipt = Get-Content -LiteralPath $measurement.receiptPath -Raw | ConvertFrom-Json
+    Assert-Test (@($measuredRecords.runtimeIdentityFingerprint | Sort-Object -Unique).Count -eq 1 -and @($measurementReceipt.runtimeIdentityObservations).Count -ge 7) 'measurement binds every accepted response and sample to one verified runtime identity'
+
+    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
+    $env:CSX_PROFILER_TEST_DRIFT_AT_CALL = '3'
+    $driftError = $null
+    try { & $measure -Label identity-drift -EvidenceDirectory (Join-Path $resolvedTestRoot 'drift') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | Out-Null }
+    catch { $driftError = $_.Exception.Message }
+    Remove-Item Env:CSX_PROFILER_TEST_DRIFT_AT_CALL -ErrorAction SilentlyContinue
+    $driftFinalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Assert-Test ($driftError -match 'runtime identity changed' -and -not $driftFinalState.enabled) 'measurement rejects a replacement runtime and restores state only through the original identity'
+
+    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
+    $deadlineWatch = [Diagnostics.Stopwatch]::StartNew()
+    $deadlineError = $null
+    try { & $measure -Label deadline -EvidenceDirectory (Join-Path $resolvedTestRoot 'deadline') -ContextJson $contextJson -Samples 3 -WarmupSamples 100 -IntervalMs 50 -TotalTimeoutSeconds 5 -RestoreReserveSeconds 2 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | Out-Null }
+    catch { $deadlineError = $_.Exception.Message }
+    $deadlineWatch.Stop()
+    $deadlineFinalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Assert-Test ($deadlineError -match 'deadline expired' -and $deadlineWatch.Elapsed.TotalSeconds -lt 5 -and -not $deadlineFinalState.enabled) 'measurement enforces one total deadline while reserving bounded state restoration time'
+
+    $leasePath = Join-Path $env:CSX_PROFILER_CONTROL_ROOT 'capture.lock'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $leasePath) -Force | Out-Null
+    $heldLease = [IO.File]::Open($leasePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $leaseError = $null
+        try { & $measure -Label contention -EvidenceDirectory (Join-Path $resolvedTestRoot 'contention') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -LeaseTimeoutSeconds 1 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | Out-Null }
+        catch { $leaseError = $_.Exception.Message }
+        Assert-Test ($leaseError -match 'Timed out waiting for the profiler capture lease') 'measurement serializes captures for the same runtime under one bounded lease'
+    }
+    finally { $heldLease.Dispose() }
 }
 finally {
     Remove-Item Env:CSX_PROFILER_TEST_STATE -ErrorAction SilentlyContinue
+    Remove-Item Env:CSX_PROFILER_TEST_DRIFT_AT_CALL -ErrorAction SilentlyContinue
+    Remove-Item Env:CSX_PROFILER_CONTROL_ROOT -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {
         Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
     }
