@@ -11,6 +11,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Serialize head-pose driver installs/upgrades by canonical install and OpenVR
   targets, persist authoritative registration preimages, and recover interrupted
   replacement/registration phases before admitting another installer.
+- Serialize shader-cache swaps by canonical live target, recover interrupted
+  operations from a target-owned journal, and use one deadline-, depth-, byte-,
+  file-, and reparse-bounded inventory primitive across transactions and catalogs.
 
 - Require every fresh MO2 task clone to inherit a hash- and
   profile-fingerprint-verified default world-entry save, make the doctor fail

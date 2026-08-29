@@ -42,7 +42,9 @@ replacement is never implied by a request to compare caches.
    compatibility from names or timestamps.
 2. With MO2 and Skyrim closed, call catalog `prepare` before the MO2 session.
    Retain `shader-cache-task.plan.json` with the task evidence. No compatible
-   match is nonfatal unless the task requires `-RequireMatch`.
+   match is nonfatal unless the task requires `-RequireMatch`. Do not bypass a
+   target-lock timeout or a recovery refusal: they mean another caller owns the
+   cache or the live tree no longer matches the journal's exact identities.
 3. Never clear a live cache merely to get a clean experiment. Use the task plan
    and exact seeding transaction. A source mismatch requires both
    `-AllowSourceMismatch` and a written `-CompatibilityReason`; it never
@@ -56,3 +58,7 @@ replacement is never implied by a request to compare caches.
    manifest, source/build/preset identities, profiler evidence, and any cache
    comparison report together. Do not delete content-addressed objects or edit
    immutable manifests by hand.
+6. Keep the default bounded inventory limits unless an observed, reviewed cache
+   requires a larger explicit bound. A limit or deadline failure is a safety
+   result, not permission to switch to an unbounded recursive scan. Reparse
+   points are never valid cache contents.

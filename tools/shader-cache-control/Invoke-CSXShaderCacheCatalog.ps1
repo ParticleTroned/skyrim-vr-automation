@@ -33,6 +33,14 @@ param(
     [string]$WorkingSetStatus = 'unverified',
     [ValidateNotNullOrEmpty()]
     [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
+    [ValidateRange(1, 1000000)]
+    [int]$MaxInventoryFiles = 20000,
+    [ValidateRange(1, [long]::MaxValue)]
+    [long]$MaxInventoryBytes = 21474836480,
+    [ValidateRange(1, 128)]
+    [int]$MaxInventoryDepth = 24,
+    [ValidateRange(1, 3600)]
+    [int]$InventoryTimeoutSeconds = 120,
     [switch]$NoExit,
     [switch]$Compact
 )
@@ -41,6 +49,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $contractVersion = '1.0.0'
 $transactionTool = Join-Path $PSScriptRoot 'Invoke-CSXShaderCacheTransaction.ps1'
+. (Join-Path $PSScriptRoot 'ShaderCacheInventory.ps1')
 
 function Test-Property($Value, [string]$Name) {
     return $null -ne $Value -and $Value.PSObject.Properties.Name -contains $Name
@@ -115,22 +124,7 @@ function Resolve-CatalogRoot {
 }
 
 function Get-TreeInventory([string]$Root) {
-    $resolved = Assert-SafeDirectory $Root 'shader-cache tree' -MustExist
-    $files = @(
-        Get-ChildItem -LiteralPath $resolved -Recurse -File |
-            ForEach-Object {
-                [pscustomobject][ordered]@{
-                    relativePath = [IO.Path]::GetRelativePath($resolved, $_.FullName).Replace('/', '\')
-                    bytes = [long]$_.Length
-                    sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-                }
-            } |
-            Sort-Object relativePath
-    )
-    $canonical = ($files | ForEach-Object { '{0}|{1}|{2}' -f $_.relativePath, $_.bytes, $_.sha256 }) -join "`n"
-    $treeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical)))
-    $totalBytes = if ($files.Count -gt 0) { [long](($files | Measure-Object bytes -Sum).Sum) } else { [long]0 }
-    return [pscustomobject][ordered]@{ root = $resolved; files = $files.Count; bytes = $totalBytes; treeSha256 = $treeHash; entries = $files }
+    return Get-CSXShaderCacheTreeInventory -Root $Root -MaxFiles $MaxInventoryFiles -MaxBytes $MaxInventoryBytes -MaxDepth $MaxInventoryDepth -TimeoutSeconds $InventoryTimeoutSeconds -ProgressActivity 'Inventorying shader-cache catalog tree'
 }
 
 function Get-IniValue([string]$Path, [string]$Section, [string]$Key) {
@@ -480,7 +474,11 @@ function Select-CatalogSnapshot($Storage) {
 }
 
 function Invoke-Transaction([string]$Action, [hashtable]$Arguments) {
-    $parameters = @{ Command = $Action; NoExit = $true; Compact = $true }
+    $parameters = @{
+        Command = $Action; NoExit = $true; Compact = $true
+        MaxInventoryFiles = $MaxInventoryFiles; MaxInventoryBytes = $MaxInventoryBytes
+        MaxInventoryDepth = $MaxInventoryDepth; InventoryTimeoutSeconds = $InventoryTimeoutSeconds
+    }
     foreach ($key in $Arguments.Keys) { $parameters[$key] = $Arguments[$key] }
     $raw = & $transactionTool @parameters
     $parsed = $raw | ConvertFrom-Json -Depth 40
