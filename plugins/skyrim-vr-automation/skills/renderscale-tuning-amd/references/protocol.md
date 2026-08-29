@@ -363,8 +363,35 @@ failure. Returning from TAA or None must restore the lane's intended backend.
 Never accept stale FSR generation/resource identity after mutation.
 
 After each lane's transition 31, stop only its owned telemetry and retain final
-status. Append one uniquely headed result column per completed lane using the
-Simple COC ledger mechanics and produce separate tables for:
+status. Append one uniquely headed result column per completed lane, then
+produce separate tables for:
+
+### Ledger append transaction
+
+Treat each comparison-ledger column append as one transaction. Read and parse
+the current verified ledger once, retain its original hash, and compose the
+complete candidate before any ledger write. Reject the candidate unless it has
+the same ordered metric rows and row count, exactly one additional rightmost
+column, a unique nonempty header, and zero changed pre-existing parsed cell
+values under ordinal comparison. Do not normalize, reorder, or otherwise
+rewrite an existing cell.
+
+Apply the validated candidate with a single in-place `Update File` operation
+for the ledger path. Never combine `Delete File` and `Add File` operations for
+that path in one `apply_patch`, and never delete and recreate the ledger. If the
+append cannot be represented as one in-place update, stop before modifying the
+ledger and report `ledger_append_unrepresentable`; retain the run evidence and
+do not rerun the assay.
+
+After the write, parse the ledger again and repeat every candidate invariant,
+confirm that the original hash changed, and run `git diff --check`. Report
+`ledger_append_validation_failed` rather than claiming an append if any check
+fails. A ledger finalization failure does not invalidate or permit rewriting
+the preserved assay evidence.
+
+### Result tables
+
+Produce separate tables for:
 
 1. AMD explicit FSR4.
 2. AMD explicit FSR3.

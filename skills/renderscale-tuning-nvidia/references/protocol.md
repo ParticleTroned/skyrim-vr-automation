@@ -351,8 +351,34 @@ output after destructive mutation. A proven old provider may remain active only
 before mutation begins.
 
 After transition 33, stop only task-owned telemetry and retain final status.
-Append one uniquely headed result column using the Simple COC ledger mechanics
-and produce separate tables for:
+Append one uniquely headed result column, then produce separate tables for:
+
+### Ledger append transaction
+
+Treat each comparison-ledger column append as one transaction. Read and parse
+the current verified ledger once, retain its original hash, and compose the
+complete candidate before any ledger write. Reject the candidate unless it has
+the same ordered metric rows and row count, exactly one additional rightmost
+column, a unique nonempty header, and zero changed pre-existing parsed cell
+values under ordinal comparison. Do not normalize, reorder, or otherwise
+rewrite an existing cell.
+
+Apply the validated candidate with a single in-place `Update File` operation
+for the ledger path. Never combine `Delete File` and `Add File` operations for
+that path in one `apply_patch`, and never delete and recreate the ledger. If the
+append cannot be represented as one in-place update, stop before modifying the
+ledger and report `ledger_append_unrepresentable`; retain the run evidence and
+do not rerun the assay.
+
+After the write, parse the ledger again and repeat every candidate invariant,
+confirm that the original hash changed, and run `git diff --check`. Report
+`ledger_append_validation_failed` rather than claiming an append if any check
+fails. A ledger finalization failure does not invalidate or permit rewriting
+the preserved assay evidence.
+
+### Result tables
+
+Produce separate tables for:
 
 1. NVIDIA DLSS and DLAA transitions.
 2. NVIDIA FSR3 transitions.
