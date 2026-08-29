@@ -55,12 +55,12 @@ that raw object in evidence, but build the next `apply.target` from the
 effective profile's `name` fields only: `method.name`, `qualityMode.name`,
 `dlssProfile.name`, and `fsrRuntime.name`. Never submit a raw wrapper object,
 numeric enum, defaulted field, or an inferred provider value. At a settled
-boundary, require complete configured and effective profiles with no active
-operation. The controller requested/stable stream is separate physical
-evidence: it must agree for scaled FSR state. For TAA, None, and FSR Native
-AA, requested/stable may instead be an inactive native None projection only
-when the API reports no active operation and configured/effective are exact.
-That projection never replaces the public effective target.
+boundary, require complete configured, requested, effective, and stable public
+profiles with no active operation; requested/effective/stable must agree with
+the exact completed target for every destination. The render-scale
+controller's applied/stable resource records are separate physical evidence.
+At native resolution they remain inactive with backend `none`, but retain the
+exact logical method and never replace a public profile.
 
 After the positioning `runId` is accepted, load `matrix.v1.json` relative to
 this installed skill during the scenario's 10-second wait. Require schema
@@ -155,19 +155,16 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    Do not attempt cleanup until the user explicitly directs it and the control
    plane responds. Do not consume the 30-second completion deadline or add
    another extended wait.
-2. Require complete configured and effective API profiles and no active
-   operation. Construct its complete API target from the effective profile's
-   `name` fields; mutate only `method`, `qualityMode`, and
+2. Require complete configured, requested, effective, and stable API profiles,
+   exact requested/effective/stable agreement, and no active operation.
+   Construct its complete API target from the effective profile's `name`
+   fields; mutate only `method`, `qualityMode`, and
    `renderScaleMode` from the destination. For FSR entries also set the lane's
    configured `fsrRuntime`. Preserve `dlssProfile` and preserve the lane
-   runtime as dormant state on None and TAA entries. For scaled FSR state,
-   require the controller requested/stable profiles to agree with effective.
-   For settled TAA, None, and FSR Native AA, an inactive native None controller
-   projection is valid only when there is no active operation,
-   configured/effective match the completed public target, and requested/stable
-   both report None with render scale disabled. It is telemetry, not
-   `pre_snapshot_profile_incoherent`; never use it to construct or replace the
-   API target.
+   runtime as dormant state on None and TAA entries. Record the separate
+   render-scale controller applied/stable resource keys as physical telemetry;
+   for a native target they must be inactive with backend `none` and retain
+   that target's exact method.
 3. Materialize the snapshot-derived string target and every guarded apply
    argument before submitting one synchronous (`async: false`) server scenario with
    `continueOnError: false`. Its consecutive mutation steps are
@@ -184,7 +181,7 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `purpose: direct`, and `persistence: runtime_only`. Require API status and
    result status `success`, `idempotentReplay: false`, admitted state revision
    equal to the snapshot revision, normalized target exact, and disposition
-   exactly `applied_synchronously` or `queued`. `rejected`, `no_change`, a
+   exactly `queued`. `rejected`, `applied_synchronously`, `no_change`, a
    stale revision, producer mismatch, embedded error, restart requirement, or
    non-retryable admission failure is a control failure: cancel the owner only
    if needed, preserve receipts, and stop further mutations. Never retry,
@@ -196,11 +193,13 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `milestone: strict`, and `timeoutMs: 30000`. Map quality strings to values
    `native_aa=0`, `hoshipa=1`, `ultra_quality=2`, `quality=3`, `balanced=4`,
    `performance=5`, and `ultra_performance=6`. The `vendor_native` FSR Native
-   AA target has native API render-scale state but must still prove active FSR
-   evaluation. Its exact effective API profile is the public target; the
-   controller requested/stable render-scale projections may be `none` and are
-   retained as telemetry, not used to reject that API target. Configured runtime
-   matching and physical backend proof remain separate and `none` is a failure.
+   AA target has native API render-scale state but must still prove
+   fixed-resolution FSR evaluation. Its public requested/effective/stable
+   profiles must all equal the exact target. Its render-scale controller
+   resource key remains inactive with backend `none`; the waiter separately
+   proves the target method, live presentation upscaling, exact foveation, and
+   a coherent two-eye native presentation after same-frame FSR dispatch.
+   A missing or mismatched actual FSR provider is a failure.
    The direct tool transport must outlive the current server waiter budget by
    five seconds without changing the shared 30-second measurement deadline. A
    successful waiter still returns immediately and never waits out that
@@ -222,22 +221,20 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    `method: taa`, `qualityMode: 0`, and `renderScaleMode: false`; omit
    `dlssProfile` and `fsrRuntime`. This is a native target, not a manufactured
    FSR target. The target-correlated server barrier requires the authoritative
-   effective runtime profile to equal that target, render scale to remain
-   disabled, no active operation, advancing coherent native presentation, and
-   either `idle/idle` or `active/active` native controller state. Native TAA
-   legitimately reports `active/active`; its render-scale controller
-   projection may remain `None` and must not be compared with the effective
-   TAA profile. Do not poll `operation` or start a second 30-second window.
+   requested/effective/stable profiles to equal that target, render scale to
+   remain disabled, no active operation, advancing coherent native
+   presentation, and either `idle/idle` or `active/active` native controller
+   state. Native TAA legitimately reports `active/active`. Its physical
+   render-scale resource key remains inactive with backend `none` but retains
+   method TAA. Do not poll `operation` or start a second 30-second window.
    Read that apply's operation exactly once after the terminal waiter receipt;
    require its target and effective profile to match, its state to be
    `completed`, and the final snapshot to have no active operation. The waiter
    closes the timing owner; do not call `qualification_cancel` after any
    terminal waiter receipt. Cancellation is only for an owner that has not
-   entered its waiter. On the next pre-apply snapshot, preserve
-   a settled native None controller projection as physical telemetry when there
-   is no active operation, its configured/effective API profile matches the
-   completed TAA or None target, and requested/stable are inactive None. Do
-   not relabel it as an incoherent profile or wait for it to become TAA.
+   entered its waiter. On the next pre-apply snapshot, require the public
+   requested/effective/stable profiles to remain exact and preserve the
+   separate inactive native physical key as telemetry.
    The terminal waiter receipt closes the timing bracket and is not a render
    failure.
 7. Read the operation, transition-filtered API events, authoritative API
@@ -296,24 +293,23 @@ solely by pre-mutation replacement admission is a transition `FAIL`.
 For scaled FSR, require requested, effective, stable, and physical profiles to
 agree; scaled dimensions; coherent both-eye FSR presentation; exact provider
 generation and resource ownership; and strict completion. For `vendor_native`
-FSR Native AA, require the exact effective public API profile and an active
-physical FSR contract at native dimensions. The controller requested/stable
-render-scale projections may be `none`; retain them as telemetry, but do not
-compare them with the effective vendor profile. Require coherent vendor
-presentation, lifecycle and two-eye fidelity proof. A physical backend of
-`none` is a failure. Record first physical match, first coherent stereo
+FSR Native AA, require exact public requested/effective/stable profiles and
+fixed-resolution FSR execution at native dimensions. The render-scale
+controller resource key is inactive with backend `none`; its logical method
+must still be FSR, and the same-frame FSR-backed native stereo proof is
+authoritative for execution. A missing or mismatched actual FSR provider is a
+failure. Record first physical match, first coherent stereo
 presentation, `presentationStable`, `cleanupDrained`, and strict completion
 separately.
 
-For None and TAA require the public operation target and effective profile to
-match the complete target; exact authoritative effective method;
+For None and TAA require the public operation target and
+requested/effective/stable profiles to match the complete target;
 `qualityMode: native_aa`; `renderScaleMode: false`; native dimensions;
 producer-native physical-contract evidence; advancing coherent in-world
 target-correlated native `qualification_wait` receipt; no unresolved physical
 mutation; and no FSR evaluation treated as active presentation. Their
-requested/stable controller state may remain the inactive native None physical
-projection; record it separately and never require it to equal the public
-effective TAA profile. If exact native presentation generation is unavailable,
+inactive backend-`none` render-scale resource key is recorded separately and
+must retain the exact target method. If exact native presentation generation is unavailable,
 record `generationEvidence: "not_exposed"` and retain raw dimensions but do not
 calculate native or `dimensionsMatch` booleans. Native-generation evidence is
 optional: mark only that evidence facet `INCONCLUSIVE`; do not relabel a core
