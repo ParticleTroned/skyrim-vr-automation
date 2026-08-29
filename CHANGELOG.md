@@ -20,7 +20,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   later command reads or changes workspace state.
 - Serialize profiler captures per runtime, enforce one total deadline with a
   reserved restoration budget, and bind every accepted DevBench response and
-  sample to the same complete, verified process/build/artifact identity.
+  sample to the same complete, verified process/build/artifact identity. Recover
+  nonterminal captures from a deterministic runtime-owned journal without ever
+  mutating a replacement process.
 
 - Require every fresh MO2 task clone to inherit a hash- and
   profile-fingerprint-verified default world-entry save, make the doctor fail
