@@ -10,6 +10,9 @@ client.
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}'
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}' -RequireSuccess
 .\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu -TimeoutSeconds 30
+.\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu `
+  -DismissBlockingMenus InventoryMenu -MaxMenuDismissals 1 `
+  -MinimumMenuStableSeconds 5 -TimeoutSeconds 30
 .\Invoke-DevBenchControl.ps1 wait -Condition toolAvailable `
   -Tool communityshaders.profiler_api -TimeoutSeconds 600 `
   -ProgressLogPath C:\Evidence\CommunityShaders.log
@@ -44,6 +47,16 @@ exponential retry and are preserved under `transportRetries`.
 the explicitly listed `-IgnoredMenus` (HUD by default), and always reports the
 actual timeout and final observation. This avoids the server-side `noMenu`
 condition being held open forever by Skyrim's permanent HUD menu.
+
+Controllerless unattended runs may opt into bounded recovery for a known stale
+engine menu with `-DismissBlockingMenus InventoryMenu`. Recovery is disabled by
+default, never answers a message box, and refuses partial cleanup when any open
+blocking menu is not explicitly listed. Each queued close is returned under
+`data.menuDismissals`; `-MaxMenuDismissals` bounds repeated requests. Invoke the
+option only at an automation readiness barrier so normal keyboard and controller
+menu use remains available outside that barrier. Use
+`-MinimumMenuStableSeconds` to require a continuous HUD-only window after the
+close; any delayed menu appearance resets stabilization.
 
 `toolAvailable` repeatedly refreshes the authoritative tool inventory rather
 than freezing the initial list. `serviceReady` additionally calls the supplied

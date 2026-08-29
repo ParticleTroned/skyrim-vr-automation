@@ -32,6 +32,11 @@ param(
     [string]$ExpectedErrorCode,
     [string]$ProgressLogPath,
     [string[]]$IgnoredMenus = @('HUD Menu'),
+    [string[]]$DismissBlockingMenus = @(),
+    [ValidateRange(1, 10)]
+    [int]$MaxMenuDismissals = 1,
+    [ValidateRange(0, 60)]
+    [int]$MinimumMenuStableSeconds = 0,
     [switch]$NoExit,
     [switch]$Compact
 )
@@ -330,6 +335,8 @@ try {
     }
     else {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
+        if ($DismissBlockingMenus.Count -gt 0 -and $Condition -ne 'noBlockingMenu') { throw '-DismissBlockingMenus is valid only with -Condition noBlockingMenu.' }
+        if ($MinimumMenuStableSeconds -gt 0 -and $Condition -ne 'noBlockingMenu') { throw '-MinimumMenuStableSeconds is valid only with -Condition noBlockingMenu.' }
         $requiredTool = if ($Condition -eq 'noBlockingMenu') { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
         if ($requiredTool -and @($tools | Where-Object name -eq $requiredTool).Count -ne 1) { throw "Condition '$Condition' requires missing tool '$requiredTool'." }
         $waitArguments = @{}
@@ -344,17 +351,50 @@ try {
         $lastProgressUtc = [DateTime]::MinValue
         $firstCpu = $null
         $lastCpu = $null
+        $menuDismissals = [Collections.Generic.List[object]]::new()
+        $menuStableSinceUtc = $null
         do {
             $attempts++
             if ($Condition -eq 'noBlockingMenu') {
                 try {
                     $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
                     $observation = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                    if (-not $observation.satisfied -and $DismissBlockingMenus.Count -gt 0) {
+                        $plan = Get-DevBenchMenuDismissalPlan -MenuObservation $observation -DismissBlockingMenus $DismissBlockingMenus
+                        $observation | Add-Member -NotePropertyName dismissalPlan -NotePropertyValue $plan
+                        if ($plan.permitted) {
+                            foreach ($menuName in @($plan.dismissMenus)) {
+                                $priorCount = @($menuDismissals | Where-Object name -eq $menuName).Count
+                                if ($priorCount -ge $MaxMenuDismissals) { continue }
+                                $dismissal = Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'close'; name = $menuName } -Headers $headers
+                                $menuDismissals.Add([pscustomobject][ordered]@{
+                                    menu = $menuName
+                                    waitAttempt = $attempts
+                                    timestampUtc = [DateTime]::UtcNow.ToString('o')
+                                    result = @($dismissal.content)
+                                })
+                            }
+                        }
+                    }
                 }
                 catch {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; probeError = $_.Exception.Message }
                 }
+                $baseSatisfied = [bool]$observation.satisfied
+                if ($baseSatisfied) {
+                    $now = [DateTime]::UtcNow
+                    if ($null -eq $menuStableSinceUtc) { $menuStableSinceUtc = $now }
+                    $stableSeconds = [Math]::Round(($now - $menuStableSinceUtc).TotalSeconds, 3)
+                    $observation.satisfied = $stableSeconds -ge $MinimumMenuStableSeconds
+                }
+                else {
+                    $menuStableSinceUtc = $null
+                    $stableSeconds = 0.0
+                }
+                $observation | Add-Member -NotePropertyName baseSatisfied -NotePropertyValue $baseSatisfied -Force
+                $observation | Add-Member -NotePropertyName stableSeconds -NotePropertyValue $stableSeconds -Force
+                $observation | Add-Member -NotePropertyName requiredStableSeconds -NotePropertyValue $MinimumMenuStableSeconds -Force
             }
             elseif ($Condition -eq 'playerLoaded') {
                 try {
@@ -438,7 +478,7 @@ try {
             Start-Sleep -Milliseconds $currentDelay
             if ($Condition -in @('toolAvailable', 'serviceReady')) { $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2) }
         } while ([DateTime]::UtcNow -lt $deadline)
-        $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; observation = $observation }
+        $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; minimumMenuStableSeconds = $MinimumMenuStableSeconds; menuDismissals = @($menuDismissals); observation = $observation }
         if ($observation.satisfied -and -not $SkipRuntimeIdentityVerification) { $evidencePath = Write-RuntimeEvidence $runtimeIdentity }
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }

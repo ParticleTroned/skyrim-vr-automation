@@ -163,6 +163,48 @@ function Test-DevBenchNoBlockingMenu {
     }
 }
 
+function Get-DevBenchMenuDismissalPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$MenuObservation,
+        [string[]]$DismissBlockingMenus = @()
+    )
+    $requested = @($DismissBlockingMenus |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        Select-Object -Unique)
+    $blocking = if ($MenuObservation.PSObject.Properties['blockingMenus']) {
+        @($MenuObservation.blockingMenus)
+    }
+    else {
+        @()
+    }
+    $messageBoxOpen = $MenuObservation.PSObject.Properties['messageBoxOpen'] -and
+        [bool]$MenuObservation.messageBoxOpen
+    $dismiss = @($blocking | Where-Object { $_ -in $requested })
+    $retained = @($blocking | Where-Object { $_ -notin $requested })
+    $permitted = -not $messageBoxOpen -and $dismiss.Count -gt 0 -and $retained.Count -eq 0
+    $reason = if ($messageBoxOpen) {
+        'message-box-requires-explicit-answer'
+    }
+    elseif ($retained.Count -gt 0) {
+        'unlisted-blocking-menu'
+    }
+    elseif ($dismiss.Count -eq 0) {
+        'no-listed-menu-open'
+    }
+    else {
+        'explicit-menu-dismissal'
+    }
+    return [pscustomobject][ordered]@{
+        permitted = $permitted
+        reason = $reason
+        requestedMenus = $requested
+        dismissMenus = $dismiss
+        retainedMenus = $retained
+        messageBoxOpen = [bool]$messageBoxOpen
+    }
+}
+
 function Get-DevBenchRuntimeExpectations {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Runtime)
@@ -182,4 +224,4 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchRuntimeExpectations
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchMenuDismissalPlan, Get-DevBenchRuntimeExpectations

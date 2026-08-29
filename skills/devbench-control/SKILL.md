@@ -25,6 +25,11 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
    when a semantic failure must fail the orchestration step.
 7. Prefer client `wait -Condition noBlockingMenu` over the server `noMenu`
    condition when Skyrim's permanent HUD is open.
+   For a controllerless unattended readiness barrier, use
+   `-DismissBlockingMenus InventoryMenu -MaxMenuDismissals 1` with
+   `-MinimumMenuStableSeconds 5` only when that exact stale menu is expected.
+   This recovery is opt-in and must not run as a background monitor because
+   normal keyboard and controller menus remain valid.
 8. When a CSX bridge may be gated behind initialization or compilation, use
    `wait -Condition toolAvailable -Tool <exact-name>` with an explicit bounded
    timeout and optional explicit `-ProgressLogPath`. Use `serviceReady` plus a
