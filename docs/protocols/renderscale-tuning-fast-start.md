@@ -73,14 +73,45 @@ Before positioning, use only these request rounds:
    positioning scenario. Persist it during the settle; do not write or rehash
    it first. It must not change DLSS, FSR, render scale, or any VR FPS
    Stabilizer setting.
-3. Immediately submit one `scenario` with `async: true`,
-   `continueOnError: false`, and these ordered steps:
-   - `console exec` with exactly `coc WhiterunDragonsreach`;
-   - a fixed 10,000 ms wait;
-   - `inspect state`;
-   - `inspect scene`;
-   - `communityshaders.upscaling_api snapshot`;
-   - `communityshaders.renderscale status`.
+3. Immediately submit exactly this `scenario` request, replacing only
+   `<bound-build-id>` with the Build ID from the startup receipts:
+
+   ```json
+   {
+     "action": "run",
+     "async": true,
+     "continueOnError": false,
+     "steps": [
+       {
+         "tool": "console",
+         "args": {
+           "action": "exec",
+           "command": "coc WhiterunDragonsreach"
+         }
+       },
+       { "wait": 10000 },
+       { "tool": "inspect", "args": { "action": "state" } },
+       { "tool": "inspect", "args": { "action": "scene" } },
+       {
+         "tool": "communityshaders.upscaling_api",
+         "args": {
+           "action": "snapshot",
+           "expectedBuildId": "<bound-build-id>"
+         }
+       },
+       {
+         "tool": "communityshaders.renderscale",
+         "args": {
+           "action": "status",
+           "expectedBuildId": "<bound-build-id>"
+         }
+       }
+     ]
+   }
+   ```
+
+   `args.command` is mandatory for the console step. Do not rename it, move it
+   outside `args`, or substitute `value`, `text`, or another parameter.
 
 Any failed required field or fixture stops before the COC. Do not add another
 readiness check, schema refresh, profiler query, telemetry action, screenshot,
