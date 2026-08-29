@@ -250,16 +250,16 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    successful waiter still returns immediately and never waits out that
    envelope.
 
-   If the waiter response is lost after dispatch, do not replay the waiter,
-   classify the row, cancel its owner, or start telemetry cleanup. Read
-   `qualification_status` for the same owner and transition on the selected
-   lane until the original shared deadline. Allow at most five additional
-   seconds only to retrieve the already-terminal `lastEvidence`; this is
-   receipt recovery, not a second measurement window. Require `active: false`
-   and matching terminal evidence before classification or cleanup. If the
-   terminal receipt cannot be recovered, preserve the IDs and transport
-   receipt, stop future DevBench calls, and ask the user.
-   This recovery rule applies to both vendor and native qualification waits.
+   If the waiter response is lost after dispatch, apply the shared contract's
+   owner-correlated recovery rule immediately. Reissue the same waiter at most
+   once only when status proves the exact owner remains in `phase: dispatched`;
+   never reapply the profile. If it is already `waiting`, recover matching
+   terminal `lastEvidence` without replaying the waiter. Require `active: false`
+   and matching owner/transition IDs before classification or cleanup. This
+   recovery rule applies to both vendor and native qualification waits. If no
+   terminal receipt can be recovered within the original deadline plus its
+   five-second receipt bound, preserve the IDs and transport receipt, stop
+   future DevBench calls, and ask the user.
 6. For None and TAA, use the same direct `qualification_wait` in Dragonsreach
    exactly once with the full dispatch-relative `timeoutMs: 30000`. Pass
    `milestone: strict` and the exact native target:

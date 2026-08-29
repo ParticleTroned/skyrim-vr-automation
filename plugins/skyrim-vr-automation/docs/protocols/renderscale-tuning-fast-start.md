@@ -173,6 +173,29 @@ timeout. The waiter must return as soon as strict coherence succeeds; do not
 add an operation poll, receipt sleep, progress commentary, or second 30-second
 window.
 
+A client-side serialization or receipt-delivery error is not a terminal
+qualification result. Before writing evidence, reporting feedback, cancelling,
+cleaning up, or pausing for commentary, read `qualification_status` once with
+the exact `expectedBuildId`, then validate its returned ownership pair:
+
+- If that exact owner is active with `phase: dispatched`, no waiter is active.
+  Reissue the identical `qualification_wait` once immediately. Keep the same
+  owner, transition, target, foveation, milestone, and full `timeoutMs: 30000`;
+  the server's dispatch-relative deadline is unchanged. If this reissue returns
+  `qualification_wait_active`, follow the `waiting` branch below.
+- If that exact owner is active with `phase: waiting`, do not replay the
+  waiter. Read only `qualification_status` through the original deadline, then
+  allow at most five additional seconds to retrieve its already-terminal
+  matching `lastEvidence`.
+- If the owner is inactive and matching `lastEvidence` is present, use that as
+  the terminal waiter receipt.
+
+Any different owner, transition, Build ID, or missing terminal evidence after
+that bound stops future mutations and asks the user. Never reapply the profile
+or create a second measurement window. Record the client error after the
+qualification owner is terminal. This owner-correlated recovery rule applies
+to every baseline and measured waiter in both vendor assays.
+
 The terminal baseline waiter receipt is the first authoritative output-contract
 proof. Require its independent `milestoneTimings` and `replacementTimeline`
 objects. If either object is absent, record `plugin_contract_outdated`, preserve

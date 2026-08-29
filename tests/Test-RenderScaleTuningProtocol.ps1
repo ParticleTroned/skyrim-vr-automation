@@ -46,6 +46,9 @@ $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
 foreach ($token in @('one parallel read-only batch', 'first live action', 'parallel five-read', 'Start it immediately', 'Before that batch, do not create a', '`.gitkeep`', 'do not run a local command', 'No local evidence setup may delay the first DevBench request', 'After all five read-only responses return', 'write the five receipts directly to their final', 'Create required parent directories implicitly', 'Do not create an empty directory tree or placeholder files first', 'one local evidence action before `prepare_coc`', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`startupReadElapsedMs`', '`slow_startup_reads`', 'not an admission failure', 'continue directly to', 'without progress commentary', '`positioningDispatchElapsedMs`', 'efficiency target, not an admission gate', '`slow_positioning_dispatch`', '`positioning_dispatch_timer_not_started`', 'store the elapsed value as `null`', 'Only failure to obtain an accepted positioning `runId`', "transition 1's authoritative CPU/GPU timing origin", 'absolute tolerance `0.000001`', 'ordinary binary32 serialization drift', 'Require all booleans, readiness, logging, and persistence fields exactly', 'same orchestrated turn', 'return for model deliberation', 'Do not add `ping`', 'Do not add a pre-position API snapshot', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'one synchronous fail-closed scenario', 'Do not query profiler `registry` or `snapshot`', 'do not run a deliberately', 'DevBench offline tests', 'continue directly into the', 'in the same orchestrated action turn', 'full dispatch-relative `timeoutMs: 30000`', 'Never calculate or pass a client-side remaining', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
+foreach ($token in @('client-side serialization or receipt-delivery error', 'read `qualification_status` once', '`phase: dispatched`', 'Reissue the identical `qualification_wait` once immediately', '`qualification_wait_active`', '`phase: waiting`', 'at most five additional seconds', 'matching `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter')) {
+    Assert-Contains $fastStart $token 'Shared waiter receipt recovery contract'
+}
 foreach ($forbidden in @(
     'Before the first live request, create one unique evidence root',
     'first action turn after reading this contract must start evidence',
@@ -165,6 +168,9 @@ foreach ($variant in $variants) {
         'No wait, snapshot, client round trip, menu action, or other tool may appear',
         'idempotentReplay: false', '`applied_synchronously`', 'exactly `queued`',
         '`no_change`', 'same direct `qualification_wait`',
+        'owner-correlated recovery rule immediately',
+        '`phase: dispatched`', 'never reapply the profile',
+        '`waiting`', 'terminal `lastEvidence`',
         '`method: none`', '`method: taa`', '`qualityMode: 0`',
         'target-correlated server barrier', 'advancing coherent native presentation',
         '`active/active` native controller state',
@@ -336,7 +342,7 @@ foreach ($protocol in @(
         'There is no fallback transport',
         'without changing the shared 30-second measurement deadline',
         '`qualification_status`',
-        'do not replay the waiter',
+        'Reissue the same waiter at most once only when status proves',
         'terminal receipt cannot be recovered',
         'does not by itself make control unsafe',
         'must remain `PASS`',
