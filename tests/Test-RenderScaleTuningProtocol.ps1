@@ -51,17 +51,17 @@ foreach ($token in @(
     '`0x1002`/4098', 'Report positioning as soon as it returns',
     'do not create an evidence directory', 'decode Base64',
     'read another reference first', 'in one local read action',
-    'Do not write startup evidence before transition 1',
-    "transition 1's required evidence batch before transition 2",
-    '`Get-Item` and `Get-FileHash`',
-    'never compare them with an in-memory reserialization',
+    '`startup_receipts_not_retained`',
+    'non-blocking evidence anomaly',
+    'only during finalization',
+    'not a render, control, or assay failure',
     'Every later mutation and ownership scenario remains synchronous',
     'terminal baseline waiter receipt', '`milestoneTimings`',
     '`replacementTimeline`'
 )) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
-foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '`clearHistory: true`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session')) {
+foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '`clear_history`', 'do not use', '`start_capture`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session', 'do not run a local command', 'never search for it', '`communityshaders.profiler_api`', '`result.status.session.id`', 'Immediately begin transition 1')) {
     Assert-Contains $fastStart $token 'Shared server-owned waiter contract'
 }
 foreach ($forbidden in @(
@@ -220,7 +220,7 @@ foreach ($variant in $variants) {
         'resource key remains inactive with backend `none`',
         'Scenario steps cannot interpolate earlier',
         'short ownership sequence', 'Do not issue a separate',
-        'atomically resets/starts', '`clearHistory: true`',
+        'atomically resets/starts', '`clear_history`',
         'selected live lane''s short', 'pre_snapshot_transport_unavailable',
         'send no further DevBench', 'ask the user immediately',
         'Do not attempt cleanup until',
@@ -255,6 +255,9 @@ foreach ($variant in $variants) {
         '`retention_signal`', '`initialization_dominated`',
         '`repeat_not_completed`',
         'Memory growth alone never changes a transition''s',
+        'Missing startup receipts are a non-blocking anomaly',
+        '`docs/development/vr-render-scale-comparison-ledger.csv`',
+        'never search for a',
         'No external', 'Never average'
     )) {
         Assert-Contains $protocolContract $token $variant.Name

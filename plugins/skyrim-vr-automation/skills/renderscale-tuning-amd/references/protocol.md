@@ -107,9 +107,10 @@ CPU/GPU reset: transition 1 dispatch requires both captures inactive and
 atomically resets/starts them. Before each later lane, after the preceding
 lane's guarded stop receipt, serialize exactly one CPU reset and one GPU reset
 to clear its measurements and require
-both captures inactive. In the first measured mutation scenario, start the
-profiler with `clearHistory: true` immediately before dispatch; dispatch then
-starts CPU/GPU capture on its QPC/frame. Stop only that pass's owned sessions
+both captures inactive. In the first measured mutation scenario, call profiler
+API `clear_history` immediately before dispatch; do not use bounded
+`start_capture` or invent `frameCount`. Dispatch then starts CPU/GPU capture on
+its QPC/frame. Stop only that pass's owned sessions
 after transition 31. Do not combine capture windows across passes or lanes.
 
 Execute each runnable lane's exact matrix twice in the same Skyrim process.
@@ -268,6 +269,9 @@ operation, API events, final snapshot,
 render-scale status, preparation trace, and provider-lifecycle receipts. Add
 and rehash their `receipt-index.json` entries before the next apply. Never
 substitute a transcript reference or MCP/store key for one of these files.
+This transition evidence requirement does not include `prepare_coc` or the
+positioning scenario. Missing startup receipts are a non-blocking anomaly and
+never stop a valid lane.
 
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
@@ -460,8 +464,10 @@ render verdict separately. Memory growth alone never changes a transition's
 
 ### Ledger append transaction
 
-Treat each comparison-ledger column append as one transaction. Read and parse
-the current verified ledger once, retain its original hash, and compose the
+Treat each comparison-ledger column append as one transaction. Use exactly
+`docs/development/vr-render-scale-comparison-ledger.csv`; never search for a
+ledger. Read and parse it once after both passes in the lane finish, retain its
+original hash, and compose the
 complete candidate before any ledger write. Reject the candidate unless it has
 the same ordered metric rows and row count, exactly one additional rightmost
 column, a unique nonempty header, and zero changed pre-existing parsed cell

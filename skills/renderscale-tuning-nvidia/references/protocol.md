@@ -82,8 +82,8 @@ requires both captures inactive and atomically resets/starts them. Retain each
 stateful receipt;
 provider lifecycle, resource publication, preparation, fidelity, stereo,
 retry, failure, memory, and queue remain status evidence. In the first measured
-mutation scenario, start the profiler with `clearHistory: true` immediately
-before dispatch; dispatch
+mutation scenario, call profiler API `clear_history` immediately before
+dispatch; do not use bounded `start_capture` or invent `frameCount`. Dispatch
 then starts CPU/GPU capture on its QPC/frame. That first measured apply, not
 the positioning COC or initial-state apply, is their timing origin.
 
@@ -241,6 +241,9 @@ operation, API events, final snapshot,
 render-scale status, preparation trace, and any DLSS trace lifecycle receipts.
 Add and rehash their `receipt-index.json` entries before the next apply. Never
 substitute a transcript reference or MCP/store key for one of these files.
+This transition evidence requirement does not include `prepare_coc` or the
+positioning scenario. Missing startup receipts are a non-blocking anomaly and
+never stop a valid matrix.
 
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
@@ -448,8 +451,10 @@ render verdict separately. Memory growth alone never changes a transition's
 
 ### Ledger append transaction
 
-Treat each comparison-ledger column append as one transaction. Read and parse
-the current verified ledger once, retain its original hash, and compose the
+Treat each comparison-ledger column append as one transaction. Use exactly
+`docs/development/vr-render-scale-comparison-ledger.csv`; never search for a
+ledger. Read and parse it once after both passes finish, retain its original
+hash, and compose the
 complete candidate before any ledger write. Reject the candidate unless it has
 the same ordered metric rows and row count, exactly one additional rightmost
 column, a unique nonempty header, and zero changed pre-existing parsed cell

@@ -31,13 +31,13 @@ Then read the selected matrix, vendor protocol, and this contract completely
 in one local read action. Do not load Simple COC or Simple CSM instructions,
 enumerate tools, inspect schemas, or run another admission/reset scenario.
 
-Keep the exact `prepare_coc` and positioning responses in context. Do not write
-startup evidence before transition 1. Persist both responses unchanged with
-transition 1's required evidence batch before transition 2, index their final
-on-disk byte lengths and SHA-256 values with PowerShell `Get-Item` and
-`Get-FileHash`, and never compare them with an in-memory reserialization. If
-the assay stops before transition 1, make one best-effort final evidence write;
-failure to write unmeasured startup receipts is not a render failure.
+Keep the exact `prepare_coc` and positioning responses in context when the
+client retains them, but they are not measurement evidence. Never replay a
+startup call, stop a measured run, or delay transition 1 because either startup
+response expired from the client response store. Record
+`startup_receipts_not_retained` as a non-blocking evidence anomaly and continue.
+Write retained startup responses only during finalization; failure to preserve
+them is not a render, control, or assay failure.
 
 Every later mutation and ownership scenario remains synchronous with
 `async: false` and `continueOnError: false`.
@@ -46,6 +46,40 @@ Every later mutation and ownership scenario remains synchronous with
 
 Reuse the post-position public snapshot and its exact `stateRevision` when it
 is complete, has no active operation, and still matches the bound Build ID.
+
+From this point until transition 1 has been dispatched, do not run a local
+command, create an evidence directory, locate a ledger, hash or serialize a
+receipt, search documentation or source, inspect a tool schema, or prepare a
+report. The only permitted work is to materialize the values already returned,
+run the baseline scenario, run the handoff scenario, and begin transition 1's
+prescribed 5,000 ms settle. The ledger path is the repository-relative
+`docs/development/vr-render-scale-comparison-ledger.csv`; never search for it.
+
+Use these fixed substitutions without discovery:
+
+- `B`: exact bound Build ID;
+- `R`: post-position `stateRevision`;
+- `T` and `O`: new nonzero transition ID and unique owner ID;
+- `C` and `K`: unique client and command IDs;
+- `P`: complete string-valued API profile described by the vendor protocol;
+- `Q`: the same profile with numeric quality (`native_aa=0`, `hoshipa=1`,
+  `ultra_quality=2`, `quality=3`, `balanced=4`, `performance=5`,
+  `ultra_performance=6`);
+- `F`: exactly `{ "foveatedVendorDispatch": true,
+  "foveatedCenterArea": 0.3, "peripheryTAAEnable": true,
+  "peripheryTAACenterArea": 0.3, "peripheryTAAOuterScale": 0.7 }`.
+
+The six baseline scenario steps have these complete tool/argument shapes; add
+no field and perform no lookup:
+
+| Label | Tool | Arguments |
+| --- | --- | --- |
+| `baseline-stress-reset` | `communityshaders.renderscale` | `{"action":"reset","expectedBuildId":"B"}` |
+| `baseline-stress-start` | `communityshaders.renderscale` | `{"action":"start","expectedBuildId":"B"}` |
+| `qualification-begin` | `communityshaders.renderscale` | `{"action":"qualification_begin","transitionId":T,"ownerId":"O","expectedBuildId":"B"}` |
+| `qualification-dispatch` | `communityshaders.renderscale` | `{"action":"qualification_dispatch","transitionId":T,"ownerId":"O","startPerformanceTelemetry":false,"expectedBuildId":"B"}` |
+| `profile-apply` | `communityshaders.upscaling_api` | `{"action":"apply","expectedBuildId":"B","expectedStateRevision":R,"target":P,"purpose":"direct","persistence":"runtime_only","clientId":"C","commandId":"K","reason":"render-scale tuning baseline"}` |
+| `qualification-wait` | `communityshaders.renderscale` | `{"action":"qualification_wait","transitionId":T,"ownerId":"O","expectedCellEditorId":"WhiterunDragonsreach","timeoutMs":30000,"milestone":"strict","target":Q,"foveation":F,"expectedBuildId":"B"}` |
 
 Start the baseline with one synchronous fail-closed scenario containing six
 labeled tool steps in this exact order: `baseline-stress-reset`,
@@ -94,10 +128,29 @@ Only after strict waiter success and that receipt check, continue without a
 model pause into one synchronous fail-closed handoff scenario to stop the
 baseline stress session with its exact ownership guard, start measured stress,
 reset then start texture-lifetime, reset then start load-presentation, and
-pre-arm the profiler with `set_enabled`. Do not clear profiler history here;
-transition 1 starts its capture with `clearHistory: true` immediately before
-dispatch. Transition 1's `qualification_dispatch` is the sole CPU/GPU
-reset/start and timing origin. Retain every owner receipt. A failed or
+pre-arm the profiler with `set_enabled`. The baseline session guard is the
+positive integer at the `baseline-stress-start` result's
+`result.status.session.id`. Use exactly these handoff steps, replacing `S`,
+`C`, and `K` with that session ID and unique profiler command IDs:
+
+| Label | Tool | Arguments |
+| --- | --- | --- |
+| `baseline-stress-stop` | `communityshaders.renderscale` | `{"action":"stop","expectedSessionId":S,"expectedBuildId":"B"}` |
+| `measured-stress-start` | `communityshaders.renderscale` | `{"action":"start","expectedBuildId":"B"}` |
+| `texture-lifetime-reset` | `communityshaders.renderscale` | `{"action":"texture_lifetime_reset","expectedBuildId":"B"}` |
+| `texture-lifetime-start` | `communityshaders.renderscale` | `{"action":"texture_lifetime_start","expectedBuildId":"B"}` |
+| `load-presentation-reset` | `communityshaders.renderscale` | `{"action":"probe_reset","expectedBuildId":"B"}` |
+| `load-presentation-start` | `communityshaders.renderscale` | `{"action":"probe_start","expectedBuildId":"B"}` |
+| `profiler-enable` | `communityshaders.profiler_api` | `{"contractMajor":1,"clientId":"C","commandId":"K","action":"set_enabled","enabled":true,"expectedBuildId":"B"}` |
+
+Do not clear profiler history here. Transition 1 inserts exactly
+`{"contractMajor":1,"clientId":"C","commandId":"K","action":"clear_history","expectedBuildId":"B"}`
+as a `communityshaders.profiler_api` step immediately before
+`qualification_dispatch`; use new client/command IDs and do not use
+`start_capture` or invent `frameCount`. Transition 1's
+`qualification_dispatch` is the sole CPU/GPU reset/start and timing origin.
+Immediately begin transition 1's 5,000 ms settling scenario after the handoff
+returns. Retain every owner receipt. A failed or
 unsatisfied baseline waiter, a missing waiter subreceipt, or an incomplete
 scenario must never invoke this handoff scenario because it contains measured
 owner start actions. The handoff scenario is never a cleanup path. Stop only
