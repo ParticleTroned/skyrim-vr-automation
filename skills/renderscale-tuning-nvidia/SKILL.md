@@ -1,6 +1,6 @@
 ---
 name: renderscale-tuning-nvidia
-description: Run the NVIDIA Skyrim VR public-upscaling-API render-scale tuning assay when the user says renderscale-tuning nvidia, using the exact 33-transition None, TAA, DLAA, DLSS, and FSR3 matrix with full telemetry. Do not use for AMD, simple csm, or release qualification.
+description: Run the NVIDIA Skyrim VR public-upscaling-API render-scale tuning assay when the user says renderscale-tuning nvidia, repeating the exact 33-transition None, TAA, DLAA, DLSS, and FSR3 matrix once in the same process with full telemetry. Do not use for AMD, simple csm, or release qualification.
 ---
 
 # NVIDIA render-scale tuning
@@ -22,8 +22,9 @@ inherit Simple COC or Simple CSM instructions. Do not execute or alter Simple
 CSM's 25-step matrix.
 
 The trigger authorizes one positioning COC to `WhiterunDragonsreach`, one
-initial runtime-only profile apply, and exactly 33 measured runtime-only
-profile applies through `communityshaders.upscaling_api`. It does not authorize
+runtime-only baseline apply before each of two passes, and exactly 66 measured
+runtime-only profile applies across two identical 33-transition passes through
+`communityshaders.upscaling_api`. It does not authorize
 a build, deployment, MO2 edit, Stabilizer edit, INI edit, persistence, game
 restart, fault injection, another protocol, or any
 `communityshaders.renderscale` mutation. VR FPS Stabilizer settings remain

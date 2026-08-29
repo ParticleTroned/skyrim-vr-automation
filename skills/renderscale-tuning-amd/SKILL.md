@@ -1,6 +1,6 @@
 ---
 name: renderscale-tuning-amd
-description: Run the AMD Skyrim VR public-upscaling-API render-scale tuning assay when the user says renderscale-tuning amd, using separate explicit-FSR4, explicit-FSR3, and FSR4-to-FSR3-fallback 31-transition lanes with full telemetry. Do not use for NVIDIA, simple csm, or release qualification.
+description: Run the AMD Skyrim VR public-upscaling-API render-scale tuning assay when the user says renderscale-tuning amd, repeating each explicit-FSR4, explicit-FSR3, and FSR4-to-FSR3-fallback 31-transition lane once in the same process with full telemetry. Do not use for NVIDIA, simple csm, or release qualification.
 ---
 
 # AMD render-scale tuning
@@ -22,9 +22,9 @@ Simple COC or Simple CSM instructions. Do not execute or alter Simple CSM's
 25-step matrix.
 
 The trigger authorizes one positioning COC to `WhiterunDragonsreach`, one
-initial runtime-only profile apply per runnable lane, and exactly 31 measured
-runtime-only `communityshaders.upscaling_api` applies per runnable lane. It
-does not authorize a
+runtime-only baseline apply before each pass in a runnable lane, and exactly 62
+measured runtime-only `communityshaders.upscaling_api` applies across two
+identical 31-transition passes per runnable lane. It does not authorize a
 build, deployment, MO2 edit, Stabilizer edit, INI edit, persistence, game
 restart, unsafe pressure/fault injection, another protocol, or any
 `communityshaders.renderscale` mutation. VR FPS Stabilizer settings remain

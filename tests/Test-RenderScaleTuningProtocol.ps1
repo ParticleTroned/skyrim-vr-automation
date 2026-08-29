@@ -52,6 +52,7 @@ $variants = @(
         Name = 'renderscale-tuning-nvidia'
         Trigger = '`renderscale-tuning nvidia`'
         Count = 33
+        MeasuredApplyCount = 66
         Sequence = @(
             'none', 'taa', 'dlaa', 'dlss_hoshipa', 'dlss_ultra_quality',
             'dlss_quality', 'dlss_balanced', 'dlss_performance',
@@ -67,6 +68,7 @@ $variants = @(
         Name = 'renderscale-tuning-amd'
         Trigger = '`renderscale-tuning amd`'
         Count = 31
+        MeasuredApplyCount = 62
         Sequence = @(
             'none', 'taa', 'fsr_native_aa', 'fsr_hoshipa',
             'fsr_ultra_quality', 'fsr_quality', 'fsr_balanced',
@@ -100,6 +102,7 @@ foreach ($variant in $variants) {
 
     Assert-Contains $skill "name: $($variant.Name)" $variant.Name
     Assert-Contains $skill $variant.Trigger $variant.Name
+    Assert-Contains $skill "exactly $($variant.MeasuredApplyCount) measured" $variant.Name
     Assert-Contains $skill 'Do not execute or alter Simple CSM''s 25-step matrix.' $variant.Name
     Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
     Assert-Contains $skill 'does not authorize' $variant.Name
@@ -185,6 +188,16 @@ foreach ($variant in $variants) {
         '`replacementAdmissionBlockReasons`', '`physicalMutationStarted`',
         '`selectedPresentationDisposition`', 'their SHA-256 values',
         'only `summary.json` and `transitions.csv` is incomplete',
+        'exact matrix twice in the same Skyrim process',
+        'exactly one synchronous', 'server-owned 10,000 ms wait',
+        'cooldown-start memory snapshot', 'cooldown-end snapshot',
+        'Pass 2 transition 1 is the new CPU/GPU timing origin',
+        'Do not start a third pass', 'Memory confirmation result',
+        '`raw/pass-1/transitions`', '`raw/pass-2/transitions`',
+        '`raw/memory`', '`memoryConfirmation`', '`predicateInputs`',
+        '`retention_signal`', '`initialization_dominated`',
+        '`repeat_not_completed`',
+        'Memory growth alone never changes a transition''s',
         'No external', 'Never average'
     )) {
         Assert-Contains $protocolContract $token $variant.Name

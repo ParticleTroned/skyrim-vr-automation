@@ -72,9 +72,9 @@ new task to the bundled implementations and their operational contracts:
   hardware-specific 25-step CS menu matrix with five-second pacing and the
   same telemetry and evidence extraction.
 - `$renderscale-tuning-nvidia` runs the exact 33-transition NVIDIA public-API
-  matrix across None, TAA, DLAA, DLSS, and explicit FSR3.
-- `$renderscale-tuning-amd` runs separate 31-transition public-API lanes for
-  explicit FSR4, explicit FSR3, and documented FSR4-to-FSR3 fallback.
+  matrix twice in one process, separated by a bounded memory cooldown.
+- `$renderscale-tuning-amd` runs each 31-transition explicit-FSR4, explicit-
+  FSR3, and documented FSR4-to-FSR3-fallback lane twice in one process.
 - `$static-coc` runs the preserved 20-transition COC assay with one strict,
   30-second milestone wait per transition and reports presentation and cleanup
   timing without weakening the canonical strict gate.

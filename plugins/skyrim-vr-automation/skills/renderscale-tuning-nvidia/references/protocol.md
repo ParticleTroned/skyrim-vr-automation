@@ -97,12 +97,36 @@ Use the shared contract's one synchronous handoff scenario to stop the
 baseline-only stress owner and arm the fresh measured stress, texture lifetime,
 load presentation, and profiler owners in its short ownership sequence. Reuse
 the CPU/GPU reset receipts from measurement admission, require both captures
-inactive, and do not issue another CPU/GPU reset. Retain each stateful receipt;
+inactive, and do not issue another CPU/GPU reset during pass 1. Retain each
+stateful receipt;
 provider lifecycle, resource publication, preparation, fidelity, stereo,
 retry, failure, memory, and queue remain status evidence. In the first measured
 mutation scenario, start the profiler immediately before dispatch; dispatch
 then starts CPU/GPU capture on its QPC/frame. That first measured apply, not
 the positioning COC or initial-state apply, is their timing origin.
+
+Execute the exact matrix twice in the same Skyrim process. Call them `pass 1`
+and `pass 2`; use IDs unique across both passes and never alter the matrix,
+pacing, completion deadline, cell, fixture, or provider rules.
+
+After pass 1 transition 33, stop and preserve only pass 1's owned telemetry
+under `raw/pass-1/finalization`.
+Record a raw cooldown-start memory snapshot, then run exactly one synchronous
+server-owned 10,000 ms wait containing no mutation or telemetry action. Record
+a raw cooldown-end snapshot and require the same PID and Build ID, advancing
+world frames, no active public operation, drained cleanup debt, and no leaked
+owner or capture. Do not require memory usage to decrease during cooldown;
+pressure and growth are evidence, not a mutation gate.
+
+Repeat only section 2's fail-closed baseline mutation and strict waiter with
+new IDs, without another COC or its pass 1 handoff. After strict baseline
+cleanup, arm fresh pass 2 owners and serialize exactly one CPU reset and one
+GPU reset after confirming pass 1's captures are inactive. Pass 2 transition 1
+is the new CPU/GPU timing origin. Execute all 33 transitions once more;
+section 5 performs the single guarded pass 2 stop. Do not start a third pass.
+A semantic pass 1 failure does not suppress pass 2 when control, identity,
+ownership, liveness, and cleanup remain safe; an interrupted or unsafe pass 1
+stops before further mutation and asks the user.
 
 ## 3. Exact public-API transition primitive
 
@@ -329,7 +353,8 @@ Keep these contracts separate:
 
 Every transition record must retain direct raw paths for:
 
-- dispatch/marker frame and QPC, API revisions, operation ID, disposition,
+- pass number, transition ordinal, dispatch/marker frame and QPC, API
+  revisions, operation ID, disposition,
   admission route, replacement admission state and all reasons;
 - first physical match, first coherent both-eye presentation, presentation,
   cleanup, and strict frame/QPC timings;
@@ -388,13 +413,50 @@ ownership/fidelity evidence violates this protocol. Never accept stale DLSS
 output after destructive mutation. A proven old provider may remain active only
 before mutation begins.
 
-After transition 33, stop only task-owned telemetry and retain final status.
-Persist every stop/final-status response under `raw/finalization`, then verify
+After pass 2 transition 33, stop only task-owned telemetry and retain final
+status. Persist every pass 2 stop/final-status response under
+`raw/pass-2/finalization`, then verify
 that every `receipt-index.json` entry exists and matches its byte length and
 SHA-256 before producing summaries or appending the ledger. An evidence root
 containing only `summary.json` and `transitions.csv` is incomplete and cannot
 support a ledger append.
-Append one uniquely headed result column, then produce separate tables for:
+Append one uniquely headed result column only after the complete two-pass
+comparison.
+
+### Memory confirmation result
+
+Produce a dedicated memory table with columns for pass 1 start/end/delta,
+cooldown start/end/delta, pass 2 start/end/delta, and the pass-2/pass-1 growth
+ratio. Include process private MiB, system commit MiB, DXGI process usage MiB,
+memory pressure, live tracked texture count, and estimated live tracked
+texture MiB. Preserve the raw start/end receipts for both passes and both
+cooldown snapshots; never substitute the final status for a missing boundary.
+Store transitions under `raw/pass-1/transitions` and
+`raw/pass-2/transitions`, and store the six memory boundaries under
+`raw/memory`. Index every file in `receipt-index.json`.
+Write a `memoryConfirmation` object to `summary.json` containing
+`passesCompleted`, `cooldownMilliseconds`, the three boundary groups, all
+computed deltas and ratios, `predicateInputs`, and `verdict`. Include `pass`
+in every `transitions.csv` row.
+
+Compute a ratio only when the pass 1 delta is positive; otherwise report
+`n/a`. Classify memory separately from render correctness:
+
+- `retention_signal` requires pass 2 process-private and system-commit growth
+  each to be at least 75 percent of its positive pass 1 growth, plus positive
+  pass 2 DXGI growth or an increase in pass 2 live texture count or bytes.
+- `initialization_dominated` requires pass 2 process-private and system-commit
+  growth each to be no more than 25 percent of its positive pass 1 growth and
+  no positive pass 2 increase in DXGI usage, live texture count, or live
+  texture bytes.
+- Every other complete comparison is `inconclusive`. A missing repeat is
+  `repeat_not_completed`, makes the assay `INTERRUPTED`, and forbids a ledger
+  append.
+
+Neither `retention_signal` nor Normal final pressure proves or disproves a
+leak. Print the memory classification, its exact predicate inputs, and the
+render verdict separately. Memory growth alone never changes a transition's
+`PASS`/`FAIL` classification, and the protocol never starts a third pass.
 
 ### Ledger append transaction
 
@@ -412,6 +474,19 @@ Require these five distinct metric rows before composing the candidate:
 `vendor_native_qualification_failures`, and
 `credible_liveness_timeouts`. If any row is absent, preserve the run evidence,
 do not modify the ledger, and report `ledger_failure_schema_outdated`.
+
+Also require `memory_confirmation_passes`,
+`memory_process_private_mib_pass1_pass2_ratio`,
+`memory_system_commit_mib_pass1_pass2_ratio`,
+`memory_dxgi_usage_mib_pass1_pass2_ratio`,
+`memory_live_textures_pass1_cooldown_pass2`,
+`memory_live_texture_mib_pass1_cooldown_pass2`,
+`memory_pressure_pass1_cooldown_pass2`, and
+`memory_confirmation_verdict`. Store both pass deltas and the ratio in the
+three growth cells as `<pass1-delta>/<pass2-delta>/<ratio>`. Store resource
+and pressure cells as
+`<pass1-end>/<cooldown-start>-><cooldown-end>/<pass2-start>-><pass2-end>`.
+Never collapse the memory classification into the render verdict.
 
 Populate those rows from preserved receipts, never from the number of
 transitions classified `FAIL`:
@@ -456,6 +531,11 @@ Produce separate tables for:
 2. NVIDIA FSR3 transitions.
 3. NVIDIA provider-crossing transitions.
 4. NVIDIA TAA and None transitions.
+
+Show pass 1 and pass 2 side by side for every transition. Preserve each
+pass's classification and timings, and report whether every failure or anomaly
+recurred, recovered, or appeared only in the repeat. Never average the passes
+or replace either pass with the memory classification.
 
 For TAA/None separate vendor-to-TAA, vendor-to-None, TAA-to-vendor,
 None-to-vendor, and TAA-to-None results. Include native restoration,
