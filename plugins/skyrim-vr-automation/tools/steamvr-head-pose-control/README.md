@@ -32,6 +32,19 @@ plausible eye separation, and a valid recommended render target. Using
 stable user-local directory, records an ownership marker, registers the driver
 with Valve's `vrpathreg`, and optionally writes an evidence receipt. Registration
 is independently proven as exactly one canonical path in the authoritative
-OpenVR inventory. Upgrades use a write-ahead journal; failure quarantines the
-uncommitted replacement and restores and verifies both the old installation and
-the exact registration-file preimage.
+OpenVR inventory. Install and upgrade callers serialize through a bounded lock
+keyed by the canonical install root and OpenVR registration file. The
+authoritative journal and exact registration preimage live in a deterministic
+per-user control directory; caller evidence journals are secondary mirrors.
+Every later install invocation discovers and recovers a nonterminal journal
+before it validates a new package or evidence directory. Recovery is
+phase-aware and idempotent: it quarantines an uncommitted replacement/staging
+tree, restores the retained owned installation, restores exact registration
+bytes, and verifies original marker/DLL provenance. A registration command
+whose result was not journalled is accepted for rollback only when its semantic
+driver inventory differs from the preimage solely by the one canonical target.
+Unclassified target or registration drift fails for manual recovery.
+
+The install lock is bounded by `-InstallLockTimeoutMilliseconds`. Its control
+root is fixed under Windows LocalApplicationData; the fixture-only environment
+override is accepted only for targets within the OS temporary directory.
