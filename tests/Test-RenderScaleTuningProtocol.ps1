@@ -43,8 +43,14 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
-foreach ($token in @('one parallel read-only batch', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
+foreach ($token in @('one parallel read-only batch', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
+}
+foreach ($forbidden in @(
+    'render-scale tool description to advertise independent',
+    'generic process inventory, adapter description string, or upscaling API receipt is authoritative'
+)) {
+    Assert-True (-not $fastStart.Contains($forbidden, [StringComparison]::Ordinal)) "Shared tuning fast-start retains an invalid admission rule: $forbidden"
 }
 
 $variants = @(
@@ -110,6 +116,8 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'direct `mcp__devbench_vr__*` tools are the only permitted' $variant.Name
     Assert-Contains $skill 'including deferred tools' $variant.Name
     Assert-Contains $skill 'Never use the bundled' $variant.Name
+    Assert-Contains $skill 'Tool descriptions prove callable actions and inputs' $variant.Name
+    Assert-Contains $skill 'structured producer receipt that owns them' $variant.Name
     Assert-Contains $skill '../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
     Assert-Contains $skill 'As soon as its `runId` is accepted' $variant.Name
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
@@ -164,7 +172,9 @@ foreach ($variant in $variants) {
         'Do not attempt cleanup until',
         'exactly one live DevBench transport lane',
         'plugin-provided direct MCP tools are callable',
-        'direct MCP tool descriptions as the schema inventory',
+        'direct MCP tool descriptions as the callable action and input-schema inventory',
+        'not an output schema', 'shared startup `communityshaders.renderscale status` receipt',
+        'they are output evidence',
         'do not open the bundled', 'Never switch or mix transport lanes',
         'A direct run never starts a controller availability wait',
         'Do not generate or edit task-local orchestration scripts',
@@ -214,6 +224,7 @@ foreach ($variant in $variants) {
     Assert-True (-not $protocol.Contains("controller's short bounded", [StringComparison]::Ordinal)) "$($variant.Name) still ties recovery to a second transport."
     Assert-True (-not $protocol.Contains('Every bundled DevBench controller invocation', [StringComparison]::Ordinal)) "$($variant.Name) still opens a controller per live call."
     Assert-True (-not $protocol.Contains('expected timing-owner cancellation after None/TAA stability', [StringComparison]::Ordinal)) "$($variant.Name) still cancels native qualification instead of using the direct waiter."
+    Assert-True (-not $skill.Contains('live public API to expose every action and field', [StringComparison]::Ordinal)) "$($variant.Name) still treats input metadata as an output contract."
 
     $positioningPosition = $protocol.IndexOf(
         'After the positioning `runId` is accepted',

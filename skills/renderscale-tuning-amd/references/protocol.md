@@ -16,7 +16,8 @@ Use the installed plugin's direct DevBench MCP tools exclusively for every AMD
 lane baseline, transition, evidence read, and guarded cleanup. Search the
 complete callable tool catalog, including deferred tools, for the
 `mcp__devbench_vr__` prefix before declaring the lane unavailable. Treat the
-direct MCP tool descriptions as the schema inventory. The direct
+direct MCP tool descriptions as the callable action and input-schema inventory,
+not an output schema. The direct
 `communityshaders.renderscale` schema must expose `qualification_wait` and its
 `target.method` enum must contain `none`, `taa`, `dlss`, and `fsr`. If either
 native method is absent, stop before any stateful call with
@@ -32,7 +33,10 @@ transport, controller availability wait, or lane switching.
 Do not generate or edit task-local orchestration scripts during live preflight
 or baseline setup; evidence files remain permitted.
 
-Require the bound active D3D adapter to be AMD. Require the live
+Require `status.adapter.available: true` and AMD vendor ID `0x1002`/4098 in the
+shared startup `communityshaders.renderscale status` receipt. This is the bound
+active D3D adapter; do not substitute generic process inventory or a
+description string. Require the live
 `communityshaders.upscaling_api` description to expose `registry`,
 `capabilities`, `snapshot`, `apply`, `operation`, and `events`, plus guarded
 `expectedBuildId`, `expectedStateRevision`, `clientId`, `commandId`, `target`,
@@ -115,7 +119,9 @@ return upon the first successful receipt. Do not add an independent operation
 wait. Require
 coherent FSR evaluation in both eyes, correct scaled dimensions, exact
 generation/resource ownership, the lane's physical backend, clean mutation
-and lifecycle state, and no terminal failure.
+and lifecycle state, and no terminal failure. Require `milestoneTimings` and
+`replacementTimeline` in this terminal receipt as directed by the shared
+contract; they are output evidence, not tool-description fields.
 
 Use the shared contract's one synchronous handoff scenario to stop the
 baseline-only stress owner and arm the fresh measured stress, texture lifetime,

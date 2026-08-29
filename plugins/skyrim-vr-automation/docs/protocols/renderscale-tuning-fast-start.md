@@ -8,9 +8,11 @@ Do not read Simple COC or Simple CSM instructions for either tuning assay.
 
 Use only callable plugin-provided tools whose names start with
 `mcp__devbench_vr__`. Inspect their current in-memory descriptions, including
-deferred tools, as the schema inventory. Do not inspect plugin cache paths,
-manifests, marketplace files, or the bundled controller during a live run.
-There is no fallback transport and no lane switching.
+deferred tools, as the callable action and input-schema inventory. Tool
+descriptions do not advertise result fields; validate output evidence only in
+the structured receipt from the action that owns it. Do not inspect plugin
+cache paths, manifests, marketplace files, or the bundled controller during a
+live run. There is no fallback transport and no lane switching.
 
 Before the first live request, create one unique evidence root named
 `.tmp/renderscale-tuning-<vendor>-<UTC>-evidence` with `raw/startup`,
@@ -32,16 +34,19 @@ Before positioning, use only these request rounds:
 
 1. One parallel read-only batch containing direct `ping`, `inspect health`,
    `inspect state`, `communityshaders.upscaling_api registry`, `capabilities`,
-   and `snapshot`. Retain every receipt. Require one live Skyrim VR PID, a
-   loaded player, the exact CSX Build ID/producer, and the requested adapter
-   vendor. Require every action and field used by the lane, including
-   `qualification_wait` with `target.method` values `none`, `taa`, `dlss`, and
-   `fsr`. If a read returns 429/502/503/504 while the off-thread health receipt
-   remains exact, retry only the failed read once immediately within the same
-   startup budget. No fixed sleep or availability waiter is permitted.
-   Require the direct render-scale tool description to advertise independent
-   `milestoneTimings` and the `replacementTimeline`; otherwise stop with
-   `plugin_contract_outdated` before the fixture or COC.
+   `snapshot`, and `communityshaders.renderscale status`. Retain every receipt.
+   Require one live Skyrim VR PID, a loaded player, and the exact CSX Build
+   ID/producer. Require `status.adapter.available: true` from the render-scale
+   status receipt and exact `status.adapter.vendorId`: `0x10DE`/4318 for the
+   NVIDIA lane or `0x1002`/4098 for the AMD lane. A generic process inventory,
+   adapter description string, or upscaling API receipt is not authoritative
+   GPU identity. Require every callable action and input field used by the
+   lane, including `qualification_wait` with `target.method` values `none`,
+   `taa`, `dlss`, and `fsr`. Do not search the tool descriptions for output
+   fields such as `milestoneTimings` or `replacementTimeline`. If a read
+   returns 429/502/503/504 while the off-thread health receipt remains exact,
+   retry only the failed read once immediately within the same startup budget.
+   No fixed sleep or availability waiter is permitted.
 2. Call `communityshaders.menu prepare_coc` exactly once and alone. It is the
    first stateful call. Require the runtime-only FOV/TAA `0.3/0.3/0.7` fixture,
    debug logging, and `persisted: false`. It must not change DLSS,
@@ -126,13 +131,20 @@ with only the remaining portion of the single 30,000 ms QPC deadline. It must
 return as soon as strict coherence succeeds; do not add an operation poll,
 receipt sleep, or second 30-second window.
 
-Only after strict waiter success, use one synchronous fail-closed handoff
-scenario to stop the baseline stress session with its exact ownership guard,
-start the measured stress, texture-lifetime, and load-presentation owners, and
-pre-arm the profiler with `set_enabled`. This does not start a profiler
-capture; the lane protocol starts that capture immediately before transition
-1 dispatch. Retain every owner receipt. CPU and GPU performance captures must
-remain inactive: transition 1's `qualification_dispatch` is their sole
-reset/start and timing origin. A failed baseline waiter starts no measured
-owner; stop only the baseline stress session with its ownership guard and
-follow the lane's terminal failure rules.
+The terminal baseline waiter receipt is the first authoritative output-contract
+proof. Require its independent `milestoneTimings` and `replacementTimeline`
+objects. If either object is absent, record `plugin_contract_outdated`, preserve
+the receipt, stop the baseline stress session with its ownership guard, and
+stop before measured-owner handoff or transition 1. Never infer either object
+from a tool description or later status snapshot.
+
+Only after strict waiter success and that receipt check, use one synchronous
+fail-closed handoff scenario to stop the baseline stress session with its exact
+ownership guard, start the measured stress, texture-lifetime, and
+load-presentation owners, and pre-arm the profiler with `set_enabled`. This
+does not start a profiler capture; the lane protocol starts that capture
+immediately before transition 1 dispatch. Retain every owner receipt. CPU and
+GPU performance captures must remain inactive: transition 1's
+`qualification_dispatch` is their sole reset/start and timing origin. A failed
+baseline waiter starts no measured owner; stop only the baseline stress session
+with its ownership guard and follow the lane's terminal failure rules.

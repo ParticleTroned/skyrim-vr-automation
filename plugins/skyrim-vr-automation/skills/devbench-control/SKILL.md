@@ -8,9 +8,11 @@ description: "Inspect and call the MCP tools exposed by a running CSX DevBench s
 Choose exactly one live transport before the first live call. When the
 plugin-provided direct MCP tools are callable, they are the mandatory and
 exclusive lane for live discovery, calls, waits, screenshots, and performance
-capture. Treat their exposed tool descriptions as the live schema inventory;
-do not run the bundled controller's `list`, open another loopback MCP session,
-or switch transport lanes during that run.
+capture. Treat their exposed tool descriptions as the live callable action and
+input-schema inventory, not as an output schema. Validate result fields in the
+structured action response that owns them; do not run the bundled controller's
+`list`, open another loopback MCP session, or switch transport lanes during
+that run.
 
 Before declaring the direct lane unavailable, search the complete callable
 tool catalog, including deferred tools, for the `mcp__devbench_vr__` prefix.
@@ -36,8 +38,9 @@ or construct HTTP or MCP requests ad hoc.
    direct lane, use its bound tools and do not create or resolve a controller
    runtime file.
 4. On the direct lane, use the exposed direct tool definitions as authoritative
-   schema inventory. On the selected controller lane, call `list` before
-   using a tool whose current name or input schema has not been established.
+   action and input-schema inventory. They do not prove output-field presence.
+   On the selected controller lane, call `list` before using a tool whose
+   current name or input schema has not been established.
 5. On the direct lane, call the exact exposed tool with structured arguments.
    On the selected controller lane, use
    `call -Tool <exact-name> -ArgumentsJson <json>`. Parse the structured result

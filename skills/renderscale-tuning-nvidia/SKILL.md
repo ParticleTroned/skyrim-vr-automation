@@ -30,10 +30,12 @@ restart, fault injection, another protocol, or any
 `communityshaders.renderscale` mutation. VR FPS Stabilizer settings remain
 outside this assay.
 
-Require the bound active adapter to be NVIDIA and the live public API to expose
-every action and field named by the protocol. A mismatch or missing core field
-is `BLOCKED`. Preserve missing optional native-presentation generation evidence
-as a tooling gap; never invent it.
+Require the shared startup render-scale status receipt to identify the bound
+active adapter as NVIDIA. Tool descriptions prove callable actions and inputs;
+validate required output fields only in the structured producer receipt that
+owns them. A mismatch or missing core field is `BLOCKED`. Preserve missing
+optional native-presentation generation evidence as a tooling gap; never invent
+it.
 
 The installed plugin's direct `mcp__devbench_vr__*` tools are the only permitted
 DevBench transport. Search the complete callable tool catalog, including
