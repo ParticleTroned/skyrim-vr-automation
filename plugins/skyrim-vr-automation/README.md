@@ -48,9 +48,9 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its fourteen skills
-connect a new task to the bundled implementations and their operational
-contracts:
+The repository publishes a Codex marketplace plugin. It registers the
+loopback `devbench_vr` MCP server directly and its fourteen skills connect a
+new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
   enhancement requests in a durable local queue; it never publishes them.
@@ -58,7 +58,9 @@ contracts:
   and transactional profile edits.
 - `$steamvr-null-hmd` routes backed-up SteamVR null-HMD apply/restore and
   bounded runtime shutdown.
-- `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
+- `$devbench-control` discovers and calls the plugin-provided loopback DevBench
+  MCP API. NVIDIA and AMD render-scale tuning require this direct lane and do
+  not fall back to the bundled controller.
 - `$coc-stability` queues the 10-second Windhelm start first, fills that wait
   with parallel identity reads, applies its post-load debug/FOV/Stabilizer gate
   once, and runs all 20 command-timed transitions in one anomaly-accumulating

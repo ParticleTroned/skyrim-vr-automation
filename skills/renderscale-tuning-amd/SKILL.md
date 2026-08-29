@@ -34,3 +34,8 @@ outside this assay.
 Require the bound active adapter to be AMD and the live public API to expose
 every action and field named by the protocol. A mismatch or missing core field
 is `BLOCKED`. Never fabricate FSR4 support or an FSR4-unavailable condition.
+
+The installed plugin's direct `mcp__devbench_vr__*` tools are the only permitted
+DevBench transport. Search the complete callable tool catalog, including
+deferred tools, before declaring them unavailable. Never use the bundled
+controller for this assay.

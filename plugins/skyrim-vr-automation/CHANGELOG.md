@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Register DevBench directly from the Codex plugin and make NVIDIA and AMD
+  render-scale tuning fail closed when that plugin lane is unavailable. The
+  protocols now search deferred tools before declaring the direct lane absent
+  and never fall back to the bundled controller.
 - Split render-scale tuning into explicit NVIDIA and AMD protocols. The
   NVIDIA lane runs the exact 33-transition None/TAA/DLAA/DLSS/FSR3 matrix;
   the AMD lane runs separate 31-transition explicit-FSR4, explicit-FSR3, and

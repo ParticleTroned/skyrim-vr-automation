@@ -91,6 +91,9 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
     Assert-Contains $skill 'does not authorize' $variant.Name
     Assert-Contains $skill 'VR FPS Stabilizer settings remain' $variant.Name
+    Assert-Contains $skill 'direct `mcp__devbench_vr__*` tools are the only permitted' $variant.Name
+    Assert-Contains $skill 'including deferred tools' $variant.Name
+    Assert-Contains $skill 'Never use the bundled' $variant.Name
 
     foreach ($token in @(
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7` fixture',
@@ -254,11 +257,13 @@ foreach ($protocol in @(
     [pscustomobject]@{ Name = 'AMD'; Text = $amdProtocol }
 )) {
     foreach ($token in @(
-        'exactly one live DevBench transport lane',
-        'controller was selected as the sole live lane',
+        "installed plugin's direct DevBench MCP tools exclusively",
+        'including deferred tools',
+        '`mcp__devbench_vr__` prefix',
+        '`plugin_direct_unavailable`',
+        'Never open, execute, or wait on the bundled controller',
+        'There is no fallback transport',
         'without changing the shared 30-second measurement deadline',
-        '`-MaxTransientRetries 0`',
-        '`requestTimeoutSeconds`',
         '`qualification_status`',
         'do not replay the waiter',
         'terminal receipt cannot be recovered',
@@ -271,7 +276,14 @@ foreach ($protocol in @(
     )) {
         Assert-Contains $protocol.Text $token "$($protocol.Name) shared waiter/verdict guard"
     }
-    Assert-True (-not $protocol.Text.Contains('bundled-controller fallback lane', [StringComparison]::Ordinal)) "$($protocol.Name) introduces a second DevBench lane."
+    foreach ($forbidden in @(
+        'controller may be the sole live lane',
+        'bundled-controller fallback lane',
+        '`-MaxTransientRetries 0`',
+        '`requestTimeoutSeconds`'
+    )) {
+        Assert-True (-not $protocol.Text.Contains($forbidden, [StringComparison]::Ordinal)) "$($protocol.Name) permits the controller transport: $forbidden"
+    }
 }
 
 # Guard the separate protocol explicitly: this change must not absorb or alter

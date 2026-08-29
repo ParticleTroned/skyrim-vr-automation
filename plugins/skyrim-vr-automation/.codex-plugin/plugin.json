@@ -1,6 +1,6 @@
 {
   "name": "skyrim-vr-automation",
-  "version": "0.8.0+codex.20260829062016",
+  "version": "0.8.0+codex.20260829063541",
   "description": "Codex skills and tools for transactional Skyrim VR automation, DevBench qualification and profiling, local feedback, and reusable shader-cache management.",
   "author": {
     "name": "Treatid2",
@@ -20,6 +20,7 @@
     "shader-cache"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Skyrim VR Automation",
     "shortDescription": "Safe Skyrim VR test and profiling controls.",

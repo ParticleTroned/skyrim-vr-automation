@@ -10,17 +10,20 @@ Apply Simple COC identity binding, core control discovery, evidence paths, and
 the single runtime-only `prepare_coc` action. The receipt must prove debug
 logging and the FOV/TAA `0.3/0.3/0.7` fixture without changing any upscaling
 or VR FPS Stabilizer setting.
-Select exactly one live DevBench transport lane before the first live call. If
-plugin-provided direct MCP tools are callable, use them exclusively for every
-NVIDIA baseline, transition, evidence read, and guarded cleanup. Treat direct
-MCP tool descriptions as the schema inventory; do not open the bundled
-controller, run its `list`, or start its availability waits. The bundled
-controller may be the sole live lane only if direct MCP was unavailable before
-the run. Never switch or mix transport lanes.
+Use the installed plugin's direct DevBench MCP tools exclusively for every
+NVIDIA baseline, transition, evidence read, and guarded cleanup. Confirm its
+manifest points to `.mcp.json`, whose single `devbench_vr` server is the
+loopback endpoint. Search the complete callable tool catalog, including
+deferred tools, for the `mcp__devbench_vr__` prefix before declaring the lane
+unavailable; the initial displayed tool list may be abbreviated. Require direct
+`ping`, `scenario`, and every protocol action before `prepare_coc`. Treat their
+tool descriptions as the schema inventory.
 
-If direct health succeeds while a redundant controller attempt returns a
-transport error, retain that receipt as a runner-path anomaly and continue on
-the direct lane. It is not DevBench unavailability and does not block the assay.
+If the plugin tools are absent or direct `ping` fails its bounded readiness
+check, stop before any stateful call, report `plugin_direct_unavailable`, and
+ask the user to repair the plugin connection or restart Codex. Never open,
+execute, or wait on the bundled controller in this assay. There is no fallback
+transport and no lane switching.
 Do not generate or edit task-local orchestration scripts during live preflight
 or baseline setup; load the installed protocol and matrix once and issue their
 actions directly. Evidence files remain permitted.
@@ -185,13 +188,10 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    requested/stable render-scale projections may be `none` and are retained as
    telemetry, not used to reject that API target. Physical backend proof
    remains separate and `none` is a failure.
-   The client transport envelope must exceed the current server waiter budget
-   by five seconds without changing the shared 30-second measurement deadline.
-   When the controller was selected as the sole live lane, use
-   `-MaxTransientRetries 0`; its
-   `requestTimeoutSeconds` must be at least
-   `ceil(remaining timeoutMs / 1000) + 5`. A successful waiter still returns
-   immediately and never waits out that envelope.
+   The direct tool transport must outlive the current server waiter budget by
+   five seconds without changing the shared 30-second measurement deadline. A
+   successful waiter still returns immediately and never waits out that
+   envelope.
 
    If the waiter response is lost after dispatch, do not replay the waiter,
    classify the row, cancel its owner, stop the owned DLSS trace, or start

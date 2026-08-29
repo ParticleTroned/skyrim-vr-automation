@@ -12,6 +12,12 @@ capture. Treat their exposed tool descriptions as the live schema inventory;
 do not run the bundled controller's `list`, open another loopback MCP session,
 or switch transport lanes during that run.
 
+Before declaring the direct lane unavailable, search the complete callable
+tool catalog, including deferred tools, for the `mcp__devbench_vr__` prefix.
+Do not infer absence from an abbreviated initial tool list. A protocol may
+require this plugin lane and prohibit the bundled client; that stricter rule
+always wins.
+
 Use the bundled client as the sole live lane only when direct MCP is unavailable
 before the first live call. It also remains available for offline validation or
 a required durable receipt that direct MCP cannot expose. Never choose the

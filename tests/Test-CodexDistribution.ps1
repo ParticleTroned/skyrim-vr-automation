@@ -28,6 +28,13 @@ try {
     $manifest = Get-Content -LiteralPath (Join-Path $rebuilt '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
     $sourceManifest = Get-Content -LiteralPath (Join-Path $repositoryRoot '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
     if ($manifest.name -ne 'skyrim-vr-automation' -or $manifest.version -ne $sourceManifest.version) { throw 'Rebuilt plugin identity/version is incorrect.' }
+    if ($manifest.mcpServers -ne './.mcp.json' -or $sourceManifest.mcpServers -ne './.mcp.json') { throw 'DevBench MCP companion registration is missing.' }
+    $mcpPath = Join-Path $rebuilt '.mcp.json'
+    if (-not (Test-Path -LiteralPath $mcpPath -PathType Leaf)) { throw 'DevBench MCP companion file is missing.' }
+    $mcp = Get-Content -LiteralPath $mcpPath -Raw | ConvertFrom-Json
+    $servers = @($mcp.mcpServers.PSObject.Properties)
+    if ($servers.Count -ne 1 -or $servers[0].Name -ne 'devbench_vr') { throw 'DevBench MCP registration is missing or ambiguous.' }
+    if ($servers[0].Value.type -ne 'http' -or $servers[0].Value.url -ne 'http://127.0.0.1:8921/mcp') { throw 'DevBench MCP endpoint is not the expected loopback server.' }
     foreach ($skill in @('feedback-control', 'mo2-control', 'steamvr-null-hmd', 'devbench-control', 'coc-stability', 'simple-coc', 'simple-coc-5', 'simple-csm', 'renderscale-tuning-nvidia', 'renderscale-tuning-amd', 'static-coc', 'profiler-control', 'shader-cache-control')) {
         if (-not (Test-Path -LiteralPath (Join-Path $rebuilt "skills\$skill\SKILL.md") -PathType Leaf)) { throw "Missing installed skill: $skill" }
     }

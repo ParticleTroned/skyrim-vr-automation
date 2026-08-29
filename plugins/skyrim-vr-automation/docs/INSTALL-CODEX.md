@@ -15,6 +15,16 @@ Restart Codex after a new installation. Run the doctor before a live workflow:
 .\tools\doctor\Invoke-SkyrimVRAutomationDoctor.ps1 inspect
 ```
 
+The plugin registers the loopback `devbench_vr` MCP server from its own
+`.mcp.json`. Render-scale tuning requires those plugin-provided direct tools
+and never uses the bundled HTTP controller. A separate global
+`mcp_servers.devbench_vr` entry is not required. Remove a legacy global entry
+after installing the plugin, then restart Codex:
+
+```text
+codex mcp remove devbench_vr
+```
+
 Initialize the stable MO2 configuration at
 `%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json` and then edit the copied
 example, or migrate an existing file with `-SourceConfigPath`:
