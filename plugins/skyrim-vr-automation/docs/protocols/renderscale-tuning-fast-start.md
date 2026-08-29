@@ -14,24 +14,28 @@ the structured receipt from the action that owns it. Do not inspect plugin
 cache paths, manifests, marketplace files, or the bundled controller during a
 live run. There is no fallback transport and no lane switching.
 
-The first action turn after reading this contract must start evidence
-initialization and the five admission reads below concurrently. In that one
-orchestrated turn, create a unique evidence root named
-`.tmp/renderscale-tuning-<vendor>-<UTC>-evidence` with `raw/startup`,
-`raw/baseline`, `raw/transitions`, and `raw/finalization` children, create
-`receipt-index.json`, and dispatch the parallel read-only batch. The local
-initializer and the reads are independent and do not mutate game state. Do not
-run the initializer in an earlier turn, announce that the evidence bundle or
-direct lane is ready, or return for model deliberation before dispatching the
-reads.
+The first live action after reading this contract is the parallel five-read
+DevBench batch below. Start it immediately. Before that batch, do not create a
+directory, file, `.gitkeep`, receipt index, timer file, script, or other local
+artifact; do not run a local command; and do not announce readiness. No local
+evidence setup may delay the first DevBench request.
+
+After all five read-only responses return, create one unique evidence root
+named `.tmp/renderscale-tuning-<vendor>-<UTC>-evidence` and write the five
+receipts directly to their final `raw/startup` paths. Create required parent
+directories implicitly with those writes, then create `receipt-index.json`.
+Do not create an empty directory tree or placeholder files first. Complete
+this as one local evidence action before `prepare_coc`.
 
 Each direct MCP response must be written as its exact decoded JSON response
 body before the next mutation; request identity, tool/action, lane, transition,
 relative path, byte length, and SHA-256 belong in the index. Transcript
 references and MCP/store keys are supplemental only and are never durable
 evidence paths. If initialization, writing, or rehash verification fails, stop
-before `prepare_coc`; preserve the failure. A receipt that fails after assay
-ownership exists permits only ownership-guarded cleanup that is already safe.
+before `prepare_coc`; preserve the failure. Because the batch is read-only, a
+local evidence-creation failure here requires no game cleanup. A receipt that
+fails after assay ownership exists permits only ownership-guarded cleanup that
+is already safe.
 
 Start `startupReadElapsedMs` immediately before dispatching the parallel
 read-only batch and stop it as soon as the final response returns. A result
