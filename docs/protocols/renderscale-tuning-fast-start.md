@@ -20,22 +20,33 @@ directory, file, `.gitkeep`, receipt index, timer file, script, or other local
 artifact; do not run a local command; and do not announce readiness. No local
 evidence setup may delay the first DevBench request.
 
-After all five read-only responses return, create one unique evidence root
-named `.tmp/renderscale-tuning-<vendor>-<UTC>-evidence` and write the five
-receipts directly to their final `raw/startup` paths. Create required parent
-directories implicitly with those writes, then create `receipt-index.json`.
-Do not create an empty directory tree or placeholder files first. Complete
-this as one local evidence action before `prepare_coc`.
+After all five read-only responses return, validate their required identity,
+capability, and state fields directly from the structured receipts. Then
+continue directly to `prepare_coc` and positioning without a local evidence
+action, progress commentary, schema refresh, or model pause. Keep the five
+decoded responses in memory until the positioning scenario returns its
+accepted `runId`; their durable write belongs inside the mandatory 10,000 ms
+settle below.
 
 Each direct MCP response must be written as its exact decoded JSON response
-body before the next mutation; request identity, tool/action, lane, transition,
-relative path, byte length, and SHA-256 belong in the index. Transcript
-references and MCP/store keys are supplemental only and are never durable
-evidence paths. If initialization, writing, or rehash verification fails, stop
-before `prepare_coc`; preserve the failure. Because the batch is read-only, a
-local evidence-creation failure here requires no game cleanup. A receipt that
-fails after assay ownership exists permits only ownership-guarded cleanup that
-is already safe.
+body before the first profile mutation; request identity, tool/action, lane,
+transition, relative path, byte length, and SHA-256 belong in the index.
+Transcript references and MCP/store keys are supplemental only and are never
+durable evidence paths. Here, exact decoded JSON means a faithful
+serialization that retains every returned field; it does not require
+byte-for-byte equality with an in-memory or transport serialization.
+
+The final on-disk files are authoritative. In one local PowerShell action, use
+`Get-Item` and `Get-FileHash -Algorithm SHA256` on those files to populate the
+index, then verify each indexed length and hash against the same final file
+once. Do not compare a file against an in-memory serialization or use client
+JavaScript encoding or crypto APIs. If every required file and index entry
+matches, evidence initialization passed; a failure of a non-required helper is
+not an evidence failure. Stop before the post-position reset and baseline only
+when a required final file or the index is missing or unreadable, or an
+on-disk length/hash mismatch remains. The runtime-only fixture and unmeasured
+positioning COC require no cleanup. A receipt that fails after assay ownership
+exists permits only ownership-guarded cleanup that is already safe.
 
 Start `startupReadElapsedMs` immediately before dispatching the parallel
 read-only batch and stop it as soon as the final response returns. A result
@@ -43,13 +54,11 @@ over 10,000 ms is the preserved `slow_startup_reads` efficiency anomaly, not
 an admission failure when every required read succeeded and its identity and
 state are coherent. A successful batch never waits out a fixed window.
 
-After the startup receipts pass and are rehash-verified, continue directly to
-`prepare_coc` without progress commentary, a schema refresh, or another model
-pause. Attempt to start a fresh monotonic `positioningDispatchElapsedMs`
-measurement immediately before `prepare_coc`. Its 30,000 ms value is an
-efficiency target, not an admission gate. Record `slow_positioning_dispatch`
-when an accepted scenario exceeds the target. If the timer was not started,
-record
+After the structured startup responses pass, attempt to start a fresh
+monotonic `positioningDispatchElapsedMs` measurement immediately before
+`prepare_coc`. Its 30,000 ms value is an efficiency target, not an admission
+gate. Record `slow_positioning_dispatch` when an accepted scenario exceeds the
+target. If the timer was not started, record
 `positioning_dispatch_timer_not_started`, store the elapsed value as `null`,
 and dispatch immediately; never stop or delay a valid assay solely because
 this client-side startup metric is unavailable. Only failure to obtain an
@@ -114,13 +123,24 @@ telemetry action, screenshot, or status call before the scenario is queued.
 
 ## Overlap the mandatory settle
 
-As soon as the async scenario returns its `runId`, read the selected lane's
-matrix and full protocol completely while the server performs the 10,000 ms
-settle. In the same interval, persist and index the startup round,
-`prepare_coc`, and positioning-acceptance receipts. Do not wait first. After
-both files are loaded, query that `runId`.
+As soon as the async scenario returns its `runId`, create one unique evidence
+root named `.tmp/renderscale-tuning-<vendor>-<UTC>-evidence`. In one local
+evidence action, write the five startup responses, `prepare_coc`, and the
+positioning-acceptance receipt directly to their final `raw/startup` paths,
+create required parent directories implicitly, create `receipt-index.json`,
+and perform the host-filesystem verification above. Do not create an empty
+directory tree or placeholder files first.
+
+In parallel with that local action, read the selected lane's matrix and full
+protocol completely while the server performs the 10,000 ms settle. Do not
+wait first. After both files are loaded and the evidence batch is verified,
+query that `runId`.
 If it is still running, query status at most once per second until the settle
 plus a five-second receipt envelope expires. Never send a second COC.
+
+If required on-disk verification still fails, allow the positioning scenario
+to reach its terminal receipt and preserve the local failure, but stop before
+the post-position reset, baseline, telemetry ownership, or profile mutation.
 
 The terminal transcript must prove exact `WhiterunDragonsreach`, a loaded
 player, advancing in-world frames, no blocking menu, unchanged PID/Build ID,
