@@ -18,6 +18,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   journal, and recover interrupted workspace create, resume, and retire
   transactions from durable manifest and selected-profile preimages before any
   later command reads or changes workspace state.
+- Serialize profiler captures per runtime, enforce one total deadline with a
+  reserved restoration budget, and bind every accepted DevBench response and
+  sample to the same complete, verified process/build/artifact identity.
 
 - Require every fresh MO2 task clone to inherit a hash- and
   profile-fingerprint-verified default world-entry save, make the doctor fail

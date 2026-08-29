@@ -7,12 +7,19 @@ enables only when needed, and restores and verifies the exact prior state in a
 finite GPU/CPU metrics. A unique capture directory retains the raw JSON,
 summary, timer CSV, DevBench invocation journals, and recovery receipt.
 
+Only one capture may own a given runtime metadata target at once. The collector
+uses a deterministic, bounded lease and verifies the complete DevBench process,
+start time, build, and deployed artifact identity on every profiler response.
+If that identity changes, it refuses to mix samples or mutate the replacement
+runtime. Each raw sample carries the verified identity fingerprint.
+
 ```powershell
 .\Measure-CSXProfiler.ps1 `
   -Label 'breezehome-enabled' `
   -EvidenceDirectory '.\evidence\<session>\profiler' `
   -ContextJson '{"environment":{"mo2Profile":"Task-42","scene":"Breezehome still","hmdMode":"null","renderResolution":"2112x2112"},"treatment":{"shaderState":"enabled"}}' `
-  -Samples 120 -WarmupSamples 5 -IntervalMs 250
+  -Samples 120 -WarmupSamples 5 -IntervalMs 250 `
+  -TotalTimeoutSeconds 300 -RestoreReserveSeconds 15
 ```
 
 Supply DevBench runtime metadata with `-RuntimePath` or set
@@ -23,6 +30,12 @@ collector.
 profile, scene, HMD mode, and render resolution; `treatment` records the
 intended variable such as shader state. The environment and exact runtime
 identity form the comparison fingerprint.
+
+`TotalTimeoutSeconds` bounds capture plus restoration. Sampling receives the
+budget remaining before the reserved restoration window; the `finally` path may
+use only the remaining total budget to verify and restore the prior profiler
+enable state. `LeaseTimeoutSeconds` separately bounds admission behind another
+capture of the same runtime.
 
 `Compare-CSXProfiler.ps1` accepts two or more raw captures, removes unresolved
 samples whose timer array is empty, and emits total and per-timer

@@ -9,6 +9,9 @@ param(
     [ValidateRange(0, 100)][int]$WarmupSamples = 5,
     [ValidateRange(50, 60000)][int]$IntervalMs = 250,
     [ValidateRange(1, 30)][int]$FreshFrameTimeoutSeconds = 5,
+    [ValidateRange(5, 3600)][int]$TotalTimeoutSeconds = 300,
+    [ValidateRange(1, 120)][int]$RestoreReserveSeconds = 15,
+    [ValidateRange(1, 120)][int]$LeaseTimeoutSeconds = 10,
     [string]$RuntimePath = $env:CSX_DEVBENCH_RUNTIME_PATH,
     [string]$DevBenchControlPath
 )
@@ -70,8 +73,55 @@ function Assert-Finite([double]$Value, [string]$Name) {
     if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) { throw "Profiler metric '$Name' is not finite." }
 }
 
+function Get-ProfilerControlRoot([string]$CanonicalRuntimePath) {
+    $override = [string]$env:CSX_PROFILER_CONTROL_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        $resolvedOverride = [IO.Path]::GetFullPath($override)
+        $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+        if (-not $resolvedOverride.StartsWith($resolvedTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'CSX_PROFILER_CONTROL_ROOT is fixture-only and must resolve below the operating-system temporary directory.'
+        }
+        return $resolvedOverride
+    }
+    $keyBytes = [Text.UTF8Encoding]::new($false).GetBytes($CanonicalRuntimePath.ToUpperInvariant())
+    $key = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($keyBytes)).Substring(0, 32).ToLowerInvariant()
+    return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) (Join-Path 'CSX-VR-Automation\profiler-captures' $key)
+}
+
+function Acquire-ProfilerLease([string]$ControlRoot, [int]$TimeoutSeconds) {
+    if (-not (Test-Path -LiteralPath $ControlRoot -PathType Container)) { New-Item -ItemType Directory -Path $ControlRoot -Force | Out-Null }
+    $path = Join-Path $ControlRoot 'capture.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            return [pscustomobject][ordered]@{ path = $path; stream = $stream; acquiredUtc = [DateTime]::UtcNow.ToString('o') }
+        }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw [TimeoutException]::new("Timed out waiting for the profiler capture lease: $path") }
+            Start-Sleep -Milliseconds 50
+        }
+    } while ($true)
+}
+
+function Get-StableRuntimeIdentity($Identity) {
+    if ($null -eq $Identity -or -not $Identity.complete -or -not $Identity.verified) {
+        throw 'Profiler capture requires a complete and verified DevBench runtime identity on every response.'
+    }
+    return [ordered]@{
+        listenerPid = [int]$Identity.listenerPid
+        processPath = [string]$Identity.process.path
+        processStartTimeUtc = [string]$Identity.process.startTimeUtc
+        buildId = [string]$Identity.build.buildId
+        artifactPath = [string]$Identity.artifact.path
+        artifactSha256 = [string]$Identity.artifact.sha256
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($RuntimePath)) { throw 'RuntimePath is required. Pass -RuntimePath or set CSX_DEVBENCH_RUNTIME_PATH.' }
 if (-not (Test-Path -LiteralPath $RuntimePath -PathType Leaf)) { throw "DevBench runtime metadata does not exist: $RuntimePath" }
+$RuntimePath = [IO.Path]::GetFullPath($RuntimePath)
+if ($RestoreReserveSeconds -ge $TotalTimeoutSeconds) { throw 'RestoreReserveSeconds must be smaller than TotalTimeoutSeconds.' }
 $context = $ContextJson | ConvertFrom-Json -AsHashtable -Depth 40
 if (-not $context.ContainsKey('environment') -or -not ($context.environment -is [Collections.IDictionary])) { throw 'ContextJson requires an environment object.' }
 foreach ($required in @('mo2Profile', 'scene', 'hmdMode', 'renderResolution')) {
@@ -91,17 +141,53 @@ $receipt = [ordered]@{
     schemaVersion = 2; operation = 'measure-profiler'; transactionId = $transactionId; state = 'prepared'
     label = $Label; runtimePath = [IO.Path]::GetFullPath($RuntimePath); context = $context
     preparedUtc = [DateTime]::UtcNow.ToString('o'); priorEnabled = $null; finalEnabled = $null
-    stateRestored = $false; restoreErrors = @(); captureError = $null
+    totalTimeoutSeconds = $TotalTimeoutSeconds; restoreReserveSeconds = $RestoreReserveSeconds
+    stateRestored = $false; restoreErrors = @(); captureError = $null; runtimeIdentityObservations = @()
 }
 Write-JsonAtomic $receiptPath $receipt
 
-function Invoke-ProfilerAction([string]$Action) {
+$operationDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TotalTimeoutSeconds)
+$captureDeadlineUtc = $operationDeadlineUtc.AddSeconds(-$RestoreReserveSeconds)
+$expectedRuntimeIdentity = $null
+$expectedRuntimeIdentityFingerprint = $null
+
+function Get-RemainingProfilerSeconds([switch]$ForRestore) {
+    $deadline = if ($ForRestore) { $operationDeadlineUtc } else { $captureDeadlineUtc }
+    $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds
+    if ($remaining -lt 1) {
+        $scope = if ($ForRestore) { 'total operation' } else { 'capture phase' }
+        throw [TimeoutException]::new("Profiler $scope deadline expired before another DevBench request could start.")
+    }
+    return [int][Math]::Max(1, [Math]::Min(600, [Math]::Ceiling($remaining)))
+}
+
+function Start-ProfilerDelay([int]$RequestedMilliseconds) {
+    if ($RequestedMilliseconds -le 0) { return }
+    $remaining = [long]($captureDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+    if ($remaining -le 0) { throw [TimeoutException]::new('Profiler capture phase deadline expired before its next delay.') }
+    Start-Sleep -Milliseconds ([int][Math]::Min($RequestedMilliseconds, $remaining))
+}
+
+function Invoke-ProfilerAction([string]$Action, [switch]$ForRestore) {
     $arguments = @{ action = $Action } | ConvertTo-Json -Compress
-    $call = & $control call -Tool 'communityshaders.profiler' -ArgumentsJson $arguments -RuntimePath $RuntimePath -EvidenceDirectory $runDirectory -EvidenceLabel "profiler-$Action" -RequireSuccess -NoExit -Compact | ConvertFrom-Json -Depth 80
+    $remainingSeconds = Get-RemainingProfilerSeconds -ForRestore:$ForRestore
+    $call = & $control call -Tool 'communityshaders.profiler' -ArgumentsJson $arguments -RuntimePath $RuntimePath -EvidenceDirectory $runDirectory -EvidenceLabel "profiler-$Action" -TimeoutSeconds $remainingSeconds -RequireSuccess -NoExit -Compact | ConvertFrom-Json -Depth 80
     if (-not $call.ok) { throw "DevBench profiler '$Action' failed: $($call.errors -join '; ')" }
     $payload = @($call.data.content | Where-Object { $null -ne $_ } | Select-Object -First 1)
     if ($payload.Count -ne 1) { throw "DevBench profiler '$Action' returned no structured content." }
-    return [pscustomobject][ordered]@{ payload = $payload[0]; runtimeIdentity = $call.runtimeIdentity; evidencePath = $call.invocationEvidencePath }
+    $stableIdentity = Get-StableRuntimeIdentity -Identity $call.runtimeIdentity
+    $identityFingerprint = Get-CanonicalHash $stableIdentity
+    if ($null -eq $script:expectedRuntimeIdentityFingerprint) {
+        $script:expectedRuntimeIdentity = $stableIdentity
+        $script:expectedRuntimeIdentityFingerprint = $identityFingerprint
+    }
+    elseif ($identityFingerprint -cne $script:expectedRuntimeIdentityFingerprint) {
+        throw "DevBench runtime identity changed during profiler capture; refusing to mix samples or mutate the replacement runtime. Expected $($script:expectedRuntimeIdentityFingerprint), observed $identityFingerprint."
+    }
+    $script:receipt.runtimeIdentityObservations = @($script:receipt.runtimeIdentityObservations) + @([pscustomobject][ordered]@{
+        action = $Action; observedUtc = [DateTime]::UtcNow.ToString('o'); fingerprint = $identityFingerprint; evidencePath = $call.invocationEvidencePath
+    })
+    return [pscustomobject][ordered]@{ payload = $payload[0]; runtimeIdentity = $call.runtimeIdentity; stableRuntimeIdentity = $stableIdentity; runtimeIdentityFingerprint = $identityFingerprint; evidencePath = $call.invocationEvidencePath }
 }
 
 function Get-ProfilerStatus($Envelope) {
@@ -122,19 +208,17 @@ $records = [Collections.Generic.List[object]]::new()
 $runtimeIdentity = $null
 $captureFailure = $null
 $startedUtc = [DateTime]::UtcNow
+$lease = Acquire-ProfilerLease -ControlRoot (Get-ProfilerControlRoot -CanonicalRuntimePath $RuntimePath) -TimeoutSeconds $LeaseTimeoutSeconds
 try {
+    $receipt.leasePath = $lease.path
+    $receipt.leaseAcquiredUtc = $lease.acquiredUtc
+    $receipt.state = 'leased'
+    Write-JsonAtomic $receiptPath $receipt
     $initialEnvelope = Invoke-ProfilerAction 'status'
     $initialStatus = Get-ProfilerStatus $initialEnvelope
     $runtimeIdentity = $initialEnvelope.runtimeIdentity
     $priorEnabled = Get-ProfilerEnabled $initialStatus
-    $stableRuntimeIdentity = [ordered]@{
-        listenerPid = $runtimeIdentity.listenerPid
-        processPath = $runtimeIdentity.process.path
-        processStartTimeUtc = $runtimeIdentity.process.startTimeUtc
-        buildId = $runtimeIdentity.build.buildId
-        artifactPath = $runtimeIdentity.artifact.path
-        artifactSha256 = $runtimeIdentity.artifact.sha256
-    }
+    $stableRuntimeIdentity = $initialEnvelope.stableRuntimeIdentity
     $receipt.priorEnabled = $priorEnabled
     $receipt.runtimeIdentity = $runtimeIdentity
     $receipt.stableRuntimeIdentity = $stableRuntimeIdentity
@@ -150,16 +234,17 @@ try {
     for ($warmup = 0; $warmup -lt $WarmupSamples; $warmup++) {
         $warmupStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status')
         $lastFrame = [Math]::Max($lastFrame, [long]$warmupStatus.frame_count)
-        Start-Sleep -Milliseconds $IntervalMs
+        Start-ProfilerDelay -RequestedMilliseconds $IntervalMs
     }
     for ($sampleIndex = 1; $sampleIndex -le $Samples; $sampleIndex++) {
-        $freshDeadline = [DateTime]::UtcNow.AddSeconds($FreshFrameTimeoutSeconds)
+        $candidateFreshDeadline = [DateTime]::UtcNow.AddSeconds($FreshFrameTimeoutSeconds)
+        $freshDeadline = if ($candidateFreshDeadline -lt $captureDeadlineUtc) { $candidateFreshDeadline } else { $captureDeadlineUtc }
         do {
             $envelope = Invoke-ProfilerAction 'status'
             $status = Get-ProfilerStatus $envelope
             $frame = [long]$status.frame_count
             if ($frame -gt $lastFrame) { break }
-            Start-Sleep -Milliseconds ([Math]::Min(50, $IntervalMs))
+            Start-ProfilerDelay -RequestedMilliseconds ([Math]::Min(50, $IntervalMs))
         } while ([DateTime]::UtcNow -lt $freshDeadline)
         if ($frame -le $lastFrame) { throw "Profiler did not advance beyond frame $lastFrame within $FreshFrameTimeoutSeconds seconds." }
         $resolvedTotal = [double]$status.resolvedTotalMs
@@ -176,10 +261,11 @@ try {
             capturedFrame = [long]$status.capturedFrameCount; resolvedTotalMs = $resolvedTotal; resolvedCpuTotalMs = $resolvedCpuTotal
             acquiredSlots = [int]$status.acquiredSlots; slotRefusals = [int]$status.slotRefusals; timers = @($status.timers)
             invocationEvidencePath = $envelope.evidencePath
+            runtimeIdentityFingerprint = $envelope.runtimeIdentityFingerprint
             contextFingerprint = $receipt.contextFingerprint; treatmentFingerprint = $receipt.treatmentFingerprint
         })
         $lastFrame = $frame
-        if ($sampleIndex -lt $Samples) { Start-Sleep -Milliseconds $IntervalMs }
+        if ($sampleIndex -lt $Samples) { Start-ProfilerDelay -RequestedMilliseconds $IntervalMs }
     }
 }
 catch {
@@ -190,11 +276,11 @@ finally {
     $restoreErrors = [Collections.Generic.List[string]]::new()
     if ($null -ne $receipt.priorEnabled) {
         try {
-            $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status')
+            $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status' -ForRestore)
             $finalEnabled = Get-ProfilerEnabled $finalStatus
             if ($finalEnabled -ne [bool]$receipt.priorEnabled) {
-                $null = Invoke-ProfilerAction $(if ($receipt.priorEnabled) { 'enable' } else { 'disable' })
-                $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status')
+                $null = Invoke-ProfilerAction $(if ($receipt.priorEnabled) { 'enable' } else { 'disable' }) -ForRestore
+                $finalStatus = Get-ProfilerStatus (Invoke-ProfilerAction 'status' -ForRestore)
                 $finalEnabled = Get-ProfilerEnabled $finalStatus
             }
             $receipt.finalEnabled = $finalEnabled
@@ -206,6 +292,8 @@ finally {
     $receipt.restoreErrors = @($restoreErrors)
     $receipt.state = if ($restoreErrors.Count -gt 0) { 'recovery-required' } elseif ($captureFailure) { 'rolled-back' } else { 'completed' }
     $receipt.completedUtc = [DateTime]::UtcNow.ToString('o')
+    $receipt.leaseReleasedUtc = [DateTime]::UtcNow.ToString('o')
+    if ($lease -and $lease.stream) { $lease.stream.Dispose() }
     Write-JsonAtomic $receiptPath $receipt
 }
 
@@ -234,7 +322,8 @@ $timerSummaries = foreach ($group in ($timerRows | Group-Object name | Sort-Obje
 $summary = [pscustomobject][ordered]@{
     schemaVersion = 2; transactionId = $transactionId; label = $Label; startedUtc = $startedUtc.ToString('o'); endedUtc = $endedUtc.ToString('o')
     durationSeconds = ($endedUtc - $startedUtc).TotalSeconds; requestedSamples = $Samples; warmupSamples = $WarmupSamples; collectedSamples = $records.Count
-    uniqueFreshFrames = @($records.frame | Sort-Object -Unique).Count; intervalMs = $IntervalMs; runtimeIdentity = $runtimeIdentity
+    uniqueFreshFrames = @($records.frame | Sort-Object -Unique).Count; intervalMs = $IntervalMs; totalTimeoutSeconds = $TotalTimeoutSeconds
+    runtimeIdentity = $runtimeIdentity; runtimeIdentityFingerprint = $expectedRuntimeIdentityFingerprint
     context = $context; contextFingerprint = $receipt.contextFingerprint; treatmentFingerprint = $receipt.treatmentFingerprint
     priorProfilerEnabled = $receipt.priorEnabled; profilerStateRestored = $receipt.stateRestored; receiptPath = $receiptPath
     resolvedTotalMs = Get-MetricSummary ([double[]]@($records.resolvedTotalMs)); resolvedCpuTotalMs = Get-MetricSummary ([double[]]@($records.resolvedCpuTotalMs))
