@@ -42,17 +42,17 @@ another call, or local work between the fixture and this request.
     {
       "label": "position-health",
       "tool": "inspect",
-      "args": { "action": "health" }
+      "args": { "kind": "health" }
     },
     {
       "label": "position-state",
       "tool": "inspect",
-      "args": { "action": "state" }
+      "args": { "kind": "state" }
     },
     {
       "label": "position-scene",
       "tool": "inspect",
-      "args": { "action": "scene" }
+      "args": { "kind": "scene" }
     },
     {
       "label": "position-capabilities",

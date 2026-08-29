@@ -64,6 +64,18 @@ foreach ($token in @(
 foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '`clear_history`', 'do not use', '`start_capture`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session', 'do not run a local command', 'never search for it', '`communityshaders.profiler_api`', '`result.status.session.id`', 'Immediately begin transition 1')) {
     Assert-Contains $fastStart $token 'Shared server-owned waiter contract'
 }
+foreach ($token in @(
+    '`transitionId` is the only',
+    '`ownerId`, `clientId`, and `commandId` are always',
+    '`"rst-nvidia-baseline-pass-1-owner"`',
+    '"ownerId":"<owner-id>"',
+    '"clientId":"<client-id>"',
+    '"commandId":"<command-id>"',
+    '`cell.editorId: WhiterunDragonsreach`',
+    'scene receipt alone owns exact cell identity'
+)) {
+    Assert-Contains $fastStart $token 'Shared typed positioning/baseline contract'
+}
 foreach ($forbidden in @(
     'Before the first live request, create one unique evidence root',
     'first action turn after reading this contract must start evidence',
@@ -171,11 +183,17 @@ foreach ($variant in $variants) {
     Assert-Contains $skill '"async": false' $variant.Name
     Assert-Contains $skill '"command": "coc WhiterunDragonsreach"' $variant.Name
     Assert-Contains $skill '"label": "position-renderscale"' $variant.Name
+    Assert-Contains $skill '"kind": "health"' $variant.Name
+    Assert-Contains $skill '"kind": "state"' $variant.Name
+    Assert-Contains $skill '"kind": "scene"' $variant.Name
     Assert-Contains $skill 'Do not insert commentary' $variant.Name
     Assert-Contains $skill 'report positioning immediately' $variant.Name
     Assert-Contains $skill 'completely in one local read' $variant.Name
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
     Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
+    Assert-True (-not $skill.Contains('"args": { "action": "health" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect health."
+    Assert-True (-not $skill.Contains('"args": { "action": "state" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect state."
+    Assert-True (-not $skill.Contains('"args": { "action": "scene" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect scene."
 
     foreach ($token in @(
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7`',

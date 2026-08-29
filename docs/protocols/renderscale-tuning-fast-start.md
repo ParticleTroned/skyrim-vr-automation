@@ -12,8 +12,11 @@ labeled results already returned by that scenario; do not issue confirmation
 reads. Require:
 
 - `position-health`: one live `SkyrimVR.exe` PID with `vr: true`;
-- `position-state` and `position-scene`: a loaded player in exact
-  `WhiterunDragonsreach`;
+- `position-state`: `playerLoaded: true` with the same PID and an advancing
+  frame;
+- `position-scene`: `playerLoaded: true` and
+  `cell.editorId: WhiterunDragonsreach`. This scene receipt alone owns exact
+  cell identity; never require it from `position-state`;
 - `position-capabilities`: success, the fixture's exact producer/Build ID, and
   every method, quality, and runtime required by the selected matrix;
 - `position-snapshot`: the same Build ID, a complete authoritative public
@@ -55,17 +58,25 @@ run the baseline scenario, run the handoff scenario, and begin transition 1's
 prescribed 5,000 ms settle. The ledger path is the repository-relative
 `docs/development/vr-render-scale-comparison-ledger.csv`; never search for it.
 
-Use these fixed substitutions without discovery:
+Use these typed substitutions without discovery. `transitionId` is the only
+numeric caller identifier. `ownerId`, `clientId`, and `commandId` are always
+nonempty JSON strings; never substitute an ordinal, session ID, or other
+number. Use descriptive values such as
+`"rst-nvidia-baseline-pass-1-owner"`,
+`"rst-nvidia-baseline-pass-1-client"`, and
+`"rst-nvidia-baseline-pass-1-apply"` with a run-unique suffix.
 
-- `B`: exact bound Build ID;
-- `R`: post-position `stateRevision`;
-- `T` and `O`: new nonzero transition ID and unique owner ID;
-- `C` and `K`: unique client and command IDs;
-- `P`: complete string-valued API profile described by the vendor protocol;
-- `Q`: the same profile with numeric quality (`native_aa=0`, `hoshipa=1`,
+- `<build-id>`: exact bound Build ID string;
+- `<state-revision>`: numeric post-position `stateRevision`;
+- `<transition-id>`: new nonzero integer;
+- `<owner-id>`: new unique nonempty string;
+- `<client-id>` and `<command-id>`: new unique nonempty strings;
+- `<api-target>`: complete string-valued API profile from the vendor protocol;
+- `<qualification-target>`: the same profile with numeric quality
+  (`native_aa=0`, `hoshipa=1`,
   `ultra_quality=2`, `quality=3`, `balanced=4`, `performance=5`,
   `ultra_performance=6`);
-- `F`: exactly `{ "foveatedVendorDispatch": true,
+- `<foveation>`: exactly `{ "foveatedVendorDispatch": true,
   "foveatedCenterArea": 0.3, "peripheryTAAEnable": true,
   "peripheryTAACenterArea": 0.3, "peripheryTAAOuterScale": 0.7 }`.
 
@@ -74,12 +85,12 @@ no field and perform no lookup:
 
 | Label | Tool | Arguments |
 | --- | --- | --- |
-| `baseline-stress-reset` | `communityshaders.renderscale` | `{"action":"reset","expectedBuildId":"B"}` |
-| `baseline-stress-start` | `communityshaders.renderscale` | `{"action":"start","expectedBuildId":"B"}` |
-| `qualification-begin` | `communityshaders.renderscale` | `{"action":"qualification_begin","transitionId":T,"ownerId":"O","expectedBuildId":"B"}` |
-| `qualification-dispatch` | `communityshaders.renderscale` | `{"action":"qualification_dispatch","transitionId":T,"ownerId":"O","startPerformanceTelemetry":false,"expectedBuildId":"B"}` |
-| `profile-apply` | `communityshaders.upscaling_api` | `{"action":"apply","expectedBuildId":"B","expectedStateRevision":R,"target":P,"purpose":"direct","persistence":"runtime_only","clientId":"C","commandId":"K","reason":"render-scale tuning baseline"}` |
-| `qualification-wait` | `communityshaders.renderscale` | `{"action":"qualification_wait","transitionId":T,"ownerId":"O","expectedCellEditorId":"WhiterunDragonsreach","timeoutMs":30000,"milestone":"strict","target":Q,"foveation":F,"expectedBuildId":"B"}` |
+| `baseline-stress-reset` | `communityshaders.renderscale` | `{"action":"reset","expectedBuildId":"<build-id>"}` |
+| `baseline-stress-start` | `communityshaders.renderscale` | `{"action":"start","expectedBuildId":"<build-id>"}` |
+| `qualification-begin` | `communityshaders.renderscale` | `{"action":"qualification_begin","transitionId":<transition-id>,"ownerId":"<owner-id>","expectedBuildId":"<build-id>"}` |
+| `qualification-dispatch` | `communityshaders.renderscale` | `{"action":"qualification_dispatch","transitionId":<transition-id>,"ownerId":"<owner-id>","startPerformanceTelemetry":false,"expectedBuildId":"<build-id>"}` |
+| `profile-apply` | `communityshaders.upscaling_api` | `{"action":"apply","expectedBuildId":"<build-id>","expectedStateRevision":<state-revision>,"target":<api-target>,"purpose":"direct","persistence":"runtime_only","clientId":"<client-id>","commandId":"<command-id>","reason":"render-scale tuning baseline"}` |
+| `qualification-wait` | `communityshaders.renderscale` | `{"action":"qualification_wait","transitionId":<transition-id>,"ownerId":"<owner-id>","expectedCellEditorId":"WhiterunDragonsreach","timeoutMs":30000,"milestone":"strict","target":<qualification-target>,"foveation":<foveation>,"expectedBuildId":"<build-id>"}` |
 
 Start the baseline with one synchronous fail-closed scenario containing six
 labeled tool steps in this exact order: `baseline-stress-reset`,
@@ -130,21 +141,22 @@ baseline stress session with its exact ownership guard, start measured stress,
 reset then start texture-lifetime, reset then start load-presentation, and
 pre-arm the profiler with `set_enabled`. The baseline session guard is the
 positive integer at the `baseline-stress-start` result's
-`result.status.session.id`. Use exactly these handoff steps, replacing `S`,
-`C`, and `K` with that session ID and unique profiler command IDs:
+`result.status.session.id`. Use exactly these handoff steps, replacing the
+typed placeholders with that numeric session ID and unique string profiler
+command IDs:
 
 | Label | Tool | Arguments |
 | --- | --- | --- |
-| `baseline-stress-stop` | `communityshaders.renderscale` | `{"action":"stop","expectedSessionId":S,"expectedBuildId":"B"}` |
-| `measured-stress-start` | `communityshaders.renderscale` | `{"action":"start","expectedBuildId":"B"}` |
-| `texture-lifetime-reset` | `communityshaders.renderscale` | `{"action":"texture_lifetime_reset","expectedBuildId":"B"}` |
-| `texture-lifetime-start` | `communityshaders.renderscale` | `{"action":"texture_lifetime_start","expectedBuildId":"B"}` |
-| `load-presentation-reset` | `communityshaders.renderscale` | `{"action":"probe_reset","expectedBuildId":"B"}` |
-| `load-presentation-start` | `communityshaders.renderscale` | `{"action":"probe_start","expectedBuildId":"B"}` |
-| `profiler-enable` | `communityshaders.profiler_api` | `{"contractMajor":1,"clientId":"C","commandId":"K","action":"set_enabled","enabled":true,"expectedBuildId":"B"}` |
+| `baseline-stress-stop` | `communityshaders.renderscale` | `{"action":"stop","expectedSessionId":<baseline-stress-session-id>,"expectedBuildId":"<build-id>"}` |
+| `measured-stress-start` | `communityshaders.renderscale` | `{"action":"start","expectedBuildId":"<build-id>"}` |
+| `texture-lifetime-reset` | `communityshaders.renderscale` | `{"action":"texture_lifetime_reset","expectedBuildId":"<build-id>"}` |
+| `texture-lifetime-start` | `communityshaders.renderscale` | `{"action":"texture_lifetime_start","expectedBuildId":"<build-id>"}` |
+| `load-presentation-reset` | `communityshaders.renderscale` | `{"action":"probe_reset","expectedBuildId":"<build-id>"}` |
+| `load-presentation-start` | `communityshaders.renderscale` | `{"action":"probe_start","expectedBuildId":"<build-id>"}` |
+| `profiler-enable` | `communityshaders.profiler_api` | `{"contractMajor":1,"clientId":"<client-id>","commandId":"<command-id>","action":"set_enabled","enabled":true,"expectedBuildId":"<build-id>"}` |
 
 Do not clear profiler history here. Transition 1 inserts exactly
-`{"contractMajor":1,"clientId":"C","commandId":"K","action":"clear_history","expectedBuildId":"B"}`
+`{"contractMajor":1,"clientId":"<client-id>","commandId":"<command-id>","action":"clear_history","expectedBuildId":"<build-id>"}`
 as a `communityshaders.profiler_api` step immediately before
 `qualification_dispatch`; use new client/command IDs and do not use
 `start_capture` or invent `frameCount`. Transition 1's
