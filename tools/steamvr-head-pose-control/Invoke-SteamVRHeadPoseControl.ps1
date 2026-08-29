@@ -42,6 +42,9 @@ param(
 
     [string]$EvidenceDirectory,
 
+    [ValidateRange(100, 60000)]
+    [int]$InstallLockTimeoutMilliseconds = 5000,
+
     [switch]$SkipOpenVRProbe,
     [switch]$Upgrade,
 
@@ -59,6 +62,7 @@ $ErrorActionPreference = 'Stop'
 $script:PoseMagic = 0x48505343
 $script:PoseVersion = 2
 $script:PoseSize = 128
+$script:InstallControl = $null
 
 if (-not ('SkyrimVRAutomation.Native.SharedPoseAtomics' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -164,6 +168,152 @@ function Get-OpenVRDriverRegistration([string]$TargetRoot) {
         matches = $matches
         registrations = $registrations
     }
+}
+
+function Get-InstallTransactionControl([string]$TargetRoot, [string]$RegistrationPath) {
+    $target = [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\').ToLowerInvariant()
+    $registration = [IO.Path]::GetFullPath($RegistrationPath).TrimEnd('\').ToLowerInvariant()
+    $identity = "$target`n$registration"
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { $key = [Convert]::ToHexString($algorithm.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($identity))).ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+    $root = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'CSX-VR-Automation\SteamVR\install-transactions'
+    if (-not [string]::IsNullOrWhiteSpace($env:CSX_HEAD_POSE_INSTALL_CONTROL_ROOT)) {
+        $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        $fixtureRoot = [IO.Path]::GetFullPath($env:CSX_HEAD_POSE_INSTALL_CONTROL_ROOT)
+        if (-not ([IO.Path]::GetFullPath($TargetRoot).StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) -or -not ($fixtureRoot.TrimEnd('\') + '\').StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'CSX_HEAD_POSE_INSTALL_CONTROL_ROOT is test-only and requires both install and control paths inside the OS temporary directory.'
+        }
+        $root = $fixtureRoot
+    }
+    $directory = Join-Path $root $key
+    return [pscustomobject][ordered]@{
+        key = $key; directory = $directory; lockPath = Join-Path $directory 'target.lock'
+        journalPath = Join-Path $directory 'install.journal.json'; target = [IO.Path]::GetFullPath($TargetRoot)
+        openVrPathsPath = [IO.Path]::GetFullPath($RegistrationPath)
+    }
+}
+
+function Enter-InstallTransactionLock($Control) {
+    [IO.Directory]::CreateDirectory([string]$Control.directory) | Out-Null
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($InstallLockTimeoutMilliseconds)
+    do {
+        try {
+            $stream = [IO.File]::Open([string]$Control.lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $owner = [ordered]@{ pid = $PID; command = $Command; acquiredUtc = [DateTime]::UtcNow.ToString('o'); targetKey = [string]$Control.key } | ConvertTo-Json -Compress
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($owner)
+            $stream.SetLength(0); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+            return $stream
+        }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Timed out acquiring the head-pose installation lock after $InstallLockTimeoutMilliseconds ms: $($Control.lockPath)" }
+            Start-Sleep -Milliseconds 50
+        }
+    } while ($true)
+}
+
+function Write-InstallJournal($Journal, $Control) {
+    Write-JsonAtomic -Path ([string]$Control.journalPath) -Value $Journal
+    if ($Journal.Contains('evidenceJournalPath') -and -not [string]::IsNullOrWhiteSpace([string]$Journal.evidenceJournalPath)) {
+        try { Write-JsonAtomic -Path ([string]$Journal.evidenceJournalPath) -Value $Journal }
+        catch { $Journal['evidenceMirrorError'] = $_.Exception.Message }
+    }
+}
+
+function Assert-InstallJournalContract($Journal, $Control) {
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$Journal.target), [string]$Control.target, [StringComparison]::OrdinalIgnoreCase)) { throw 'The authoritative install journal target does not match its lock domain.' }
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$Journal.openVrPathsPath), [string]$Control.openVrPathsPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'The authoritative install journal registration target does not match its lock domain.' }
+    $preimage = [IO.Path]::GetFullPath([string]$Journal.openVrPathsPreimagePath)
+    if (-not ($preimage.StartsWith(([string]$Control.directory).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) { throw 'The authoritative install journal registration preimage escaped its control directory.' }
+    foreach ($name in @('staging', 'previousInstall', 'quarantine')) {
+        $path = [string]$Journal[$name]
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        if (-not [IO.Path]::GetFullPath($path).StartsWith(([string]$Control.target) + '.', [StringComparison]::OrdinalIgnoreCase)) { throw "The authoritative install journal $name path escaped the owned install namespace." }
+    }
+}
+
+function ConvertTo-CanonicalInstallJsonValue([AllowNull()]$Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [Collections.IDictionary]) {
+        $result = [ordered]@{}
+        $keys = [string[]]@($Value.Keys | ForEach-Object { [string]$_ })
+        [Array]::Sort($keys, [StringComparer]::Ordinal)
+        foreach ($key in $keys) { $result[$key] = ConvertTo-CanonicalInstallJsonValue $Value[$key] }
+        return $result
+    }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) { return ,@($Value | ForEach-Object { ConvertTo-CanonicalInstallJsonValue $_ }) }
+    return $Value
+}
+
+function Get-RegistrationWithoutTargetSemanticJson([byte[]]$Bytes, [string]$TargetRoot) {
+    $document = [Text.Encoding]::UTF8.GetString($Bytes) | ConvertFrom-Json -AsHashtable
+    $target = [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\')
+    $remaining = @(
+        foreach ($entry in @($document['external_drivers'])) {
+            if ([string]::IsNullOrWhiteSpace([string]$entry)) { continue }
+            $normalized = [IO.Path]::GetFullPath([string]$entry).TrimEnd('\')
+            if (-not [string]::Equals($normalized, $target, [StringComparison]::OrdinalIgnoreCase)) { $normalized.ToLowerInvariant() }
+        }
+    ) | Sort-Object -CaseSensitive
+    $document['external_drivers'] = @($remaining)
+    return (ConvertTo-CanonicalInstallJsonValue $document) | ConvertTo-Json -Depth 32 -Compress
+}
+
+function Recover-PendingInstallTransaction($Control) {
+    if (-not (Test-Path -LiteralPath ([string]$Control.journalPath) -PathType Leaf)) { return $null }
+    $journal = Get-Content -LiteralPath ([string]$Control.journalPath) -Raw | ConvertFrom-Json -AsHashtable
+    Assert-InstallJournalContract -Journal $journal -Control $Control
+    if ([string]$journal.phase -in @('committed', 'rolled-back', 'recovered')) { return $journal }
+    $preimagePath = [string]$journal.openVrPathsPreimagePath
+    if (-not (Test-Path -LiteralPath $preimagePath -PathType Leaf) -or (Get-HashOrNull $preimagePath) -ne [string]$journal.openVrPathsPreimageSha256) { throw 'The interrupted install registration preimage is missing or has changed.' }
+    $liveRegistrationHash = Get-HashOrNull ([string]$Control.openVrPathsPath)
+    $allowedRegistrationHashes = @([string]$journal.openVrPathsPreimageSha256, [string]$journal.openVrPathsResultSha256) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($liveRegistrationHash -notin $allowedRegistrationHashes -and [string]$journal.phase -eq 'registration-command-uncommitted') {
+        $preimageSemantic = Get-RegistrationWithoutTargetSemanticJson -Bytes ([IO.File]::ReadAllBytes($preimagePath)) -TargetRoot ([string]$Control.target)
+        $liveSemantic = Get-RegistrationWithoutTargetSemanticJson -Bytes ([IO.File]::ReadAllBytes([string]$Control.openVrPathsPath)) -TargetRoot ([string]$Control.target)
+        if ($preimageSemantic -ceq $liveSemantic -and (Get-OpenVRDriverRegistration -TargetRoot ([string]$Control.target)).matchCount -eq 1) {
+            $journal.openVrPathsResultSha256 = $liveRegistrationHash
+            $allowedRegistrationHashes += $liveRegistrationHash
+        }
+    }
+    if ($liveRegistrationHash -notin $allowedRegistrationHashes) { throw 'The OpenVR registration file drifted outside the interrupted install transaction; manual recovery is required.' }
+    if ($liveRegistrationHash -ne [string]$journal.openVrPathsPreimageSha256) {
+        Write-BytesAtomic -Path ([string]$Control.openVrPathsPath) -Bytes ([IO.File]::ReadAllBytes($preimagePath))
+    }
+    $target = [string]$Control.target
+    $previous = [string]$journal.previousInstall
+    $replacementMayBeActive = [string]$journal.phase -ne 'prepared'
+    if ($replacementMayBeActive -and (Test-Path -LiteralPath $target)) {
+        $targetIsOriginal = -not [string]::IsNullOrWhiteSpace($previous) -and (Get-HashOrNull (Join-Path $target 'bin\win64\driver_codex_head_pose.dll')) -eq [string]$journal.originalDllSha256 -and (Get-HashOrNull (Join-Path $target '.csx-vr-automation-driver.json')) -eq [string]$journal.originalMarkerSha256
+        if (-not $targetIsOriginal) {
+            $quarantine = [string]$journal.quarantine
+            if (Test-Path -LiteralPath $quarantine) { throw "Interrupted install quarantine already exists while an unverified target is still active: $quarantine" }
+            Move-Item -LiteralPath $target -Destination $quarantine
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($previous) -and (Test-Path -LiteralPath $previous)) {
+        if (Test-Path -LiteralPath $target) { throw 'The original install cannot be restored because the live target still exists.' }
+        Move-Item -LiteralPath $previous -Destination $target
+    }
+    $staging = [string]$journal.staging
+    if (-not [string]::IsNullOrWhiteSpace($staging) -and (Test-Path -LiteralPath $staging)) {
+        $stagingQuarantine = "$staging.uncommitted"
+        if (Test-Path -LiteralPath $stagingQuarantine) { throw "Interrupted staging quarantine already exists: $stagingQuarantine" }
+        Move-Item -LiteralPath $staging -Destination $stagingQuarantine
+    }
+    if ($journal.Contains('receiptPath') -and -not [string]::IsNullOrWhiteSpace([string]$journal.receiptPath) -and (Test-Path -LiteralPath ([string]$journal.receiptPath) -PathType Leaf)) {
+        $receiptQuarantine = "$($journal.receiptPath).uncommitted-$($journal.transactionId)"
+        if (Test-Path -LiteralPath $receiptQuarantine) { throw "Interrupted install receipt quarantine already exists: $receiptQuarantine" }
+        Move-Item -LiteralPath ([string]$journal.receiptPath) -Destination $receiptQuarantine
+    }
+    if ((Get-HashOrNull ([string]$Control.openVrPathsPath)) -ne [string]$journal.openVrPathsPreimageSha256) { throw 'Recovered OpenVR registration bytes do not match the exact preimage.' }
+    if (-not [string]::IsNullOrWhiteSpace($previous)) {
+        if ((Get-HashOrNull (Join-Path $target 'bin\win64\driver_codex_head_pose.dll')) -ne [string]$journal.originalDllSha256 -or (Get-HashOrNull (Join-Path $target '.csx-vr-automation-driver.json')) -ne [string]$journal.originalMarkerSha256) { throw 'Recovered original driver provenance does not match the install journal.' }
+    }
+    elseif ($replacementMayBeActive -and (Test-Path -LiteralPath $target)) { throw 'Recovered new installation still occupies the live target.' }
+    $journal.phase = 'recovered'; $journal.recoveredUtc = [DateTime]::UtcNow.ToString('o')
+    Write-InstallJournal -Journal $journal -Control $Control
+    return $journal
 }
 
 function Read-AtomicUInt64([IO.MemoryMappedFiles.MemoryMappedViewAccessor]$View, [long]$Offset) {
@@ -394,7 +544,7 @@ function Invoke-PoseProbe {
     }
 }
 
-function Install-Driver {
+function Install-DriverCore {
     if ([string]::IsNullOrWhiteSpace($DriverPackagePath)) {
         $bundledPackage = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'drivers\codex_head_pose'
         if (Test-Path -LiteralPath $bundledPackage -PathType Container) {
@@ -416,6 +566,7 @@ function Install-Driver {
     $target = [IO.Path]::GetFullPath($InstallRoot)
     $previousInstall = $null
     $originalDllSha256 = $null
+    $originalMarkerSha256 = $null
     if (Test-Path -LiteralPath $target) {
         $marker = Join-Path $target '.csx-vr-automation-driver.json'
         if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw "Refusing to replace an unowned driver directory: $target" }
@@ -423,6 +574,7 @@ function Install-Driver {
         if ($owned.driverName -ne 'codex_head_pose') { throw "The existing driver marker does not identify codex_head_pose: $marker" }
         if (-not $Upgrade) { throw "The driver is already installed. Use -Upgrade to retain and replace the owned installation: $target" }
         $originalDllSha256 = Get-HashOrNull (Join-Path $target 'bin\win64\driver_codex_head_pose.dll')
+        $originalMarkerSha256 = Get-HashOrNull $marker
         $previousInstall = "$target.previous-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))"
         if (Test-Path -LiteralPath $previousInstall) { throw "The retained upgrade path already exists: $previousInstall" }
     }
@@ -432,13 +584,16 @@ function Install-Driver {
     $staging = "$target.staging-$transactionId"
     $quarantine = "$target.uncommitted-$transactionId"
     $journalDirectory = if ($EvidenceDirectory) { [IO.Path]::GetFullPath($EvidenceDirectory) } else { $parent }
-    $journalPath = Join-Path $journalDirectory "steamvr-head-pose-install-$transactionId.journal.json"
+    $evidenceJournalPath = Join-Path $journalDirectory "steamvr-head-pose-install-$transactionId.journal.json"
+    $journalPath = [string]$script:InstallControl.journalPath
+    $registrationPreimagePath = Join-Path ([string]$script:InstallControl.directory) "openvrpaths.preimage-$transactionId"
     $registrationPreimage = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($OpenVRPathsPath))
     $registrationPreimageSha256 = Get-HashOrNull $OpenVRPathsPath
     $registrationBefore = Get-OpenVRDriverRegistration -TargetRoot $target
     if ($registrationBefore.matchCount -gt 1) { throw "The target driver has duplicate OpenVR registrations ($($registrationBefore.matchCount)): $target" }
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
     New-Item -ItemType Directory -Path $journalDirectory -Force | Out-Null
+    Write-BytesAtomic -Path $registrationPreimagePath -Bytes $registrationPreimage
     $journal = [ordered]@{
         schemaVersion = 1
         operation = 'install-driver'
@@ -449,11 +604,21 @@ function Install-Driver {
         previousInstall = $previousInstall
         quarantine = $quarantine
         originalDllSha256 = $originalDllSha256
+        originalMarkerSha256 = $originalMarkerSha256
         openVrPathsPath = [IO.Path]::GetFullPath($OpenVRPathsPath)
+        openVrPathsPreimagePath = $registrationPreimagePath
         openVrPathsPreimageSha256 = $registrationPreimageSha256
+        openVrPathsResultSha256 = $null
+        evidenceDirectory = if ($EvidenceDirectory) { [IO.Path]::GetFullPath($EvidenceDirectory) } else { $null }
+        evidenceJournalPath = $evidenceJournalPath
+        sourceProvenance = [ordered]@{
+            manifestSha256 = Get-HashOrNull (Join-Path $source 'driver.vrdrivermanifest')
+            dllSha256 = Get-HashOrNull (Join-Path $source 'bin\win64\driver_codex_head_pose.dll')
+            poseProbeSha256 = Get-HashOrNull (Join-Path $source 'tools\csx_openvr_pose_probe.exe')
+        }
         createdUtc = [DateTime]::UtcNow.ToString('o')
     }
-    Write-JsonAtomic -Path $journalPath -Value $journal
+    Write-InstallJournal -Journal $journal -Control $script:InstallControl
     try {
         Copy-Item -LiteralPath $source -Destination $staging -Recurse
         $marker = [ordered]@{
@@ -465,46 +630,62 @@ function Install-Driver {
             poseProbeSha256 = Get-HashOrNull (Join-Path $staging 'tools\csx_openvr_pose_probe.exe')
         }
         Write-JsonAtomic -Path (Join-Path $staging '.csx-vr-automation-driver.json') -Value $marker
+        $journal.phase = 'replacement-command-uncommitted'
+        Write-InstallJournal -Journal $journal -Control $script:InstallControl
         if ($previousInstall) { Move-Item -LiteralPath $target -Destination $previousInstall }
         Move-Item -LiteralPath $staging -Destination $target
         $journal.phase = 'replacement-active-uncommitted'
-        Write-JsonAtomic -Path $journalPath -Value $journal
+        Write-InstallJournal -Journal $journal -Control $script:InstallControl
         if ($InternalTestFailurePoint -eq 'install-after-replacement') { throw 'Injected failure after replacement activation.' }
 
         $registration = Get-OpenVRDriverRegistration -TargetRoot $target
         if ($registration.matchCount -eq 0) {
+            $journal.phase = 'registration-command-uncommitted'
+            Write-InstallJournal -Journal $journal -Control $script:InstallControl
             $registrationOutput = & $VRPathRegPath adddriver $target 2>&1
             if ($LASTEXITCODE -ne 0) { throw "vrpathreg adddriver failed ($LASTEXITCODE): $($registrationOutput -join ' ')" }
             $registration = Get-OpenVRDriverRegistration -TargetRoot $target
         }
         if ($registration.matchCount -ne 1) { throw "The authoritative OpenVR inventory does not contain exactly one canonical registration for the installed target (count=$($registration.matchCount))." }
         if (-not [string]::Equals([string]$registration.matches[0].normalizedPath, $target.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { throw 'The authoritative OpenVR registration does not resolve to the exact install root.' }
+        $journal.openVrPathsResultSha256 = Get-HashOrNull $OpenVRPathsPath
         $journal.phase = 'registered-uncommitted'
-        Write-JsonAtomic -Path $journalPath -Value $journal
+        Write-InstallJournal -Journal $journal -Control $script:InstallControl
+        $installedManifestSha256 = Get-HashOrNull (Join-Path $target 'driver.vrdrivermanifest')
+        $installedDllSha256 = Get-HashOrNull (Join-Path $target 'bin\win64\driver_codex_head_pose.dll')
+        $installedPoseProbeSha256 = Get-HashOrNull (Join-Path $target 'tools\csx_openvr_pose_probe.exe')
+        if ($installedManifestSha256 -ne [string]$journal.sourceProvenance.manifestSha256 -or $installedDllSha256 -ne [string]$journal.sourceProvenance.dllSha256 -or $installedPoseProbeSha256 -ne [string]$journal.sourceProvenance.poseProbeSha256) {
+            throw 'Installed driver provenance does not match the receipt-bound source package.'
+        }
         $receipt = [ordered]@{
             schemaVersion = 2
             transactionId = $transactionId
             installedUtc = [DateTime]::UtcNow.ToString('o')
             installRoot = $target
-            manifestSha256 = Get-HashOrNull (Join-Path $target 'driver.vrdrivermanifest')
-            dllSha256 = Get-HashOrNull (Join-Path $target 'bin\win64\driver_codex_head_pose.dll')
-            poseProbeSha256 = Get-HashOrNull (Join-Path $target 'tools\csx_openvr_pose_probe.exe')
+            manifestSha256 = $installedManifestSha256
+            dllSha256 = $installedDllSha256
+            poseProbeSha256 = $installedPoseProbeSha256
             previousInstallRoot = $previousInstall
             openVrPathsPath = $registration.openVrPathsPath
             openVrPathsSha256 = $registration.openVrPathsSha256
             registration = $registration
             journalPath = $journalPath
+            evidenceJournalPath = $evidenceJournalPath
+            installControl = $script:InstallControl
         }
         if ($EvidenceDirectory) {
             New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
             $receiptPath = Join-Path $EvidenceDirectory ("steamvr-head-pose-install-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')).receipt.json")
+            $journal.receiptPath = $receiptPath
+            $journal.phase = 'receipt-publication-uncommitted'
+            Write-InstallJournal -Journal $journal -Control $script:InstallControl
             Write-JsonAtomic -Path $receiptPath -Value $receipt
             $receipt['receiptPath'] = $receiptPath
         }
         $journal.phase = 'committed'
         $journal.committedUtc = [DateTime]::UtcNow.ToString('o')
         $journal.installedDllSha256 = $receipt.dllSha256
-        Write-JsonAtomic -Path $journalPath -Value $journal
+        Write-InstallJournal -Journal $journal -Control $script:InstallControl
         return New-Result -Ok $true -State $(if ($previousInstall) { 'driver-upgraded' } else { 'driver-installed' }) -Data $receipt
     }
     catch {
@@ -536,9 +717,29 @@ function Install-Driver {
         $journal.failure = $failure
         $journal.rollbackErrors = @($rollbackErrors)
         $journal.completedUtc = [DateTime]::UtcNow.ToString('o')
-        try { Write-JsonAtomic -Path $journalPath -Value $journal } catch { $rollbackErrors.Add("Recovery journal update failed: $($_.Exception.Message)") }
+        try { Write-InstallJournal -Journal $journal -Control $script:InstallControl } catch { $rollbackErrors.Add("Recovery journal update failed: $($_.Exception.Message)") }
         if ($rollbackErrors.Count -gt 0) { throw "$failure Rollback is incomplete: $($rollbackErrors -join '; '). Recovery journal: $journalPath" }
         throw "$failure The exact previous install and OpenVR registration preimage were restored; the uncommitted replacement was quarantined at $quarantine."
+    }
+}
+
+function Install-Driver {
+    if ([string]::IsNullOrWhiteSpace($InstallRoot)) { throw 'The stable driver install root could not be resolved.' }
+    if ([string]::IsNullOrWhiteSpace($OpenVRPathsPath)) { throw 'The authoritative OpenVR registration path could not be resolved.' }
+    foreach ($name in @('vrserver', 'vrmonitor', 'vrcompositor', 'vrstartup')) {
+        if (Get-Process -Name $name -ErrorAction SilentlyContinue) { throw 'SteamVR must be stopped before installing or recovering the head-pose driver.' }
+    }
+    $script:InstallControl = Get-InstallTransactionControl -TargetRoot $InstallRoot -RegistrationPath $OpenVRPathsPath
+    $installLock = $null
+    try {
+        $installLock = Enter-InstallTransactionLock -Control $script:InstallControl
+        $recovered = Recover-PendingInstallTransaction -Control $script:InstallControl
+        $result = Install-DriverCore
+        if ($null -ne $recovered -and $result.data -is [Collections.IDictionary]) { $result.data['recoveredTransaction'] = $recovered }
+        return $result
+    }
+    finally {
+        if ($installLock) { $installLock.Dispose() }
     }
 }
 
@@ -562,7 +763,7 @@ try {
     }
 }
 catch {
-    $result = New-Result -Ok $false -State 'blocked' -Data @{ mapName = $MapName; installRoot = $InstallRoot } -Errors @($_.Exception.Message)
+    $result = New-Result -Ok $false -State 'blocked' -Data @{ mapName = $MapName; installRoot = $InstallRoot; installControl = $script:InstallControl } -Errors @($_.Exception.Message)
 }
 
 $jsonParameters = @{ InputObject = $result; Depth = 16 }

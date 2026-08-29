@@ -9,6 +9,8 @@ $mapping = $null
 $view = $null
 $passed = 0
 $fixture = Join-Path ([IO.Path]::GetTempPath()) "csx-head-pose-test-$([guid]::NewGuid().ToString('N'))"
+$priorInstallControlRoot = $env:CSX_HEAD_POSE_INSTALL_CONTROL_ROOT
+$env:CSX_HEAD_POSE_INSTALL_CONTROL_ROOT = Join-Path $fixture 'install-control'
 
 function Assert-Test([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Assertion failed: $Message" }
@@ -93,9 +95,43 @@ try {
     Assert-Test ([Convert]::ToHexString([IO.File]::ReadAllBytes($openVrPaths)) -eq [Convert]::ToHexString($openVrBefore)) 'upgrade rollback restores the exact OpenVR registration preimage'
     Assert-Test (@(Get-ChildItem -LiteralPath (Split-Path -Parent $installRoot) -Directory -Filter 'codex_head_pose.uncommitted-*').Count -eq 1) 'upgrade rollback quarantines the uncommitted replacement'
 
+    $installControlDirectory = @(Get-ChildItem -LiteralPath $env:CSX_HEAD_POSE_INSTALL_CONTROL_ROOT -Directory)[0]
+    $installLock = [IO.File]::Open((Join-Path $installControlDirectory.FullName 'target.lock'), [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $contendedInstall = & $entry install -DriverPackagePath $bundleRoot -InstallRoot $installRoot -VRPathRegPath $entry -OpenVRPathsPath $openVrPaths -EvidenceDirectory $evidence -Upgrade -InstallLockTimeoutMilliseconds 100 -Compact -NoExit | ConvertFrom-Json
+        Assert-Test (-not $contendedInstall.ok -and $contendedInstall.errors[0] -match 'installation lock') 'concurrent installers cannot enter the same target and OpenVR registration transaction'
+    }
+    finally { $installLock.Dispose() }
+
+    $authoritativeJournalPath = Join-Path $installControlDirectory.FullName 'install.journal.json'
+    $interrupted = Get-Content -LiteralPath $authoritativeJournalPath -Raw | ConvertFrom-Json -AsHashtable
+    $existingQuarantine = [string]$interrupted['quarantine']
+    if (Test-Path -LiteralPath $existingQuarantine) { Remove-Item -LiteralPath $existingQuarantine -Recurse -Force }
+    Move-Item -LiteralPath $installRoot -Destination ([string]$interrupted['previousInstall'])
+    Copy-Item -LiteralPath $bundleRoot -Destination $installRoot -Recurse
+    [IO.File]::WriteAllText((Join-Path $installRoot '.csx-vr-automation-driver.json'), '{"schemaVersion":1,"driverName":"codex_head_pose"}', [Text.UTF8Encoding]::new($false))
+    $interrupted['phase'] = 'replacement-command-uncommitted'
+    $interrupted['failure'] = $null
+    $interrupted['rollbackErrors'] = @()
+    $interrupted['completedUtc'] = $null
+    $interrupted | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $authoritativeJournalPath -Encoding utf8
+    $interrupted | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath ([string]$interrupted['evidenceJournalPath']) -Encoding utf8
+    $differentEvidence = Join-Path $fixture 'different-evidence'
+    New-Item -ItemType Directory -Path $differentEvidence | Out-Null
+    $recoveryAttempt = & $entry install -DriverPackagePath (Join-Path $fixture 'missing-package') -InstallRoot $installRoot -VRPathRegPath $entry -OpenVRPathsPath $openVrPaths -EvidenceDirectory $differentEvidence -Upgrade -Compact -NoExit | ConvertFrom-Json
+    $recoveredJournal = Get-Content -LiteralPath $authoritativeJournalPath -Raw | ConvertFrom-Json
+    Assert-Test (-not $recoveryAttempt.ok -and $recoveryAttempt.errors[0] -match 'Driver package is missing' -and $recoveredJournal.phase -eq 'recovered') 'a later caller recovers an interrupted replacement before validating its new package or evidence directory'
+    Assert-Test ((Get-FileHash -LiteralPath $oldDll -Algorithm SHA256).Hash -eq $oldHash -and [Convert]::ToHexString([IO.File]::ReadAllBytes($openVrPaths)) -eq [Convert]::ToHexString($openVrBefore)) 'restart recovery restores exact driver provenance and OpenVR registration bytes'
+
+    $successfulUpgrade = & $entry install -DriverPackagePath $bundleRoot -InstallRoot $installRoot -VRPathRegPath $entry -OpenVRPathsPath $openVrPaths -EvidenceDirectory $differentEvidence -Upgrade -Compact -NoExit | ConvertFrom-Json
+    $committedInstall = Get-Content -LiteralPath $authoritativeJournalPath -Raw | ConvertFrom-Json
+    Assert-Test ($successfulUpgrade.ok -and $successfulUpgrade.state -eq 'driver-upgraded' -and $committedInstall.phase -eq 'committed') 'recovered target admits one subsequent serialized upgrade and commits its authoritative journal'
+    Assert-Test ($successfulUpgrade.data.dllSha256 -eq [string]$provenance.artifacts.'bin/win64/driver_codex_head_pose.dll' -and $successfulUpgrade.data.poseProbeSha256 -eq [string]$provenance.artifacts.'tools/csx_openvr_pose_probe.exe') 'committed upgrade binds installed driver and probe hashes to bundled provenance'
+
     [pscustomobject]@{ ok = $true; passed = $passed } | ConvertTo-Json -Compress
 }
 finally {
+    $env:CSX_HEAD_POSE_INSTALL_CONTROL_ROOT = $priorInstallControlRoot
     if ($view) { $view.Dispose() }
     if ($mapping) { $mapping.Dispose() }
     if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }

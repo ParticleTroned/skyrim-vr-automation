@@ -8,6 +8,9 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   canonical live targets, move recovery authority to a deterministic per-user
   journal independent of caller evidence directories, and replace repeated
   whole-log reads with deadline-charged incremental bounded-byte tails.
+- Serialize head-pose driver installs/upgrades by canonical install and OpenVR
+  targets, persist authoritative registration preimages, and recover interrupted
+  replacement/registration phases before admitting another installer.
 
 - Require every fresh MO2 task clone to inherit a hash- and
   profile-fingerprint-verified default world-entry save, make the doctor fail
