@@ -43,10 +43,13 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
-foreach ($token in @('one parallel read-only batch', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
+foreach ($token in @('one parallel read-only batch', '`communityshaders.renderscale status`', '`status.adapter.vendorId`', '`0x10DE`/4318', '`0x1002`/4098', 'Tool descriptions do not advertise result fields', '`startupReadElapsedMs`', '`slow_startup_reads`', 'not an admission failure', 'fresh monotonic `positioningDispatchElapsedMs` budget', 'Startup-read time never consumes the positioning-dispatch budget', 'Do not add `ping`', 'Do not add a pre-position API snapshot', '`async: true`', 'coc WhiterunDragonsreach', '10,000 ms wait', 'three client request rounds', 'one synchronous fail-closed handoff scenario', "transition 1's `qualification_dispatch`", '`receipt-index.json`', 'exact decoded JSON response body', 'terminal baseline waiter receipt', '`milestoneTimings`', '`replacementTimeline`', 'never durable evidence paths')) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
 foreach ($forbidden in @(
+    'Start a local monotonic startup budget with the first live request',
+    'direct `ping`, `inspect health`',
+    '`capabilities`, `snapshot`, and `communityshaders.renderscale status`',
     'render-scale tool description to advertise independent',
     'generic process inventory, adapter description string, or upscaling API receipt is authoritative'
 )) {
@@ -322,6 +325,7 @@ foreach ($protocol in @(
         "installed plugin's direct DevBench MCP tools exclusively",
         'including deferred tools',
         '`mcp__devbench_vr__` prefix',
+        'direct `inspect health` fails its bounded',
         '`plugin_direct_unavailable`',
         'Never open, execute, or wait on the bundled controller',
         'There is no fallback transport',
@@ -343,6 +347,7 @@ foreach ($protocol in @(
         'bundled-controller fallback lane',
         '`-MaxTransientRetries 0`',
         '`requestTimeoutSeconds`',
+        'direct `ping` fails its bounded',
         'Call DevBench `upscalingStable`',
         '`-ExpectedProfileJson`'
     )) {

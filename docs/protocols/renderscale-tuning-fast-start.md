@@ -4,7 +4,7 @@ This shared startup contract applies identically to the NVIDIA and AMD tuning
 skills. It is complete for all work through exact Dragonsreach positioning.
 Do not read Simple COC or Simple CSM instructions for either tuning assay.
 
-## Direct lane and startup budget
+## Direct lane and startup timing
 
 Use only callable plugin-provided tools whose names start with
 `mcp__devbench_vr__`. Inspect their current in-memory descriptions, including
@@ -25,16 +25,29 @@ and are never durable evidence paths. A receipt that cannot be written and
 rehash-verified stops future mutations; preserve the write failure and perform
 only ownership-guarded cleanup that is already safe.
 
-Start a local monotonic startup budget with the first live request. The
-positioning scenario must be accepted within 30 seconds. Its required
-post-COC 10,000 ms settle is outside that dispatch budget. A successful call
-returns immediately; never wait out a fixed retry window.
+Start `startupReadElapsedMs` immediately before dispatching the parallel
+read-only batch and stop it as soon as the final response returns. A result
+over 10,000 ms is the preserved `slow_startup_reads` efficiency anomaly, not
+an admission failure when every required read succeeded and its identity and
+state are coherent. A successful batch never waits out a fixed window.
+
+After the startup receipts pass and are rehash-verified, start a fresh
+monotonic `positioningDispatchElapsedMs` budget immediately before
+`prepare_coc`. The positioning scenario must be accepted within 30,000 ms of
+that point. Its required post-COC 10,000 ms settle is outside the dispatch
+budget. Startup-read time never consumes the positioning-dispatch budget.
+Write both elapsed values and the optional `slow_startup_reads` anomaly into
+`receipt-index.json` and the final summary; do not reconstruct them later from
+frame numbers or transcript timestamps.
 
 Before positioning, use only these request rounds:
 
-1. One parallel read-only batch containing direct `ping`, `inspect health`,
-   `inspect state`, `communityshaders.upscaling_api registry`, `capabilities`,
-   `snapshot`, and `communityshaders.renderscale status`. Retain every receipt.
+1. One parallel read-only batch containing direct `inspect health`, `inspect
+   state`, `communityshaders.upscaling_api registry`, `capabilities`, and
+   `communityshaders.renderscale status`. Retain every receipt. Do not add
+   `ping`: the required health read is the stronger liveness proof. Do not add
+   a pre-position API snapshot: the positioning scenario owns the first
+   snapshot used by admission and baseline.
    Require one live Skyrim VR PID, a loaded player, and the exact CSX Build
    ID/producer. Require `status.adapter.available: true` from the render-scale
    status receipt and exact `status.adapter.vendorId`: `0x10DE`/4318 for the
@@ -45,8 +58,9 @@ Before positioning, use only these request rounds:
    `taa`, `dlss`, and `fsr`. Do not search the tool descriptions for output
    fields such as `milestoneTimings` or `replacementTimeline`. If a read
    returns 429/502/503/504 while the off-thread health receipt remains exact,
-   retry only the failed read once immediately within the same startup budget.
-   No fixed sleep or availability waiter is permitted.
+   retry only the failed read once immediately. The retry remains part of
+   `startupReadElapsedMs`; it does not borrow from the fresh positioning
+   budget. No fixed sleep or availability waiter is permitted.
 2. Call `communityshaders.menu prepare_coc` exactly once and alone. It is the
    first stateful call. Require the runtime-only FOV/TAA `0.3/0.3/0.7` fixture,
    debug logging, and `persisted: false`. It must not change DLSS,

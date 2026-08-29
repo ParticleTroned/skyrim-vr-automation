@@ -25,8 +25,9 @@ native method is absent, stop before any stateful call with
 a newer build, and ask the user. Never search for a separate
 `upscalingStable` tool.
 
-If the plugin tools are absent or direct `ping` fails its bounded readiness
-check, stop before any stateful call, report `plugin_direct_unavailable`, and
+If the plugin tools are absent or direct `inspect health` fails its bounded
+readiness check, stop before any stateful call, report
+`plugin_direct_unavailable`, and
 ask the user to repair the plugin connection or restart Codex. Never open,
 execute, or wait on the bundled controller in this assay. There is no fallback
 transport, controller availability wait, or lane switching.
