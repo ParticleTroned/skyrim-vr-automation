@@ -4,7 +4,17 @@ This tool gives each automation task a unique MO2 profile cloned from an
 explicitly configured, known-good `defaults.testProfileSource`. It never uses
 the ordinary session default as an implicit template. The complete `saves`
 tree from that maintained source profile is copied and verified into every new
-task profile so ordinary access requests remain usable.
+task profile so ordinary access requests remain usable. Fresh creation is
+fail-closed unless that source also has one valid default world-entry fixture.
+The fixture is the maintained route into the loaded game world; alternate
+locations may then be reached with guarded `coc`/`cow` commands.
+
+Profile discovery, hashing, fixture verification, copying, and post-copy
+verification share one command-wide tree-operation deadline. The controller
+also enforces explicit file, directory, depth, and aggregate-byte limits and
+rejects reparse points. Exceeding any budget returns a bounded failure before a
+new clone is committed; the limits are configurable through the corresponding
+`-MaxProfile*` and `-TreeOperationTimeoutSeconds` parameters.
 
 Before `create`, run `prepare-source` under the same MO2 access lease. It scans
 overwrite recursively for every directory named `ShaderCache` or beginning
@@ -49,7 +59,19 @@ this release does not synthesize that action, and `coc APStartCell` is
 explicitly not equivalent. See `../../docs/BREEZEHOME-SAVE.md` for the current
 maintained fallback starting point.
 
-`VerifiedFixture` is the deterministic automation form of “new game”. It uses
+One default fixture is mandatory for every fresh clone, regardless of
+`SavePolicy`. The installer or list maintainer must first load that save in the
+maintained source profile, record it in `defaults.newGameFixtureManifest`, and
+obtain `fixture-valid`. Creation records static integrity as
+`data.sourceIntegrity`, reports the declaration as `data.worldEntryFixture`,
+verifies it again in the copied tree, and sets `data.copiedWorldEntrySave`.
+`integrityVerified` proves exact profile/save bytes; it does not imply
+`runtimeQualified`. This is a clone-time integrity guarantee only: `resume`
+preserves a task's prior profile exactly and does not claim its save still works
+after task-local edits.
+
+`VerifiedFixture` additionally authorizes that exact fixture as the
+deterministic automation form of “new game”. It uses
 `-FixtureManifestPath`, or `defaults.newGameFixtureManifest`, and selects
 `-FixtureId` or the manifest's `defaultFixtureId`. The manifest fingerprint must
 match the exact stable source profile. Every listed save/co-save is verified by
@@ -64,8 +86,9 @@ changing anything. When no manifest is configured, or the configured file is
 missing, `fixture-status` returns `fixture-not-configured` or
 `fixture-manifest-missing` with the exact configuration property, portable
 example path, current stable-profile fingerprint, and creation guidance; this
-discovery state is not a tool error. The doctor reports the same configuration
-as an optional warning. `refresh-fixture` is the separately authorized repair path:
+discovery state is not a tool error for inspection, but it blocks fresh
+`create`. The doctor treats anything other than `fixture-valid` as a failed
+setup prerequisite. `refresh-fixture` is the separately authorized repair path:
 it requires the exact access lease and closed-state proof, preserves the prior
 manifest and a receipt, refreshes only the selected declared fixture, and
 verifies the postcondition. It never invents a replacement save path.
@@ -85,8 +108,8 @@ the exact prior INI bytes and receipt, and only then removes the task profile.
 Workspace manifests and results expose `profileName`, `profileDirectory`, and
 `modListPath` while retaining the legacy `profile` and `profilePath` fields.
 Calling MO2 `release-access` alone preserves the workspace for later `resume`.
-The deprecated workspace `release` alias is destructive and exists only for
-compatibility.
+The deprecated workspace `release` command is retained only to return safe
+recovery guidance; it fails before mutation and never deletes a profile.
 
 `-WinningPaths` changes `register-mod` into an enabled winning-provider
 transaction. `ensure-mod-wins` can subsequently re-check and reposition only a

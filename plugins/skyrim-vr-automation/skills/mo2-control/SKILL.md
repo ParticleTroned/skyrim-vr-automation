@@ -46,10 +46,12 @@ are:
    `request-access`, retain its exact `accessId`, and respect `access-busy`.
    An estimated duration is advisory only and never permits lease stealing.
    Use workspace `list-task -TaskId` to discover retained state. On the first
-   request, run `prepare-source` and `create -TaskId`; the primary profile and
-   all saves are cloned and selected. On later requests, require an explicit
+   request, run `prepare-source`, require `fixture-status` to report
+   `fixture-valid`, and then run `create -TaskId`; the primary profile, its
+   complete save tree, and the mandatory default world-entry save are cloned,
+   verified, and selected. On later requests, require an explicit
    `resume -TaskId -WorkspaceId` or fresh `create -TaskId`. Never silently
-   replace or refresh a retained profile.
+   replace, refresh, or requalify a retained profile after task-local edits.
    Before any closed-state mutation, run `validate -AccessId <literal-access-id>
    -RequireClosed` and account for every warning or block.
 3. Use `-WhatIf` when the command supports it and the requested change has not
@@ -68,10 +70,12 @@ are:
    revalidated for subsequent launches in the same session.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.
-   Every task profile receives a verified copy of the stable source profile's
-   complete saves tree. This makes saves available but does not authorize their
-   use: respect `SavePolicy`, and use only a declared `VerifiedFixture` as a
-   deterministic automation baseline.
+   Every fresh task profile receives a verified copy of the stable source
+   profile's complete saves tree and mandatory default world-entry fixture.
+   This makes saves available but does not authorize their use: respect
+   `SavePolicy`, and use only a declared `VerifiedFixture` as a deterministic
+   automation baseline. A resumed task profile is preserved as-is; never claim
+   its save remains working after the task has changed its profile.
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
