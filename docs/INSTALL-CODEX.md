@@ -42,13 +42,20 @@ checkout-local path. The doctor reports which source won.
 From a repository checkout, use the bounded installer:
 
 ```powershell
-.\scripts\Install-CodexMarketplacePlugin.ps1
+.\scripts\Install-CodexMarketplacePlugin.ps1 -ConfirmSafeCacheRotation
 ```
 
 It verifies the marketplace manifest version, the structured installed
 registration, and every installed file hash. If `plugin add` succeeds while
 `plugin list` still reports an older snapshot, it performs one scoped
 `skyrim-vr-tools` remove/add cycle and verifies the result again.
+
+Installation replaces the versioned plugin cache directory. Finish every
+automation run in every chat before invoking it, then fully reload the Codex
+host or VS Code before starting another protocol. A new chat in the existing
+host can retain the old catalog path and is not a sufficient reload boundary.
+Source/package generation and commits may continue while a run is active;
+defer only the installed-cache rotation.
 
 For a Git marketplace installation without a checkout, refresh the marketplace
 registration before reinstalling the plugin:

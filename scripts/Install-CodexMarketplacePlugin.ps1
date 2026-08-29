@@ -6,11 +6,16 @@ param(
     [string]$MarketplaceName = 'skyrim-vr-tools',
     [string]$PluginName = 'skyrim-vr-automation',
     [string]$CodexCommand = 'codex',
-    [string[]]$CodexPrefixArguments = @()
+    [string[]]$CodexPrefixArguments = @(),
+    [switch]$ConfirmSafeCacheRotation
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (-not $ConfirmSafeCacheRotation) {
+    throw 'Plugin installation replaces versioned cache paths. Finish every active automation run, then rerun with -ConfirmSafeCacheRotation and fully reload the Codex host.'
+}
 
 function Invoke-CodexJson {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -146,4 +151,6 @@ foreach ($relativePath in $sourceFiles) {
     installedPath = $installedRoot
     verifiedFiles = $sourceFiles.Count
     sourceAndInstalledMatch = $true
+    safeCacheRotationConfirmed = $true
+    requiresCodexHostReload = $true
 } | ConvertTo-Json -Depth 5

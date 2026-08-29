@@ -99,15 +99,29 @@ throw "Unexpected mock command: $($command -join ' ')"
 '@, [Text.UTF8Encoding]::new($false))
 
     $powerShell = (Get-Process -Id $PID).Path
+    $guarded = $false
+    try {
+        & (Join-Path $repositoryRoot 'scripts\Install-CodexMarketplacePlugin.ps1') `
+            -MarketplaceRoot $marketplaceRoot `
+            -CodexCommand $powerShell `
+            -CodexPrefixArguments @('-NoProfile', '-File', $mockPath) | Out-Null
+    }
+    catch {
+        $guarded = $_.Exception.Message -like '*-ConfirmSafeCacheRotation*'
+    }
+    if (-not $guarded) { throw 'Installer did not guard cache rotation.' }
+
     $result = & (Join-Path $repositoryRoot 'scripts\Install-CodexMarketplacePlugin.ps1') `
         -MarketplaceRoot $marketplaceRoot `
         -CodexCommand $powerShell `
-        -CodexPrefixArguments @('-NoProfile', '-File', $mockPath) | ConvertFrom-Json
+        -CodexPrefixArguments @('-NoProfile', '-File', $mockPath) `
+        -ConfirmSafeCacheRotation | ConvertFrom-Json
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 
     if (-not $result.ok -or $result.registeredVersion -ne '0.8.0+codex.current') { throw 'Installer did not verify the current registration.' }
     if (-not $result.registrationRefreshed -or $result.staleReportedVersion -ne '0.8.0+codex.stale') { throw 'Installer did not classify the stale registration.' }
     if (-not $result.sourceAndInstalledMatch -or $result.verifiedFiles -ne 2) { throw 'Installer did not hash-verify the installed plugin.' }
+    if (-not $result.safeCacheRotationConfirmed -or -not $result.requiresCodexHostReload) { throw 'Installer did not preserve its cache-rotation contract.' }
     if ($state.pluginAddCount -ne 2 -or $state.pluginRemoveCount -ne 1) { throw 'Installer did not perform exactly one bounded plugin repair.' }
     if ($state.marketplaceAddCount -ne 1 -or $state.marketplaceRemoveCount -ne 1) { throw 'Installer did not perform exactly one bounded marketplace refresh.' }
 
@@ -117,6 +131,8 @@ throw "Unexpected mock command: $($command -join ' ')"
         registeredVersion = $result.registeredVersion
         boundedMarketplaceRefresh = $true
         sourceAndInstalledMatch = $result.sourceAndInstalledMatch
+        safeCacheRotationGuard = $true
+        requiresCodexHostReload = $result.requiresCodexHostReload
     } | ConvertTo-Json
 }
 finally {

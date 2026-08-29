@@ -31,14 +31,22 @@ over 10,000 ms is the preserved `slow_startup_reads` efficiency anomaly, not
 an admission failure when every required read succeeded and its identity and
 state are coherent. A successful batch never waits out a fixed window.
 
-After the startup receipts pass and are rehash-verified, start a fresh
-monotonic `positioningDispatchElapsedMs` budget immediately before
-`prepare_coc`. The positioning scenario must be accepted within 30,000 ms of
-that point. Its required post-COC 10,000 ms settle is outside the dispatch
-budget. Startup-read time never consumes the positioning-dispatch budget.
-Write both elapsed values and the optional `slow_startup_reads` anomaly into
-`receipt-index.json` and the final summary; do not reconstruct them later from
-frame numbers or transcript timestamps.
+After the startup receipts pass and are rehash-verified, attempt to start a
+fresh monotonic `positioningDispatchElapsedMs` measurement immediately before
+`prepare_coc`. Its 30,000 ms value is an efficiency target, not an admission
+gate. Record `slow_positioning_dispatch` when an accepted scenario exceeds the
+target. If the timer was not started, record
+`positioning_dispatch_timer_not_started`, store the elapsed value as `null`,
+and dispatch immediately; never stop or delay a valid assay solely because
+this client-side startup metric is unavailable. Only failure to obtain an
+accepted positioning `runId` within the bounded tool call blocks the assay.
+The required post-COC 10,000 ms settle is outside this measurement, and
+startup-read time never contributes to it.
+
+Write both elapsed fields and their optional efficiency anomalies into
+`receipt-index.json` and the final summary; do not reconstruct missing values
+later from frame numbers or transcript timestamps. This startup measurement
+never replaces or changes transition 1's authoritative CPU/GPU timing origin.
 
 Before positioning, use only these request rounds:
 

@@ -103,8 +103,12 @@ From a repository checkout, the bounded updater also detects and repairs a
 stale local marketplace registration, then hash-verifies the installed copy:
 
 ```powershell
-.\scripts\Install-CodexMarketplacePlugin.ps1
+.\scripts\Install-CodexMarketplacePlugin.ps1 -ConfirmSafeCacheRotation
 ```
+
+Run the installer only after every automation protocol in every chat is
+terminal, then fully reload Codex or VS Code. Installation replaces versioned
+cache paths, and a new chat in the same host can retain the prior catalog.
 
 ## Local setup
 
