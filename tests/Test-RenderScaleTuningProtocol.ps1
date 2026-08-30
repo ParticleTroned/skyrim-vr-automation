@@ -44,13 +44,15 @@ Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
 foreach ($token in @(
-    'post-position contract', 'starts only after', 'synchronous',
+    'detailed contract', 'complete live fast path',
+    'only after a pass has', 'finalization-only', 'synchronous',
     '`stepsRun: 8`', '`position-health`', '`position-state`',
     '`position-scene`', '`position-capabilities`', '`position-snapshot`',
     '`position-renderscale`', '`WhiterunDragonsreach`', '`0x10DE`/4318',
-    '`0x1002`/4098', 'Report positioning as soon as it returns',
-    'do not create an evidence directory', 'decode Base64',
-    'read another reference first', 'in one local read action',
+    '`0x1002`/4098', 'reports positioning as soon as it returns',
+    'create an evidence directory', 'decode Base64',
+    '`content[0].text`', 'recursively search', 'small matrix',
+    'still-running', 'does not emit it',
     'run-unique startup keys', '`raw/startup`',
     '`startup_evidence_incomplete`',
     'forbid the comparison-ledger append',
@@ -116,7 +118,8 @@ foreach ($forbidden in @(
     '`gpu_performance_reset`',
     'profiler `clear_history`',
     'Reissue the identical `qualification_wait` once immediately',
-    '`qualification_wait_active`'
+    '`qualification_wait_active`',
+    'Then read the selected matrix, vendor protocol, and this contract completely'
 )) {
     Assert-True (-not $fastStart.Contains($forbidden, [StringComparison]::Ordinal)) "Shared tuning fast-start retains an invalid admission rule: $forbidden"
 }
@@ -202,8 +205,16 @@ foreach ($variant in $variants) {
     Assert-Contains $skill '`startup-positioning`' $variant.Name
     Assert-Contains $skill 'verify both keys with `load()`' $variant.Name
     Assert-Contains $skill 'finalization materializes both stored responses' $variant.Name
-    Assert-Contains $skill 'report positioning immediately' $variant.Name
-    Assert-Contains $skill 'completely in one local read' $variant.Name
+    Assert-Contains $skill '`content[0].type: "text"`' $variant.Name
+    Assert-Contains $skill '`JSON.parse`' $variant.Name
+    Assert-Contains $skill '`content[0].text`' $variant.Name
+    Assert-Contains $skill '`after.foveation`' $variant.Name
+    Assert-Contains $skill 'never validate the fixture from `before`' $variant.Name
+    Assert-Contains $skill '`notify()`; do not end the orchestration cell' $variant.Name
+    Assert-Contains $skill 'one nested local read inside the still-running orchestration cell' $variant.Name
+    Assert-Contains $skill 'Do not read the shared detailed contract' $variant.Name
+    Assert-Contains $skill 'Do not pause for model reasoning' $variant.Name
+    Assert-Contains $skill 'Only after a pass completes or is interrupted' $variant.Name
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
     Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
     Assert-True (-not $skill.Contains('"args": { "action": "health" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect health."
@@ -212,12 +223,13 @@ foreach ($variant in $variants) {
 
     foreach ($token in @(
         '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7`',
-        '`SKILL.md` owns runtime-only `prepare_coc`',
-        'one synchronous', 'post-position contract', 'do not repeat its reads',
+        '`SKILL.md` owns runtime-only `prepare_coc`, positioning',
+        'one synchronous', 'do not repeat live reads',
         'Do not enumerate', 'audit schemas', '`plugin_direct_unavailable`',
         'no fallback transport',
-        'synchronous positioning response returns',
-        'offline package invariant', 'do not revalidate or summarize it',
+        'measured live loop before this file is read',
+        'inside its still-running orchestration cell',
+        'Do not reopen, revalidate, or summarize the matrix',
         'reset then start the short', 'exact six',
         'one synchronous fail-closed handoff scenario',
         '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
@@ -310,7 +322,7 @@ foreach ($variant in $variants) {
     Assert-True (-not $skill.Contains('live public API to expose every action and field', [StringComparison]::Ordinal)) "$($variant.Name) still treats input metadata as an output contract."
 
     $positioningPosition = $protocol.IndexOf(
-        'synchronous positioning response returns',
+        'measured live loop before this file is read',
         [StringComparison]::Ordinal
     )
     $baselinePosition = $protocol.IndexOf(

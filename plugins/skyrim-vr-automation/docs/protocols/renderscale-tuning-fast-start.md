@@ -1,9 +1,14 @@
-# Render-scale tuning post-position contract
+# Render-scale tuning detailed contract
 
-This contract starts only after the NVIDIA or AMD skill's synchronous
-Dragonsreach positioning scenario returns. The vendor `SKILL.md` owns the
-runtime fixture and positioning request so no reference-file read or local
-evidence action can delay the COC.
+The vendor `SKILL.md` owns the complete live fast path from runtime fixture
+through the current pass. Do not read this detailed contract during startup,
+after positioning, or between measured rows. Read it only after a pass has
+completed or been interrupted, when cumulative evidence and guarded
+finalization begin. Its detailed live rules remain the normative audit
+reference, but loading them must never delay a COC, baseline, or next row.
+When this file is loaded at finalization, use its live-action sections only to
+audit preserved receipts. Never replay an action merely because it is
+described below.
 
 ## Validate the one positioning response
 
@@ -25,14 +30,18 @@ reads. Require:
   physical failure, an available adapter, and vendor ID `0x10DE`/4318 for
   NVIDIA or `0x1002`/4098 for AMD.
 
-The synchronous response is the positioning observation. Report positioning
-as soon as it returns; do not create an evidence directory, convert JSON,
-decode Base64, hash files, or read another reference first. A failed scenario
-or required field stops without replaying the COC.
+The synchronous response is the positioning observation. The live skill
+decodes the MCP envelope exactly once from `content[0].text`, validates the
+fixed labeled paths, and reports positioning as soon as it returns. It must not
+create an evidence directory, decode Base64, hash files, recursively search
+the response, or read this contract first. A failed scenario or required field
+stops without replaying the COC.
 
-Then read the selected matrix, vendor protocol, and this contract completely
-in one local read action. Do not load Simple COC or Simple CSM instructions,
-enumerate tools, inspect schemas, or run another admission/reset scenario.
+The live skill loads only its small matrix inside the still-running
+orchestration cell and does not emit it. Do not load Simple COC or Simple CSM
+instructions, enumerate tools, inspect schemas, or run another admission/reset
+scenario. The vendor protocol and this detailed contract are finalization-only
+reads.
 
 The vendor `SKILL.md` stores the exact `prepare_coc` and positioning responses
 under run-unique startup keys before this contract is read. They are startup

@@ -6,10 +6,13 @@ profile through `communityshaders.renderscale`.
 
 ## 1. Bind and prepare
 
-The AMD `SKILL.md` owns runtime-only `prepare_coc` and the one synchronous
-Dragonsreach positioning scenario before this file is read. Apply the shared
-post-position contract to that returned scenario, then use it for baseline and
-measured-owner handoff. Do not repeat its reads or add another preflight phase.
+The AMD `SKILL.md` owns runtime-only `prepare_coc`, positioning, lane baseline,
+handoff, and the measured live loop before this file is read. Read this file
+only after a pass completes or is interrupted, for cumulative evidence,
+guarded finalization, and reporting. Do not repeat live reads or add another
+preflight phase.
+Sections 2 through 4 audit actions already executed by the live skill; never
+replay them when this file is loaded for finalization.
 
 Use the installed plugin's direct DevBench MCP tools exclusively for every AMD
 lane baseline, transition, evidence read, and guarded cleanup. Do not enumerate
@@ -39,9 +42,9 @@ controller's applied/stable resource records are separate physical evidence.
 At native resolution they remain inactive with backend `none`, but retain the
 exact logical method and never replace a public profile.
 
-Load the packaged `matrix.v1.json` with this protocol only after the
-synchronous positioning response returns, and execute it unchanged. Its
-structure is an offline package invariant; do not revalidate or summarize it.
+The live skill loads packaged `matrix.v1.json` inside its still-running
+orchestration cell immediately after positioning and executes it unchanged.
+Do not reopen, revalidate, or summarize the matrix while reading this protocol.
 
 ## 2. Select and isolate the three lanes
 
