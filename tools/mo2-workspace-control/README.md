@@ -45,6 +45,21 @@ profile. `list-task` reports retained profiles. `resume` rebinds one exact
 retained workspace to a newly owned lease and selects it without refreshing it
 from the primary profile. See `../../docs/MO2-TASK-WORKSPACES.md`.
 
+Creation also provisions `Codex Runtime Output - <workspaceId>` as the exact
+task profile's highest-priority loose `ShaderCache` provider and adds only the
+selected executable's `custom_overwrites` mapping. Other mappings, including a
+pre-existing `Synthesis=...` entry, remain byte-semantically intact. If the
+effective profile already exposes generated files anywhere under `backup`,
+creation copies and hash-verifies the complete per-path winning union into the
+task output mod so subsequent writes stay there. Shader-cache catalog `prepare`
+must then materialize every path exposed only by lower enabled `ShaderCache`
+providers; an empty winning directory or sentinel is insufficient for paths
+first compiled in later areas. MO2 session preparation and the first launch
+independently re-inventory both trees and require their exact prepared hashes.
+Retained game cycles may grow only the winning task output; relaunch still
+fails if any current lower-provider path is absent or its source receipt is
+stale.
+
 For elevated use, follow `../mo2-control/APPROVALS.md`. Every result reports a
 literal command-specific `data.approval.reusablePrefix`. `create`,
 `register-mod`, and `ensure-mod-wins` are eligible for narrow reusable approval;
@@ -118,6 +133,10 @@ the exact prior INI bytes and receipt, and only then removes the task profile.
 Workspace manifests and results expose `profileName`, `profileDirectory`, and
 `modListPath` while retaining the legacy `profile` and `profilePath` fields.
 Calling MO2 `release-access` alone preserves the workspace for later `resume`.
+Before `retire` removes the exact task-owned runtime-output mod, it recursively
+copies and verifies the full tree into retirement evidence. This includes all
+compiled `ShaderCache` files and the complete generated `backup` tree; a file,
+byte-count, or tree-hash mismatch blocks retirement.
 The deprecated workspace `release` command is retained only to return safe
 recovery guidance; it fails before mutation and never deletes a profile.
 

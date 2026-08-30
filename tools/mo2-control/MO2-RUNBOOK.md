@@ -32,6 +32,12 @@ location, archive, process names, and safety limits live in the ignored
 the doctor-reported configuration. Start from `config/machine.example.json`; do not
 commit the resulting machine file.
 
+Machines with multiple portable MO2 installations keep one exact config per
+modlist through `../modlist-control`. Inspect and select the intended name
+before preflight. A persisted exact selection is allowed; choosing the first
+config, assuming that `main` means safe, or falling back to the UI-selected
+profile is not.
+
 Before any elevated invocation, read `APPROVALS.md`. Use a direct literal
 `pwsh.exe -NoProfile -NonInteractive -File <entrypoint> <subcommand>` shape and
 the result's `data.approval.reusablePrefix`. Variables in this runbook describe
@@ -273,6 +279,17 @@ Response: stop. Do not acknowledge the fallback and continue automation. Close
 MO2, verify the exact profile directory and `selected_profile`, then run
 `validate -RequireClosed`. A fallback is a failed precondition even if MO2 can
 launch.
+
+### Persisted legacy task profile
+
+Symptom: `inspect` reports that MO2 selects a `Codex Task -` profile whose
+workspace has no runtime-output isolation contract.
+
+Response: do not launch that profile. Close Skyrim and MO2, acquire the exact
+access lease, validate closed state, preview workspace
+`recover-legacy-selection`, and run it with the reported workspace ID. The
+operation selects the configured stable source and retains the legacy profile,
+mods, cache, manifest, exact INI backup, and recovery receipt.
 
 ### `Cannot start -r`
 
