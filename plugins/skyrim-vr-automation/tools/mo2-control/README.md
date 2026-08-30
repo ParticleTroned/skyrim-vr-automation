@@ -9,6 +9,9 @@ hashes, and every current lower-provider path. The first launch rejects
 unexplained output drift. Retained game cycles may add task output, but every
 relaunch still rejects a missing shadow or changed lower-provider inventory.
 
+`validate-closed` is the explicit closed-state spelling of `validate
+-RequireClosed`; both commands are read-only and return the same proof.
+
 Version `0.8.0` retains cooperative access arbitration and adds a durable,
 session-scoped controller bundle, explicit profile identity fields, retained
 failed-to-run dialog cleanup, bounded launch

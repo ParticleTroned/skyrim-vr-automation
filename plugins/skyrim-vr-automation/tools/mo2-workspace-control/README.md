@@ -60,6 +60,11 @@ literal command-specific `data.approval.reusablePrefix`. `create`,
 replace shared metadata, restore snapshotted Overwrite state, or recursively
 remove exact owned paths. `prepare-source` is reusable because it is read-only.
 
+`adopt` is also one-shot: it transfers one ready workspace from the exact
+released `-PreviousAccessId` to a distinct active lease only after closed-state,
+stable-source, and task-profile fingerprint proofs. It is the recovery route
+when an otherwise valid workspace outlives its transient access lease.
+
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> list-task -TaskId <stable-task-id> -Compact
@@ -140,3 +145,8 @@ transaction. `ensure-mod-wins` can subsequently re-check and reposition only a
 mod already proven task-owned by that workspace. Winner proof intentionally
 covers enabled loose-file providers in the exact profile. Overwrite, unmanaged
 game files, and archives still require separate VFS evidence.
+
+Use `-WinningPathsFile` for multiple paths in a direct approval-compatible
+invocation; the format matches the profile controller. Every result also
+reports `data.configuration` with the exact selected config path, source, and
+candidate precedence.
