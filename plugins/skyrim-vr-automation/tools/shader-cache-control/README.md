@@ -147,6 +147,12 @@ writes modifications to the original provider of an existing virtual path;
 creating an otherwise empty winning `ShaderCache` directory protects only new
 paths.
 
+MO2 session authorization reads this receipt and independently inventories the
+current providers. Before the first launch, the live task cache must match
+`preparedTreeSha256` exactly. A retained game cycle may add or update files in
+the winning task output, but every relaunch still requires all current lower
+provider paths to remain shadowed.
+
 After the game and MO2 are closed, complete the cache transaction:
 
 ```powershell

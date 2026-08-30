@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Materialize and hash-verify every lower-provider `ShaderCache` and generated
+  `backup` path into each task-owned MO2 runtime output, reject stale or missing
+  shadows before launch, permit only isolated task-output growth on retained
+  game cycles, and preserve the complete trees when the workspace retires.
 - Let MO2 access requests retain an explicit stable task identity, complete
   asynchronous `-StartOnly` opens from proven main-window state, retry transient
   UI Automation enumeration once, and clean late failure dialogs after the
@@ -171,9 +175,11 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   PowerShell 7.
 - Give every task profile a unique executable-bound runtime-output mod, require
   its current winning loose cache provider and materialization plan at MO2
-  prepare/launch, and preserve its complete output on release. Cache completion
-  and workspace cleanup now fail closed when output is missing, unclassified,
-  stale, or still transactionally open.
+  prepare/launch, independently recheck the prepared tree and lower-provider
+  path coverage, and preserve its complete output on release. Retained cycles
+  may grow only the winning task output. Cache completion and workspace cleanup
+  now fail closed when output is missing, unclassified, stale, or still
+  transactionally open.
 - Add the repository-local Git launcher required by agent policy, with
   command-scoped `safe.directory` handling and exact exit-code propagation.
 - Prefer direct plugin MCP tools for live DevBench work, retaining the bundled

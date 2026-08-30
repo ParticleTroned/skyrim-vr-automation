@@ -216,6 +216,65 @@ function Get-WorkspaceOutputInventory([string]$Path, [string]$Purpose) {
     }
 }
 
+function Copy-WorkspaceProviderTreeShadow($ProviderResult, [string]$TargetPath, [string]$RelativePath, [string]$Purpose) {
+    $resolvedTarget = [IO.Path]::GetFullPath($TargetPath).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (Test-Path -LiteralPath $resolvedTarget) { throw "$Purpose target already exists: $resolvedTarget" }
+    New-Item -ItemType Directory -Path $resolvedTarget -Force | Out-Null
+
+    $selected = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($provider in @($ProviderResult.data.providers | Where-Object enabled | Sort-Object lineNumber)) {
+        if ([string]$provider.providerType -cne 'directory') {
+            throw "$Purpose provider is not a directory: $($provider.modName)"
+        }
+        if ($null -eq $provider.inventory) {
+            throw "$Purpose provider lacks the required deep inventory: $($provider.modName)"
+        }
+        $sourceRoot = [IO.Path]::GetFullPath([string]$provider.providerPath).TrimEnd([IO.Path]::DirectorySeparatorChar)
+        foreach ($entry in @($provider.inventory.entries | Sort-Object relativePath)) {
+            $relative = ([string]$entry.relativePath).Replace('/', '\')
+            if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative)) {
+                throw "$Purpose provider exposed an unsafe relative path: '$relative'"
+            }
+            $source = [IO.Path]::GetFullPath((Join-Path $sourceRoot $relative))
+            $target = [IO.Path]::GetFullPath((Join-Path $resolvedTarget $relative))
+            if (-not $source.StartsWith($sourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+                -not $target.StartsWith($resolvedTarget + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "$Purpose provider path escapes its declared tree: '$relative'"
+            }
+            if ($selected.ContainsKey($relative)) { continue }
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "$Purpose source disappeared during materialization: $source"
+            }
+            $sourceHashBefore = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            if ($sourceHashBefore -cne [string]$entry.sha256) {
+                throw "$Purpose source changed after provider inventory: $source"
+            }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath $source -Destination $target
+            $sourceHashAfter = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $targetHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+            if ($sourceHashAfter -cne $sourceHashBefore -or $targetHash -cne $sourceHashBefore) {
+                throw "$Purpose copy did not preserve a stable source: $source"
+            }
+            $selected.Add($relative, [pscustomobject][ordered]@{
+                relativePath = $relative; sourceModName = [string]$provider.modName
+                source = $source; destination = $target; bytes = [long]$entry.bytes
+                sha256 = $targetHash
+            })
+        }
+    }
+
+    $targetInventory = Get-WorkspaceOutputInventory -Path $resolvedTarget -Purpose "$Purpose target verification"
+    if ([int]$targetInventory.files -ne $selected.Count) {
+        throw "$Purpose target contains files outside the materialized provider union."
+    }
+    return [pscustomobject][ordered]@{
+        relativePath = $RelativePath; targetPath = $resolvedTarget
+        requiredLowerProviderFiles = $selected.Count; copiedFiles = $selected.Count
+        copied = @($selected.Values | Sort-Object relativePath); targetInventory = $targetInventory
+    }
+}
+
 function Preserve-WorkspaceRuntimeOutput(
     [string]$Source,
     [string]$EvidenceRoot,
@@ -257,7 +316,7 @@ function Assert-WorkspaceRuntimeOutputReadyForRetirement($Config, $Workspace, [s
         return $null
     }
     $output = $Workspace.data.runtimeOutput
-    $isolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile ([string]$Workspace.data.profile) -Executable ([string]$output.executable) -AccessId $AccessId
+    $isolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile ([string]$Workspace.data.profile) -Executable ([string]$output.executable) -AccessId $AccessId -AllowPreparedCacheGrowth
     if (-not $isolation.ok) {
         throw "Task runtime-output isolation is no longer valid; refusing retirement: $($isolation.errors -join '; ')"
     }
@@ -281,8 +340,11 @@ function Assert-WorkspaceRuntimeOutputReadyForRetirement($Config, $Workspace, [s
     }
     else {
         $unprepared = Get-WorkspaceOutputInventory -Path ([string]$output.modPath) -Purpose 'Unprepared task runtime-output classification'
-        $allowed = @('.codex-workspace-owner.json', 'ShaderCache\.codex-vfs-sentinel.txt', 'backup\hashes')
-        $unclassified = @($unprepared.entries | Where-Object { [string]$_.relativePath -notin $allowed })
+        $allowed = @('.codex-workspace-owner.json', 'ShaderCache\.codex-vfs-sentinel.txt')
+        $unclassified = @($unprepared.entries | Where-Object {
+            $relative = [string]$_.relativePath
+            $relative -notin $allowed -and -not $relative.StartsWith('backup\', [StringComparison]::OrdinalIgnoreCase)
+        })
         if ($unclassified.Count -gt 0) {
             throw 'The task runtime-output mod contains generated files without a shader-cache prepare/completion transaction. The workspace and complete output are retained for classification.'
         }
@@ -1095,6 +1157,7 @@ try {
         $runtimeOutputName = 'Codex Runtime Output - ' + $workspaceId
         $runtimeOutputPath = Join-Path $modsRoot $runtimeOutputName
         $runtimeCachePath = Join-Path $runtimeOutputPath 'ShaderCache'
+        $runtimeBackupPath = Join-Path $runtimeOutputPath 'backup'
         $runtimeSentinelPath = Join-Path $runtimeCachePath '.codex-vfs-sentinel.txt'
         $cacheEvidenceDirectory = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-shader-cache')
         $runtimeExecutable = [string]$config.defaults.executable
@@ -1121,7 +1184,7 @@ try {
             }
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '2.2.0'; workspaceId = $workspaceId; ownershipId = $ownershipId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
+            contractVersion = '2.3.0'; workspaceId = $workspaceId; ownershipId = $ownershipId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
             leaseHistory = @([pscustomobject][ordered]@{ accessId = $AccessId; acquiredForWorkspaceUtc = [DateTime]::UtcNow.ToString('o'); disposition = 'created' })
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
             sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
@@ -1146,7 +1209,7 @@ try {
                     CacheModName = $runtimeOutputName; EvidenceDirectory = $cacheEvidenceDirectory
                     RequireMaterializedOutput = $true
                 }
-                shadowedLoosePaths = @('backup\hashes'); shadowReceipt = $null
+                shadowedLoosePaths = @('backup'); shadowReceipt = $null
                 registrationEvidenceDirectory = (Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-register-runtime-output'))
                 registrationReceiptPath = $null
             }
@@ -1218,30 +1281,18 @@ try {
                     Set-WorkspaceCustomOverwrite -SettingsPath (Join-Path $profilePath 'settings.ini') -Executable $runtimeExecutable -ModName $runtimeOutputName
 
                     $transactionTool = Join-Path $toolRoot 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'
-                    $backupProviders = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'backup\hashes' -DeepInventory -NoExit -Confirm:$false | ConvertFrom-Json
-                    if (-not $backupProviders.ok) { throw "Could not inspect the task profile's backup\\hashes provider: $($backupProviders.errors -join '; ')" }
-                    $backupWinner = $backupProviders.data.effectiveWinnerAmongEnabledMods
-                    $shadowReceipt = [pscustomobject][ordered]@{ relativePath = 'backup\hashes'; state = 'not-present'; source = $null; destination = (Join-Path $runtimeOutputPath 'backup\hashes'); bytes = 0; sha256 = $null }
-                    if ($null -ne $backupWinner) {
-                        if ([string]$backupWinner.providerType -cne 'file') { throw 'The effective backup\hashes provider is not a regular file.' }
-                        $backupSource = [IO.Path]::GetFullPath([string]$backupWinner.providerPath)
-                        $backupTarget = [IO.Path]::GetFullPath((Join-Path $runtimeOutputPath 'backup\hashes'))
-                        New-Item -ItemType Directory -Path (Split-Path -Parent $backupTarget) -Force | Out-Null
-                        Copy-Item -LiteralPath $backupSource -Destination $backupTarget
-                        $sourceHash = (Get-FileHash -LiteralPath $backupSource -Algorithm SHA256).Hash
-                        $targetHash = (Get-FileHash -LiteralPath $backupTarget -Algorithm SHA256).Hash
-                        if ($sourceHash -cne $targetHash) { throw 'The task runtime-output backup\hashes shadow differs from its effective source.' }
-                        $shadowReceipt = [pscustomobject][ordered]@{
-                            relativePath = 'backup\hashes'; state = 'materialized'; sourceModName = [string]$backupWinner.modName
-                            source = $backupSource; destination = $backupTarget; bytes = [long](Get-Item -LiteralPath $backupTarget).Length; sha256 = $targetHash
-                        }
-                    }
+                    $backupProviders = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'backup' -DeepInventory -NoExit -Confirm:$false | ConvertFrom-Json
+                    if (-not $backupProviders.ok) { throw "Could not inspect the task profile's backup providers: $($backupProviders.errors -join '; ')" }
+                    $backupShadow = Copy-WorkspaceProviderTreeShadow -ProviderResult $backupProviders -TargetPath $runtimeBackupPath -RelativePath 'backup' -Purpose 'Task runtime-output backup shadow'
 
                     $providersBefore = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -NoExit -Confirm:$false | ConvertFrom-Json
                     if (-not $providersBefore.ok) { throw "Could not inspect the task profile's initial ShaderCache providers: $($providersBefore.errors -join '; ')" }
                     $winnerBefore = $providersBefore.data.effectiveWinnerAmongEnabledMods
-                    $placement = if ($null -ne $winnerBefore) { 'Before' } else { 'End' }
-                    $relativeTo = if ($null -ne $winnerBefore) { [string]$winnerBefore.modName } else { $null }
+                    $backupWinnerBefore = $backupProviders.data.effectiveWinnerAmongEnabledMods
+                    $providerAnchors = @($winnerBefore, $backupWinnerBefore | Where-Object { $null -ne $_ } | Sort-Object lineNumber)
+                    $firstProvider = if ($providerAnchors.Count -gt 0) { $providerAnchors[0] } else { $null }
+                    $placement = if ($null -ne $firstProvider) { 'Before' } else { 'End' }
+                    $relativeTo = if ($null -ne $firstProvider) { [string]$firstProvider.modName } else { $null }
                     $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
                     $registrationArguments = @{
                         Command = 'register'; ProfilePath = (Join-Path $profilePath 'modlist.txt')
@@ -1258,6 +1309,42 @@ try {
                         $observed = if ($null -eq $winnerAfter) { '<none>' } else { [string]$winnerAfter.modName }
                         throw "Task runtime-output mod is not the effective enabled ShaderCache provider; observed '$observed'."
                     }
+                    $backupProvidersAfter = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'backup' -DeepInventory -NoExit -Confirm:$false | ConvertFrom-Json
+                    $backupWinnerAfter = $backupProvidersAfter.data.effectiveWinnerAmongEnabledMods
+                    if (-not $backupProvidersAfter.ok -or $null -eq $backupWinnerAfter -or
+                        [string]$backupWinnerAfter.modName -cne $runtimeOutputName -or
+                        [string]$backupWinnerAfter.providerType -cne 'directory' -or
+                        -not (Test-WorkspaceSamePath ([string]$backupWinnerAfter.providerPath) $runtimeBackupPath)) {
+                        $observed = if ($null -eq $backupWinnerAfter) { '<none>' } else { [string]$backupWinnerAfter.modName }
+                        throw "Task runtime-output mod is not the effective enabled backup provider; observed '$observed'."
+                    }
+                    if ([int]$backupWinnerAfter.inventory.files -ne [int]$backupShadow.requiredLowerProviderFiles) {
+                        throw 'Task runtime-output backup inventory differs from the materialized lower-provider union.'
+                    }
+                    $preparedBackupEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+                    foreach ($entry in @($backupWinnerAfter.inventory.entries)) {
+                        $preparedBackupEntries.Add(([string]$entry.relativePath).Replace('/', '\'), $entry)
+                    }
+                    foreach ($copy in @($backupShadow.copied)) {
+                        $relative = [string]$copy.relativePath
+                        if (-not $preparedBackupEntries.ContainsKey($relative) -or
+                            [string]$preparedBackupEntries[$relative].sha256 -cne [string]$copy.sha256 -or
+                            -not (Test-Path -LiteralPath ([string]$copy.source) -PathType Leaf) -or
+                            (Get-FileHash -LiteralPath ([string]$copy.source) -Algorithm SHA256).Hash -cne [string]$copy.sha256) {
+                            throw "Task runtime-output backup shadow changed during registration: $relative"
+                        }
+                    }
+                    $shadowReceipt = [pscustomobject][ordered]@{
+                        contractVersion = '2.0.0'; relativePath = 'backup'; state = 'materialized'
+                        profilePath = [string]$backupProvidersAfter.data.profilePath
+                        profileSha256 = [string]$backupProvidersAfter.data.profileSha256
+                        modsPath = [string]$backupProvidersAfter.data.modsPath
+                        targetModName = $runtimeOutputName; targetPath = $runtimeBackupPath
+                        requiredLowerProviderFiles = [int]$backupShadow.requiredLowerProviderFiles
+                        copiedFiles = [int]$backupShadow.copiedFiles; copied = @($backupShadow.copied)
+                        preparedInventory = $backupWinnerAfter.inventory
+                        completedUtc = [DateTime]::UtcNow.ToString('o')
+                    }
                     $manifest.createdMods = @([pscustomobject][ordered]@{
                         name = $runtimeOutputName; path = $runtimeOutputPath; markerPath = $runtimeMarkerPath
                         markerSha256 = $runtimeMarkerHash; createdUtc = [string]$runtimeMarker.createdUtc
@@ -1266,7 +1353,7 @@ try {
                     $manifest.registeredMods = @([pscustomobject][ordered]@{
                         name = $runtimeOutputName; path = $runtimeOutputPath; ownershipMarkerPath = $runtimeMarkerPath
                         ownershipMarkerSha256 = $runtimeMarkerHash; registeredUtc = [DateTime]::UtcNow.ToString('o')
-                        enabled = $true; placement = $placement; relativeToMod = $relativeTo; winningPaths = @('ShaderCache')
+                        enabled = $true; placement = $placement; relativeToMod = $relativeTo; winningPaths = @('ShaderCache', 'backup')
                         evidenceDirectory = [string]$manifest.runtimeOutput.registrationEvidenceDirectory
                     })
                     $manifest.runtimeOutput.state = 'ready'

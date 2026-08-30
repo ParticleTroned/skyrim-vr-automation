@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 Set-StrictMode -Version Latest
-$script:MO2ControlContractVersion = '0.9.0'
+$script:MO2ControlContractVersion = '1.0.0'
 
 function Resolve-MO2ControlPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -106,6 +106,214 @@ function Resolve-MO2ShaderCacheTransactionTool {
     return $matches[0]
 }
 
+function Get-MO2PreparedCacheShadowVerification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)]$ProviderResult,
+        [Parameter(Mandatory)][string]$ProfilePath,
+        [Parameter(Mandatory)][string]$CacheModName,
+        [Parameter(Mandatory)][string]$CachePath,
+        [Parameter(Mandatory)][string]$EvidenceDirectory,
+        [switch]$AllowPreparedCacheGrowth
+    )
+
+    $errors = [Collections.Generic.List[string]]::new()
+    $expectedReceiptPath = [IO.Path]::GetFullPath((Join-Path $EvidenceDirectory 'shader-cache-provider-shadow.receipt.json'))
+    $shadow = if ($Plan.PSObject.Properties['providerShadow']) { $Plan.providerShadow } else { $null }
+    $embeddedReceipt = if ($null -ne $shadow -and $shadow.PSObject.Properties['receipt']) { $shadow.receipt } else { $null }
+    $declaredReceiptPath = if ($null -ne $shadow -and $shadow.PSObject.Properties['receiptPath']) { [string]$shadow.receiptPath } else { $null }
+    if ($null -eq $shadow -or $null -eq $embeddedReceipt -or -not (Test-MO2SamePath $declaredReceiptPath $expectedReceiptPath)) {
+        $errors.Add('The prepared cache plan does not bind the exact provider-shadow receipt.')
+    }
+
+    $receipt = $null
+    if (-not (Test-Path -LiteralPath $expectedReceiptPath -PathType Leaf)) {
+        $errors.Add("The provider-shadow receipt does not exist: $expectedReceiptPath")
+    }
+    else {
+        try { $receipt = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $expectedReceiptPath -Raw -ErrorAction Stop) }
+        catch { $errors.Add("The provider-shadow receipt is unreadable: $expectedReceiptPath. $($_.Exception.Message)") }
+    }
+
+    $winner = if ($ProviderResult.ok) { $ProviderResult.data.effectiveWinnerAmongEnabledMods } else { $null }
+    $liveInventory = if ($null -ne $winner -and $winner.PSObject.Properties['inventory']) { $winner.inventory } else { $null }
+    $expectedPreparedHash = if ($Plan.PSObject.Properties['preparedTreeSha256']) { [string]$Plan.preparedTreeSha256 } else { $null }
+    $receiptPreparedHash = if ($null -ne $receipt -and $receipt.PSObject.Properties['preparedInventory'] -and $null -ne $receipt.preparedInventory) { [string]$receipt.preparedInventory.treeSha256 } else { $null }
+    $embeddedPreparedHash = if ($null -ne $embeddedReceipt -and $embeddedReceipt.PSObject.Properties['preparedInventory'] -and $null -ne $embeddedReceipt.preparedInventory) { [string]$embeddedReceipt.preparedInventory.treeSha256 } else { $null }
+    $livePreparedHash = if ($null -ne $liveInventory) { [string]$liveInventory.treeSha256 } else { $null }
+
+    if ($expectedPreparedHash -notmatch '^[0-9A-Fa-f]{64}$' -or
+        $receiptPreparedHash -cne $expectedPreparedHash -or
+        $embeddedPreparedHash -cne $expectedPreparedHash) {
+        $errors.Add('The cache plan and provider-shadow receipts do not agree on the exact prepared tree hash.')
+    }
+    if (-not $AllowPreparedCacheGrowth -and $livePreparedHash -cne $expectedPreparedHash) {
+        $errors.Add('The winning task cache changed after prepare and before its first launch.')
+    }
+
+    if ($null -ne $receipt) {
+        if ([string]$receipt.state -cne 'materialized' -or
+            -not (Test-MO2SamePath ([string]$receipt.profilePath) $ProfilePath) -or
+            [string]$receipt.profileSha256 -cne [string]$ProviderResult.data.profileSha256 -or
+            [string]$receipt.cacheModName -cne $CacheModName -or
+            -not (Test-MO2SamePath ([string]$receipt.cachePath) $CachePath)) {
+            $errors.Add('The provider-shadow receipt does not bind the current task profile and winning cache mod.')
+        }
+    }
+
+    $targetPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ($null -ne $liveInventory) {
+        foreach ($entry in @($liveInventory.entries)) { $null = $targetPaths.Add([string]$entry.relativePath) }
+    }
+    $requiredPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($provider in @($ProviderResult.data.providers | Where-Object {
+        [bool]$_.enabled -and [string]$_.providerType -ceq 'directory' -and
+        -not [string]::Equals([string]$_.modName, $CacheModName, [StringComparison]::OrdinalIgnoreCase)
+    } | Sort-Object lineNumber)) {
+        foreach ($entry in @($provider.inventory.entries)) {
+            $relative = [string]$entry.relativePath
+            if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+                $errors.Add("A lower shader-cache provider returned an unsafe relative path: '$relative'.")
+                continue
+            }
+            $null = $requiredPaths.Add($relative)
+        }
+    }
+    $missingPaths = @($requiredPaths | Where-Object { -not $targetPaths.Contains([string]$_) } | Sort-Object)
+    if ($missingPaths.Count -gt 0) {
+        $errors.Add("The winning task cache no longer shadows $($missingPaths.Count) lower-provider path(s): $($missingPaths -join ', ')")
+    }
+    if ($null -ne $receipt -and
+        (-not $receipt.PSObject.Properties['requiredLowerProviderFiles'] -or
+         [int]$receipt.requiredLowerProviderFiles -ne $requiredPaths.Count)) {
+        $errors.Add('The provider-shadow receipt no longer covers the current lower-provider inventory.')
+    }
+
+    return [pscustomobject][ordered]@{
+        ok = $errors.Count -eq 0
+        allowPreparedCacheGrowth = [bool]$AllowPreparedCacheGrowth
+        receiptPath = $expectedReceiptPath
+        preparedTreeSha256 = $expectedPreparedHash
+        liveTreeSha256 = $livePreparedHash
+        requiredLowerProviderFiles = $requiredPaths.Count
+        missingLowerProviderPaths = $missingPaths
+        errors = @($errors)
+    }
+}
+
+function Get-MO2PreparedBackupShadowVerification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Output,
+        [Parameter(Mandatory)]$ProviderResult,
+        [Parameter(Mandatory)][string]$ProfilePath,
+        [Parameter(Mandatory)][string]$OutputModName,
+        [Parameter(Mandatory)][string]$BackupPath,
+        [switch]$AllowPreparedCacheGrowth
+    )
+
+    $errors = [Collections.Generic.List[string]]::new()
+    $receipt = if ($Output.PSObject.Properties['shadowReceipt']) { $Output.shadowReceipt } else { $null }
+    $winner = if ($ProviderResult.ok) { $ProviderResult.data.effectiveWinnerAmongEnabledMods } else { $null }
+    $liveInventory = if ($null -ne $winner -and $winner.PSObject.Properties['inventory']) { $winner.inventory } else { $null }
+    if (-not $ProviderResult.ok -or $null -eq $winner -or
+        [string]$winner.modName -cne $OutputModName -or
+        [string]$winner.providerType -cne 'directory' -or
+        -not (Test-MO2SamePath ([string]$winner.providerPath) $BackupPath)) {
+        $observed = if ($null -eq $winner) { '<none>' } else { [string]$winner.modName }
+        $errors.Add("The task runtime-output mod is not the effective enabled backup provider; observed '$observed'.")
+    }
+
+    $preparedHash = if ($null -ne $receipt -and $receipt.PSObject.Properties['preparedInventory'] -and $null -ne $receipt.preparedInventory) {
+        [string]$receipt.preparedInventory.treeSha256
+    }
+    else { $null }
+    $liveHash = if ($null -ne $liveInventory) { [string]$liveInventory.treeSha256 } else { $null }
+    if ($null -eq $receipt -or
+        [string]$receipt.contractVersion -cne '2.0.0' -or
+        [string]$receipt.relativePath -cne 'backup' -or
+        [string]$receipt.state -cne 'materialized' -or
+        -not (Test-MO2SamePath ([string]$receipt.profilePath) $ProfilePath) -or
+        [string]$receipt.targetModName -cne $OutputModName -or
+        -not (Test-MO2SamePath ([string]$receipt.targetPath) $BackupPath)) {
+        $errors.Add('The backup-shadow receipt does not bind the current task profile and winning output mod.')
+    }
+    if ($preparedHash -notmatch '^[0-9A-Fa-f]{64}$') {
+        $errors.Add('The backup-shadow receipt lacks an exact prepared tree hash.')
+    }
+    elseif (-not $AllowPreparedCacheGrowth -and $liveHash -cne $preparedHash) {
+        $errors.Add('The winning task backup tree changed after workspace creation and before its first launch.')
+    }
+
+    $targetPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ($null -ne $liveInventory) {
+        foreach ($entry in @($liveInventory.entries)) { $null = $targetPaths.Add([string]$entry.relativePath) }
+    }
+    $required = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($provider in @($ProviderResult.data.providers | Where-Object {
+        [bool]$_.enabled -and -not [string]::Equals([string]$_.modName, $OutputModName, [StringComparison]::OrdinalIgnoreCase)
+    } | Sort-Object lineNumber)) {
+        if ([string]$provider.providerType -cne 'directory' -or $null -eq $provider.inventory) {
+            $errors.Add("A lower backup provider is not an inventoried directory: $($provider.modName).")
+            continue
+        }
+        foreach ($entry in @($provider.inventory.entries)) {
+            $relative = ([string]$entry.relativePath).Replace('/', '\')
+            if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+                $errors.Add("A lower backup provider returned an unsafe relative path: '$relative'.")
+                continue
+            }
+            if (-not $required.ContainsKey($relative)) {
+                $required.Add($relative, [pscustomobject][ordered]@{
+                    relativePath = $relative; sourceModName = [string]$provider.modName
+                    sha256 = [string]$entry.sha256
+                })
+            }
+        }
+    }
+
+    $receiptCopies = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ($null -ne $receipt -and $receipt.PSObject.Properties['copied']) {
+        foreach ($copy in @($receipt.copied)) {
+            $relative = ([string]$copy.relativePath).Replace('/', '\')
+            if ($receiptCopies.ContainsKey($relative)) {
+                $errors.Add("The backup-shadow receipt repeats relative path '$relative'.")
+            }
+            else { $receiptCopies.Add($relative, $copy) }
+        }
+    }
+    $changedSources = [Collections.Generic.List[string]]::new()
+    foreach ($requiredEntry in $required.Values) {
+        $relative = [string]$requiredEntry.relativePath
+        if (-not $receiptCopies.ContainsKey($relative)) {
+            $changedSources.Add($relative)
+            continue
+        }
+        $copy = $receiptCopies[$relative]
+        if ([string]$copy.sourceModName -cne [string]$requiredEntry.sourceModName -or
+            [string]$copy.sha256 -cne [string]$requiredEntry.sha256) {
+            $changedSources.Add($relative)
+        }
+    }
+    $missingPaths = @($required.Keys | Where-Object { -not $targetPaths.Contains([string]$_) } | Sort-Object)
+    if ($missingPaths.Count -gt 0) {
+        $errors.Add("The winning task backup tree no longer shadows $($missingPaths.Count) lower-provider path(s): $($missingPaths -join ', ')")
+    }
+    if ($changedSources.Count -gt 0 -or $receiptCopies.Count -ne $required.Count -or
+        $null -eq $receipt -or -not $receipt.PSObject.Properties['requiredLowerProviderFiles'] -or
+        [int]$receipt.requiredLowerProviderFiles -ne $required.Count) {
+        $errors.Add('The backup-shadow receipt no longer covers the current lower-provider inventory.')
+    }
+
+    return [pscustomobject][ordered]@{
+        ok = $errors.Count -eq 0; allowPreparedCacheGrowth = [bool]$AllowPreparedCacheGrowth
+        preparedTreeSha256 = $preparedHash; liveTreeSha256 = $liveHash
+        requiredLowerProviderFiles = $required.Count; missingLowerProviderPaths = $missingPaths
+        changedLowerProviderPaths = @($changedSources | Sort-Object); errors = @($errors)
+    }
+}
+
 function Get-MO2TaskWorkspaceIsolation {
     [CmdletBinding()]
     param(
@@ -113,7 +321,8 @@ function Get-MO2TaskWorkspaceIsolation {
         [Parameter(Mandatory)][string]$Profile,
         [Parameter(Mandatory)][string]$Executable,
         [string]$AccessId,
-        [switch]$RequirePreparedCache
+        [switch]$RequirePreparedCache,
+        [switch]$AllowPreparedCacheGrowth
     )
 
     if (-not $Profile.StartsWith('Codex Task - ', [StringComparison]::Ordinal)) {
@@ -147,7 +356,7 @@ function Get-MO2TaskWorkspaceIsolation {
         return [pscustomobject][ordered]@{
             applicable = $true; ok = $false; profile = $Profile
             executable = $Executable; workspace = $null; runtimeOutput = $null
-            cachePlan = $null; checks = @($checks); errors = @($errors)
+            cachePlan = $null; backupVerification = $null; checks = @($checks); errors = @($errors)
         }
     }
 
@@ -167,7 +376,7 @@ function Get-MO2TaskWorkspaceIsolation {
         return [pscustomobject][ordered]@{
             applicable = $true; ok = $false; profile = $Profile
             executable = $Executable; workspace = $owned; runtimeOutput = $null
-            cachePlan = $null; checks = @($checks); errors = @($errors)
+            cachePlan = $null; backupVerification = $null; checks = @($checks); errors = @($errors)
         }
     }
 
@@ -177,6 +386,7 @@ function Get-MO2TaskWorkspaceIsolation {
     $expectedProfilePath = Join-Path $profilesRoot $Profile
     $expectedModPath = Join-Path $modsRoot ([string]$output.modName)
     $expectedCachePath = Join-Path $expectedModPath 'ShaderCache'
+    $expectedBackupPath = Join-Path $expectedModPath 'backup'
     $profilePath = [string]$manifest.profilePath
     $modPath = [string]$output.modPath
     $cachePath = [string]$output.cachePath
@@ -187,6 +397,7 @@ function Get-MO2TaskWorkspaceIsolation {
         [pscustomobject]@{ name = 'shader-cache-path'; passed = Test-MO2SamePath $cachePath $expectedCachePath },
         [pscustomobject]@{ name = 'runtime-output-directory'; passed = Test-Path -LiteralPath $expectedModPath -PathType Container },
         [pscustomobject]@{ name = 'shader-cache-directory'; passed = Test-Path -LiteralPath $expectedCachePath -PathType Container },
+        [pscustomobject]@{ name = 'backup-directory'; passed = Test-Path -LiteralPath $expectedBackupPath -PathType Container },
         [pscustomobject]@{ name = 'executable-binding'; passed = [string]$output.executable -ceq $Executable }
     )) {
         $checks.Add($check)
@@ -209,10 +420,12 @@ function Get-MO2TaskWorkspaceIsolation {
     else { @() }
     if (@($enabledLines).Count -ne 1) { $errors.Add('The runtime-output mod is not enabled exactly once in the task profile.') }
     $providerResult = $null
+    $backupProviderResult = $null
+    $backupVerification = $null
     if (Test-Path -LiteralPath $modListPath -PathType Leaf) {
         try {
             $transactionTool = Resolve-MO2ShaderCacheTransactionTool
-            $providerJson = & $transactionTool providers -ProfilePath $modListPath -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -NoExit -Confirm:$false
+            $providerJson = & $transactionTool providers -ProfilePath $modListPath -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -DeepInventory:$RequirePreparedCache -NoExit -Confirm:$false
             $providerResult = ConvertFrom-MO2JsonText ([string]$providerJson)
             $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
             if (-not $providerResult.ok -or $null -eq $winner -or
@@ -223,6 +436,21 @@ function Get-MO2TaskWorkspaceIsolation {
             }
         }
         catch { $errors.Add("Could not verify the current ShaderCache provider: $($_.Exception.Message)") }
+        try {
+            if ([string]::IsNullOrWhiteSpace([string]$transactionTool)) { $transactionTool = Resolve-MO2ShaderCacheTransactionTool }
+            $backupProviderJson = & $transactionTool providers -ProfilePath $modListPath -ModsPath $modsRoot -RelativeCachePath 'backup' -DeepInventory -NoExit -Confirm:$false
+            $backupProviderResult = ConvertFrom-MO2JsonText ([string]$backupProviderJson)
+            $backupVerification = Get-MO2PreparedBackupShadowVerification `
+                -Output $output -ProviderResult $backupProviderResult -ProfilePath $modListPath `
+                -OutputModName ([string]$output.modName) -BackupPath $expectedBackupPath `
+                -AllowPreparedCacheGrowth:$AllowPreparedCacheGrowth
+            foreach ($backupError in @($backupVerification.errors)) { $errors.Add([string]$backupError) }
+        }
+        catch {
+            $message = "Could not verify the current backup provider shadow: $($_.Exception.Message)"
+            $errors.Add($message)
+            $backupVerification = [pscustomobject][ordered]@{ ok = $false; errors = @($message) }
+        }
     }
 
     $settingsPath = Join-Path $expectedProfilePath 'settings.ini'
@@ -243,6 +471,7 @@ function Get-MO2TaskWorkspaceIsolation {
     $planPath = Join-Path ([string]$output.cacheEvidenceDirectory) 'shader-cache-task.plan.json'
     $completionPath = Join-Path ([string]$output.cacheEvidenceDirectory) 'shader-cache-task.completion.json'
     $plan = $null
+    $cacheVerification = $null
     if (Test-Path -LiteralPath $planPath -PathType Leaf) {
         try { $plan = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $planPath -Raw -ErrorAction Stop) }
         catch { $errors.Add("Shader-cache plan is unreadable: $planPath. $($_.Exception.Message)") }
@@ -253,19 +482,41 @@ function Get-MO2TaskWorkspaceIsolation {
 
     if ($null -ne $plan) {
         $binding = if ($plan.PSObject.Properties['cacheBinding']) { $plan.cacheBinding } else { $null }
-        if ([string]$plan.state -cne 'prepared' -or $null -eq $binding -or
-            [string]$binding.mode -cne 'mo2-winning-loose-provider' -or
-            -not (Test-MO2SamePath ([string]$binding.profilePath) $modListPath) -or
-            -not (Test-MO2SamePath ([string]$binding.modsPath) $modsRoot) -or
-            [string]$binding.modName -cne [string]$output.modName -or
-            -not (Test-MO2SamePath ([string]$binding.modRoot) $expectedModPath) -or
-            -not (Test-MO2SamePath ([string]$binding.cachePath) $expectedCachePath) -or
-            $null -eq $providerResult -or
-            [string]$binding.profileSha256 -cne [string]$providerResult.data.profileSha256 -or
-            -not [bool]$plan.requireMaterializedOutput) {
+        $completionExists = Test-Path -LiteralPath $completionPath -PathType Leaf
+        $completedPlanForRetirement = -not $RequirePreparedCache -and
+            $completionExists -and [string]$plan.state -ceq 'restored'
+        $planContractValid = $completedPlanForRetirement -or (
+            [string]$plan.state -ceq 'prepared' -and
+            $null -ne $binding -and
+            [string]$binding.mode -ceq 'mo2-winning-loose-provider' -and
+            (Test-MO2SamePath ([string]$binding.profilePath) $modListPath) -and
+            (Test-MO2SamePath ([string]$binding.modsPath) $modsRoot) -and
+            [string]$binding.modName -ceq [string]$output.modName -and
+            (Test-MO2SamePath ([string]$binding.modRoot) $expectedModPath) -and
+            (Test-MO2SamePath ([string]$binding.cachePath) $expectedCachePath) -and
+            $null -ne $providerResult -and
+            [string]$binding.profileSha256 -ceq [string]$providerResult.data.profileSha256 -and
+            [bool]$plan.requireMaterializedOutput
+        )
+        if (-not $planContractValid) {
             $errors.Add('Shader-cache plan is not prepared with the exact task profile, winning output mod, and RequireMaterializedOutput contract.')
         }
-        if ($RequirePreparedCache -and (Test-Path -LiteralPath $completionPath -PathType Leaf)) {
+        elseif ($RequirePreparedCache) {
+            try {
+                $cacheVerification = Get-MO2PreparedCacheShadowVerification `
+                    -Plan $plan -ProviderResult $providerResult -ProfilePath $modListPath `
+                    -CacheModName ([string]$output.modName) -CachePath $expectedCachePath `
+                    -EvidenceDirectory ([string]$output.cacheEvidenceDirectory) `
+                    -AllowPreparedCacheGrowth:$AllowPreparedCacheGrowth
+                foreach ($cacheError in @($cacheVerification.errors)) { $errors.Add([string]$cacheError) }
+            }
+            catch {
+                $message = "Could not verify the prepared task cache and provider shadow: $($_.Exception.Message)"
+                $errors.Add($message)
+                $cacheVerification = [pscustomobject][ordered]@{ ok = $false; errors = @($message) }
+            }
+        }
+        if ($RequirePreparedCache -and $completionExists) {
             $errors.Add('The task shader-cache transaction is already complete and cannot authorize another launch.')
         }
     }
@@ -278,7 +529,9 @@ function Get-MO2TaskWorkspaceIsolation {
             exists = Test-Path -LiteralPath $planPath -PathType Leaf
             completionPath = $completionPath
             completed = Test-Path -LiteralPath $completionPath -PathType Leaf
+            verification = $cacheVerification
         }
+        backupVerification = $backupVerification
         checks = @($checks); errors = @($errors)
     }
 }
@@ -2678,7 +2931,7 @@ function Invoke-MO2Launch {
     if (-not $validation.ok) {
         return New-MO2ActionResult -Config $Config -Command 'launch' -Ok $false -State 'blocked' -Data @{ validation = $validation; lock = $owned } -Warnings $validation.warnings -Errors $validation.errors
     }
-    $runtimeOutputIsolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile ([string]$lockData.profile) -Executable ([string]$lockData.executable) -AccessId ([string]$lockData.accessId) -RequirePreparedCache
+    $runtimeOutputIsolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile ([string]$lockData.profile) -Executable ([string]$lockData.executable) -AccessId ([string]$lockData.accessId) -RequirePreparedCache -AllowPreparedCacheGrowth:$resumeExistingMO2
     if (-not $runtimeOutputIsolation.ok) {
         return New-MO2ActionResult -Config $Config -Command 'launch' -Ok $false -State 'blocked' -Data @{ validation = $validation; lock = $owned; runtimeOutputIsolation = $runtimeOutputIsolation } -Warnings $validation.warnings -Errors $runtimeOutputIsolation.errors
     }

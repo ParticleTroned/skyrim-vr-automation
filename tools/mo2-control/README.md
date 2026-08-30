@@ -3,6 +3,12 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
+Version `1.0.0` makes task launch authorization independently verify the cache
+materialization receipt, the complete generated `backup` shadow, prepared tree
+hashes, and every current lower-provider path. The first launch rejects
+unexplained output drift. Retained game cycles may add task output, but every
+relaunch still rejects a missing shadow or changed lower-provider inventory.
+
 Version `0.8.0` retains cooperative access arbitration and adds a durable,
 session-scoped controller bundle, explicit profile identity fields, retained
 failed-to-run dialog cleanup, bounded launch
@@ -64,7 +70,10 @@ the exact executable without losing existing mappings, and proven as the
 winning loose `ShaderCache` provider. A launchable cache plan must be bound to
 that exact profile and mod with `RequireMaterializedOutput`; the catalog prepare
 step fills lower-provider-only paths so later shader compiles cannot write back
-into a lower mod such as a Synthesis patch.
+into a lower mod such as a Synthesis patch. Session preparation and first
+launch require the exact prepared tree hash. A retained cycle permits new files
+inside the winning task output while rechecking complete lower-provider path
+coverage before relaunch.
 
 ## Quick start
 
