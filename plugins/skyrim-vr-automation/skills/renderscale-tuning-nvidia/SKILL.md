@@ -5,8 +5,8 @@ description: Run the NVIDIA Skyrim VR public-upscaling-API render-scale tuning a
 
 # NVIDIA render-scale tuning
 
-Use this skill only for the exact user command `renderscale-tuning nvidia` or
-`renderscale-tuning-nvidia`. Never infer this GPU lane from inventory alone.
+Use only for exact command `renderscale-tuning nvidia` or
+`renderscale-tuning-nvidia`. Never infer this lane from inventory.
 
 ## Immediate positioning
 
@@ -23,12 +23,17 @@ Store the exact envelopes under run-unique `startup-prepare` and
 finalization materializes both stored responses.
 
 Decode each envelope once from `content[0].type: "text"` with `JSON.parse` of
-`content[0].text`. Require `prepare_coc` top-level `ready: true`,
-`persisted: false`, a 64-character producer Build ID, and only its `after`
-readiness, Stabilizer, and debug state. Verify the `after.foveation` FOV/TAA
-`0.3/0.3/0.7` fixture within
-`0.000001`. Never validate the fixture from `before`. After any live call, an
-error stops the invocation; never correct and restart or replay the live prefix.
+`content[0].text`. Admit `prepare_coc` only from these exact paths: top-level
+`ready: true`, `persisted: false`, 64-character `producer.buildId`;
+`after.ready`, `after.vr`, `after.inGame`,
+`after.vrFpsStabilizer.activeForSession`, `after.developerMode.active`,
+`after.foveation.ready`, `after.foveation.foveatedVendorDispatch`, and
+`after.foveation.peripheryTAAEnable` all `true`; and
+`after.developerMode.logLevel: "debug"`. Require `after.foveation` values
+`foveatedCenterArea: 0.3`, `peripheryTAACenterArea: 0.3`, and
+`peripheryTAAOuterScale: 0.7` within `0.000001`. No other `before` or `after`
+field gates admission; do not infer aliases. After any live-call error, stop;
+never correct, restart, or replay the live prefix.
 
 Immediately submit the following synchronous scenario, replacing only
 `<bound-build-id>` with that producer Build ID. Do not insert commentary,

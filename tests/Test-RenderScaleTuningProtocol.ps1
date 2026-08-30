@@ -213,8 +213,23 @@ foreach ($variant in $variants) {
     Assert-Contains $skill '`content[0].type: "text"`' $variant.Name
     Assert-Contains $skill '`JSON.parse`' $variant.Name
     Assert-Contains $skill '`content[0].text`' $variant.Name
-    Assert-Contains $skill '`after.foveation`' $variant.Name
-    Assert-Contains $skill 'Never validate the fixture from `before`' $variant.Name
+    foreach ($fixtureToken in @(
+        '`ready: true`', '`persisted: false`', '`producer.buildId`',
+        '`after.ready`', '`after.vr`', '`after.inGame`',
+        '`after.vrFpsStabilizer.activeForSession`',
+        '`after.developerMode.active`',
+        '`after.developerMode.logLevel: "debug"`',
+        '`after.foveation.ready`',
+        '`after.foveation.foveatedVendorDispatch`',
+        '`after.foveation.peripheryTAAEnable`',
+        '`foveatedCenterArea: 0.3`',
+        '`peripheryTAACenterArea: 0.3`',
+        '`peripheryTAAOuterScale: 0.7`', '`0.000001`'
+    )) {
+        Assert-Contains $skill $fixtureToken $variant.Name
+    }
+    Assert-Contains $skill 'No other `before` or `after`' $variant.Name
+    Assert-Contains $skill 'do not infer aliases' $variant.Name
     Assert-Contains $skill 'compact `notify()`' $variant.Name
     Assert-Contains $skill 'one nested local read inside' $variant.Name
     Assert-Contains $skill 'Do not read the shared detailed contract' $variant.Name
