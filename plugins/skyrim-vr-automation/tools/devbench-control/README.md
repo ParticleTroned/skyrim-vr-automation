@@ -46,10 +46,11 @@ exponential retry and are preserved under `transportRetries`.
 
 Every timing, frame-rate, CPU, or GPU capture must use
 `-RequirePerformanceNeutral`. When the standalone upscaler temporal probe is
-registered, the client reads its structured status first and skips the target
-call unless `performanceDistorted` is explicitly false. Missing status from an
-older registered probe fails closed. The guard never disarms the probe; that is
-a separate runtime mutation requiring its own authorization.
+registered, the client requires a proven neutral physical state and ownership
+epoch before the target call. It reads the status again afterward and rejects
+the result if the probe became active or the epoch changed. Legacy or unproven
+status fails closed. The guard never disarms the probe; that is a separate
+runtime mutation requiring its own authorization.
 
 `wait -Condition noBlockingMenu` polls the menu tool client-side, ignores only
 the explicitly listed `-IgnoredMenus` (HUD by default), and always reports the

@@ -85,37 +85,67 @@ if ($probeToolCount -gt 1) {
     throw "Profiler capture rejected: ambiguous registration for '$probeTool'."
 }
 $probeRegistered = $probeToolCount -eq 1
-$performanceGuard = if ($probeRegistered) {
-    $probeRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $script:headers -Payload @{
-        jsonrpc = '2.0'; id = 3; method = 'tools/call'; params = @{
-            name = $probeTool; arguments = @{ action = 'status' }
+$requestId = 2
+function Get-PerformanceGuard {
+    if (-not $probeRegistered) {
+        return [pscustomobject][ordered]@{
+            applicable = $false
+            neutral = $true
+            performanceDistorted = $false
+            performanceEpoch = $null
+            physicalStateKnown = $true
+            reason = 'standalone-temporal-probe-not-registered'
+            tool = $probeTool
         }
     }
-    if ($probeRpc.json.PSObject.Properties['error'] -or
-        ($probeRpc.json.result.PSObject.Properties['isError'] -and
-            $probeRpc.json.result.isError)) {
-        throw 'Standalone temporal-probe performance preflight failed.'
-    }
-    $probeContent = @($probeRpc.json.result.content | Where-Object type -eq 'text' |
-        ForEach-Object { $_.text | ConvertFrom-Json -Depth 60 })
-    $assessment = Test-DevBenchPerformanceNeutral -Content $probeContent
-    [pscustomobject][ordered]@{
-        applicable = $true
-        neutral = [bool]$assessment.neutral
-        performanceDistorted = [bool]$assessment.performanceDistorted
-        reason = [string]$assessment.reason
-        tool = $probeTool
+
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        try {
+            $script:requestId++
+            $probeRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $script:headers -Payload @{
+                jsonrpc = '2.0'; id = $script:requestId; method = 'tools/call'; params = @{
+                    name = $probeTool; arguments = @{ action = 'status' }
+                }
+            }
+            if ($probeRpc.json.PSObject.Properties['error'] -or
+                ($probeRpc.json.result.PSObject.Properties['isError'] -and
+                    $probeRpc.json.result.isError)) {
+                throw 'Standalone temporal-probe performance status failed.'
+            }
+            $probeContent = @($probeRpc.json.result.content | Where-Object type -eq 'text' |
+                ForEach-Object { $_.text | ConvertFrom-Json -Depth 60 })
+            $assessment = Test-DevBenchPerformanceNeutral -Content $probeContent
+            return [pscustomobject][ordered]@{
+                applicable = $true
+                neutral = [bool]$assessment.neutral
+                performanceDistorted = [bool]$assessment.performanceDistorted
+                performanceEpoch = $assessment.performanceEpoch
+                physicalStateKnown = [bool]$assessment.physicalStateKnown
+                reason = [string]$assessment.reason
+                tool = $probeTool
+            }
+        }
+        catch {
+            if ($attempt -eq 0) {
+                Initialize-McpSession
+                $script:sessionReconnects++
+                continue
+            }
+            throw
+        }
     }
 }
-else {
-    [pscustomobject][ordered]@{
-        applicable = $false
-        neutral = $true
-        performanceDistorted = $false
-        reason = 'standalone-temporal-probe-not-registered'
-        tool = $probeTool
+
+function Assert-PerformanceWindow([Parameter(Mandatory)]$Before, [string]$Stage) {
+    $after = Get-PerformanceGuard
+    $window = Test-DevBenchPerformanceWindow -Before $Before -After $after
+    if (-not $window.valid) {
+        throw "Profiler capture rejected at ${Stage}: $($window.reason)."
     }
+    return $window
 }
+
+$performanceGuard = Get-PerformanceGuard
 if (-not $performanceGuard.neutral) {
     throw "Profiler capture rejected: $($performanceGuard.reason)."
 }
@@ -140,6 +170,9 @@ function Invoke-ProfilerAction {
             if ($attempt -eq 0) {
                 Initialize-McpSession
                 $script:sessionReconnects++
+                Assert-PerformanceWindow `
+                    -Before $performanceGuard `
+                    -Stage 'session reconnect' | Out-Null
                 continue
             }
             throw
@@ -147,7 +180,6 @@ function Invoke-ProfilerAction {
     }
 }
 
-$requestId = 3
 New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
 $startedUtc = [DateTime]::UtcNow
 $enableResult = Invoke-ProfilerAction -Action 'enable'
@@ -173,6 +205,9 @@ for ($sampleIndex = 1; $sampleIndex -le $Samples; $sampleIndex++) {
     if ($sampleIndex -lt $Samples) { Start-Sleep -Milliseconds $IntervalMs }
 }
 $endedUtc = [DateTime]::UtcNow
+$performanceWindow = Assert-PerformanceWindow `
+    -Before $performanceGuard `
+    -Stage 'capture completion'
 
 $timerRows = [System.Collections.Generic.List[object]]::new()
 foreach ($record in $records) {
@@ -210,7 +245,7 @@ foreach ($group in ($timerRows | Group-Object name | Sort-Object Name)) {
 }
 
 $summary = [pscustomobject][ordered]@{
-    schemaVersion = 2
+    schemaVersion = 3
     label = $Label
     startedUtc = $startedUtc.ToString('o')
     endedUtc = $endedUtc.ToString('o')
@@ -222,6 +257,7 @@ $summary = [pscustomobject][ordered]@{
     endpoint = $endpoint
     sessionReconnects = $sessionReconnects
     performanceGuard = $performanceGuard
+    performanceWindow = $performanceWindow
     profilerEnableResult = $enableResult
     resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedTotalMs }))
     resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedCpuTotalMs }))

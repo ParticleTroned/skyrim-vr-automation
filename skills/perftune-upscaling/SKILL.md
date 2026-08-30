@@ -13,7 +13,15 @@ launch, load a save, change cells, or substitute another benchmark.
 Use only the named direct `mcp__devbench_vr__*` tools. Do not enumerate tools,
 run local discovery, or inspect a fallback before attaching.
 
-The first live call is `mcp__devbench_vr__communityshaders_performance_tuning` with exactly `{"action":"status"}`.
+When the direct `mcp__devbench_vr__skyrimvrupscaler_temporalProbe` tool is
+exposed, the first live call is exactly `{"action":"status"}` to that tool.
+Require schema 3 or later, `performanceDistorted: false`,
+`physicalStateKnown: true`, and a nonnegative integer `performanceEpoch`; retain
+that epoch without disarming or otherwise mutating the probe. A malformed or
+legacy registered probe blocks the sweep. If the direct probe tool is not
+exposed, treat the standalone probe as not registered.
+
+Then call `mcp__devbench_vr__communityshaders_performance_tuning` with exactly `{"action":"status"}`.
 Bind its producer Build ID and retain transport session identity when present.
 If the tool is unavailable, the response is malformed, or `readiness.ready`
 is not true, stop. Require the reported adapter/runtime capability.
@@ -43,6 +51,11 @@ Poll status with the bound Build ID and bounded waits. Advance
 `traceAfterSequence` from the last raw
 trace record so cooldown and wait-period Game/GPU/CPU timings remain readable.
 Do not recalculate the server's statistics.
+
+When the standalone probe was registered, read its status before every poll,
+immediately after any transport-session change, and after the terminal receipt.
+Reject every measured result unless the probe remains physically neutral and
+its `performanceEpoch` exactly matches the retained value throughout.
 
 Stop on `completed`, `failed`, or `cancelled`. On user cancellation, send one
 `cancel` with the bound Build ID and verify a terminal receipt. Never retry a

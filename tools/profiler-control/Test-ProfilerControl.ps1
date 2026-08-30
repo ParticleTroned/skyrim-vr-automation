@@ -101,7 +101,10 @@ try {
     $guardIndex = $measureText.IndexOf('if (-not $performanceGuard.neutral)', [StringComparison]::Ordinal)
     $enableIndex = $measureText.IndexOf("Invoke-ProfilerAction -Action 'enable'", [StringComparison]::Ordinal)
     Assert-Test ($guardIndex -ge 0 -and $enableIndex -gt $guardIndex) 'performance guard rejects before profiler enable mutation'
-    Assert-Test ($measureText -match 'schemaVersion = 2') 'capture preserves the accepted guard in summary schema 2'
+    Assert-Test ($measureText -match "Stage 'session reconnect'") 'session recovery revalidates the original probe epoch'
+    Assert-Test ($measureText -match "Stage 'capture completion'") 'capture completion verifies an unchanged neutral probe window'
+    Assert-Test ($measureText -match 'Test-DevBenchPerformanceWindow') 'capture rejects arm/disarm activity within the sample window'
+    Assert-Test ($measureText -match 'schemaVersion = 3') 'capture preserves both guard endpoints in summary schema 3'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

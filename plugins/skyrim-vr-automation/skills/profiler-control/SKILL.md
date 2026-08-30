@@ -25,8 +25,10 @@ comparing data. Use these entry points:
    measurement authority; a request to review existing data does not.
 4. Before enabling the profiler, the collector must read the registered
    standalone `skyrimvrupscaler.temporalProbe` status and reject capture unless
-   `performanceDistorted` is explicitly false. A registered older probe with no
-   such field fails closed. Never disarm it as part of profiler collection.
+   the platform state is proven neutral and an ownership epoch is present.
+   Recheck the same neutral epoch after reconnects and after sampling; any
+   change invalidates the capture. A legacy or unproven probe fails closed.
+   Never disarm it as part of profiler collection.
 5. Write to a dedicated evidence directory outside live MO2 overwrite and
    shader-cache trees. Keep raw JSON; summaries alone cannot be re-analysed.
 6. Compare at least two raw captures and identify the reference explicitly.

@@ -24,14 +24,24 @@ $unknown = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ playerLoaded
 Assert-Test (-not $unknown.known -and $unknown.ok) 'unclassified content remains transport-successful'
 
 $neutralPerformance = Test-DevBenchPerformanceNeutral -Content @(
-    [pscustomobject]@{ performanceDistorted = $false })
-Assert-Test ($neutralPerformance.known -and $neutralPerformance.neutral) 'disarmed standalone probe permits performance measurement'
+    [pscustomobject]@{ performanceDistorted = $false; performanceEpoch = 7; physicalStateKnown = $true })
+Assert-Test ($neutralPerformance.known -and $neutralPerformance.neutral -and $neutralPerformance.performanceEpoch -eq 7) 'proven disarmed standalone probe permits performance measurement'
 $distortedPerformance = Test-DevBenchPerformanceNeutral -Content @(
-    [pscustomobject]@{ performanceDistorted = $true })
+    [pscustomobject]@{ performanceDistorted = $true; performanceEpoch = 8; physicalStateKnown = $true })
 Assert-Test ($distortedPerformance.known -and -not $distortedPerformance.neutral -and $distortedPerformance.reason -eq 'intrusive-temporal-probe-armed') 'armed standalone probe rejects performance measurement'
+$unprovenPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $false; performanceEpoch = 9; physicalStateKnown = $false })
+Assert-Test ($unprovenPerformance.known -and -not $unprovenPerformance.neutral -and $unprovenPerformance.reason -eq 'performance-physical-state-unproven') 'unproven physical cleanup fails closed'
 $unknownPerformance = Test-DevBenchPerformanceNeutral -Content @(
-    [pscustomobject]@{ stateCode = 2 })
-Assert-Test (-not $unknownPerformance.known -and -not $unknownPerformance.neutral) 'registered legacy probe without distortion state fails closed'
+    [pscustomobject]@{ performanceDistorted = $false })
+Assert-Test (-not $unknownPerformance.known -and -not $unknownPerformance.neutral -and $unknownPerformance.reason -eq 'performance-ownership-state-missing') 'registered legacy probe without ownership epoch fails closed'
+$guardBefore = [pscustomobject]@{ applicable = $true; neutral = $true; performanceEpoch = 12; reason = 'intrusive-temporal-probe-disarmed' }
+$guardAfter = [pscustomobject]@{ applicable = $true; neutral = $true; performanceEpoch = 12; reason = 'intrusive-temporal-probe-disarmed' }
+$stableWindow = Test-DevBenchPerformanceWindow -Before $guardBefore -After $guardAfter
+Assert-Test ($stableWindow.valid -and $stableWindow.sameEpoch) 'unchanged neutral probe epoch admits a measurement window'
+$guardAfter.performanceEpoch = 13
+$changedWindow = Test-DevBenchPerformanceWindow -Before $guardBefore -After $guardAfter
+Assert-Test (-not $changedWindow.valid -and $changedWindow.reason -eq 'performance-probe-epoch-changed') 'arm/disarm activity invalidates a measurement window'
 
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })
 Assert-Test ($ready.ready -and -not $ready.retryable -and $ready.statePath -eq 'content.result.state') 'service readiness prefers result.state'
@@ -82,6 +92,8 @@ Assert-Test ($entryPointText -match '\$menuStableSinceUtc = \$null') 'a blocking
 Assert-Test ($entryPointText -match '\[switch\]\$RequirePerformanceNeutral') 'performance calls expose an explicit fail-closed guard'
 Assert-Test ($entryPointText -match "'skyrimvrupscaler\.temporalProbe'") 'performance guard queries the standalone probe owner'
 Assert-Test ($entryPointText -match 'toolCallSkipped = \$true') 'distorted performance guard skips the requested tool call'
+Assert-Test ($entryPointText -match 'Test-DevBenchPerformanceWindow') 'guarded calls verify the probe again after the requested tool returns'
+Assert-Test ($entryPointText -match "outcome = 'guard-invalidated'") 'changed probe ownership invalidates completed measurement calls'
 
 [pscustomobject][ordered]@{ ok = $failures.Count -eq 0; passed = $passes.Count; failed = $failures.Count; passes = @($passes); failures = @($failures) } | ConvertTo-Json -Depth 10
 if ($failures.Count -gt 0) { exit 1 }

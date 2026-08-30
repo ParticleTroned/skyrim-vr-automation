@@ -39,9 +39,11 @@ Use the bundled client rather than constructing HTTP or MCP requests ad hoc.
 10. Every timing, frame-rate, CPU, or GPU measurement call must pass
     `-RequirePerformanceNeutral`. The controller queries the registered
     standalone `skyrimvrupscaler.temporalProbe` owner and skips the requested
-    call unless its structured `performanceDistorted` state is explicitly
-    false. A registered older probe that omits the field fails closed. Never
-    disarm the probe unless the user separately authorized that mutation.
+    call unless its structured state proves `performanceDistorted: false`,
+    `physicalStateKnown: true`, and an ownership epoch. It reads the status
+    again after the call and rejects the result if the epoch changed. A legacy
+    or unproven registered probe fails closed. Never disarm the probe unless the
+    user separately authorized that mutation.
 
 The entry point is:
 

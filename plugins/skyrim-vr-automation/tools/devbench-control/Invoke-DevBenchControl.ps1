@@ -141,6 +141,8 @@ function Get-PerformanceMeasurementGuard {
             applicable = $false
             neutral = $true
             performanceDistorted = $false
+            performanceEpoch = $null
+            physicalStateKnown = $true
             reason = 'standalone-temporal-probe-not-registered'
             tool = $probeTool
         }
@@ -154,6 +156,8 @@ function Get-PerformanceMeasurementGuard {
         applicable = $true
         neutral = [bool]$assessment.neutral
         performanceDistorted = [bool]$assessment.performanceDistorted
+        performanceEpoch = $assessment.performanceEpoch
+        physicalStateKnown = [bool]$assessment.physicalStateKnown
         reason = [string]$assessment.reason
         tool = $probeTool
     }
@@ -383,6 +387,30 @@ try {
                     $semantic.ok = $true
                     $semantic.outcome = 'expected-guard'
                     $semantic.reasons = @()
+                }
+            }
+            if ($performanceGuard) {
+                $performanceGuardAfter = Get-PerformanceMeasurementGuard `
+                    -Tools $tools `
+                    -Headers $headers
+                $performanceWindow = Test-DevBenchPerformanceWindow `
+                    -Before $performanceGuard `
+                    -After $performanceGuardAfter
+                $data | Add-Member `
+                    -NotePropertyName performanceWindow `
+                    -NotePropertyValue $performanceWindow `
+                    -Force
+                if (-not $performanceWindow.valid) {
+                    $semantic = [pscustomobject][ordered]@{
+                        known = $true
+                        ok = $false
+                        outcome = 'guard-invalidated'
+                        guarded = $true
+                        transient = $false
+                        codes = @('performance_measurement_invalidated')
+                        states = @()
+                        reasons = @("Performance measurement rejected: $($performanceWindow.reason).")
+                    }
                 }
             }
         }

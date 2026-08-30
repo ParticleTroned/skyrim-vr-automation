@@ -228,7 +228,8 @@ function Test-DevBenchPerformanceNeutral {
     [CmdletBinding()]
     param([AllowEmptyCollection()][object[]]$Content)
 
-    $observations = [Collections.Generic.List[bool]]::new()
+    $observations = [Collections.Generic.List[object]]::new()
+    $scan = [pscustomobject]@{ sawDistortionField = $false }
     function Visit-PerformanceState($Value) {
         if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return }
         $properties = if ($Value -is [Collections.IDictionary]) {
@@ -239,27 +240,57 @@ function Test-DevBenchPerformanceNeutral {
             return
         }
         else { @($Value.PSObject.Properties) }
-        foreach ($property in $properties) {
-            if ([string]$property.Name -eq 'performanceDistorted' -and
-                $property.Value -is [bool]) {
-                $observations.Add([bool]$property.Value)
+
+        $distortion = @($properties | Where-Object Name -eq 'performanceDistorted') | Select-Object -First 1
+        if ($null -ne $distortion) {
+            $scan.sawDistortionField = $true
+            $epoch = @($properties | Where-Object Name -eq 'performanceEpoch') | Select-Object -First 1
+            $physical = @($properties | Where-Object Name -eq 'physicalStateKnown') | Select-Object -First 1
+            $integerTypes = @([byte], [sbyte], [int16], [uint16], [int32], [uint32], [int64], [uint64])
+            $epochIsInteger = $null -ne $epoch -and
+                @($integerTypes | Where-Object { $_.IsInstanceOfType($epoch.Value) }).Count -gt 0
+            if ($distortion.Value -is [bool] -and $epochIsInteger -and
+                $null -ne $physical -and $physical.Value -is [bool]) {
+                $observations.Add([pscustomobject][ordered]@{
+                    distorted = [bool]$distortion.Value
+                    epoch = [uint64]$epoch.Value
+                    physicalStateKnown = [bool]$physical.Value
+                })
             }
+        }
+        foreach ($property in $properties) {
             Visit-PerformanceState $property.Value
         }
     }
 
     foreach ($item in @($Content)) { Visit-PerformanceState $item }
     $known = $observations.Count -gt 0
-    $distorted = @($observations | Where-Object { $_ }).Count -gt 0
+    $distorted = @($observations | Where-Object distorted).Count -gt 0
+    $physicalStateKnown = $known -and
+        @($observations | Where-Object { -not $_.physicalStateKnown }).Count -eq 0
+    $epochs = @($observations | ForEach-Object epoch | Sort-Object -Unique)
+    $epochKnown = $epochs.Count -eq 1
     return [pscustomobject][ordered]@{
         known = $known
-        neutral = $known -and -not $distorted
+        neutral = $known -and -not $distorted -and $physicalStateKnown -and
+            $epochKnown
         performanceDistorted = $distorted
-        reason = if (-not $known) {
+        performanceEpoch = if ($epochKnown) { [uint64]$epochs[0] } else { $null }
+        physicalStateKnown = $physicalStateKnown
+        reason = if (-not $known -and $scan.sawDistortionField) {
+            'performance-ownership-state-missing'
+        }
+        elseif (-not $known) {
             'performance-distortion-state-missing'
         }
         elseif ($distorted) {
             'intrusive-temporal-probe-armed'
+        }
+        elseif (-not $physicalStateKnown) {
+            'performance-physical-state-unproven'
+        }
+        elseif (-not $epochKnown) {
+            'performance-epoch-ambiguous'
         }
         else {
             'intrusive-temporal-probe-disarmed'
@@ -267,4 +298,43 @@ function Test-DevBenchPerformanceNeutral {
     }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchMenuDismissalPlan, Get-DevBenchRuntimeExpectations, Test-DevBenchPerformanceNeutral
+function Test-DevBenchPerformanceWindow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Before,
+        [Parameter(Mandatory)]$After
+    )
+
+    $applicable = [bool]$Before.applicable -or [bool]$After.applicable
+    $sameApplicability = [bool]$Before.applicable -eq [bool]$After.applicable
+    $sameEpoch = -not $applicable -or
+        ($null -ne $Before.performanceEpoch -and
+            $null -ne $After.performanceEpoch -and
+            [uint64]$Before.performanceEpoch -eq [uint64]$After.performanceEpoch)
+    $valid = $sameApplicability -and [bool]$Before.neutral -and
+        [bool]$After.neutral -and $sameEpoch
+    [pscustomobject][ordered]@{
+        valid = $valid
+        applicable = $applicable
+        sameEpoch = $sameEpoch
+        before = $Before
+        after = $After
+        reason = if (-not $sameApplicability) {
+            'performance-probe-registration-changed'
+        }
+        elseif (-not [bool]$Before.neutral) {
+            [string]$Before.reason
+        }
+        elseif (-not [bool]$After.neutral) {
+            [string]$After.reason
+        }
+        elseif (-not $sameEpoch) {
+            'performance-probe-epoch-changed'
+        }
+        else {
+            'performance-window-neutral'
+        }
+    }
+}
+
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchMenuDismissalPlan, Get-DevBenchRuntimeExpectations, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow

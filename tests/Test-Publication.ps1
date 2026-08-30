@@ -99,18 +99,22 @@ if ($perftuneContent.Length -gt 4000) {
 if ($perftuneLines.Count -gt 80) {
     $violations.Add([pscustomobject]@{ file = $perftuneRelativePath; issue = 'entrypoint exceeds the 80-line fast-start ceiling' })
 }
+$probeToolName = 'mcp__devbench_vr__skyrimvrupscaler_temporalProbe'
 $directToolName = 'mcp__devbench_vr__communityshaders_performance_tuning'
-$firstDirectToolLine = $null
+$probeToolLine = $null
+$performanceToolLine = $null
 for ($index = 0; $index -lt $perftuneLines.Count; $index++) {
-    if ($perftuneLines[$index].Contains($directToolName, [StringComparison]::Ordinal)) {
-        $firstDirectToolLine = $index + 1
-        break
-    }
+    if ($null -eq $probeToolLine -and $perftuneLines[$index].Contains($probeToolName, [StringComparison]::Ordinal)) { $probeToolLine = $index + 1 }
+    if ($null -eq $performanceToolLine -and $perftuneLines[$index].Contains($directToolName, [StringComparison]::Ordinal)) { $performanceToolLine = $index + 1 }
 }
-if ($null -eq $firstDirectToolLine -or $firstDirectToolLine -gt 17) {
-    $violations.Add([pscustomobject]@{ file = $perftuneRelativePath; issue = 'first direct live call must appear by line 17' })
-} elseif (-not $perftuneLines[$firstDirectToolLine - 1].Contains('{"action":"status"}', [StringComparison]::Ordinal)) {
-    $violations.Add([pscustomobject]@{ file = $perftuneRelativePath; issue = 'first direct live call must be the read-only status request' })
+if ($null -eq $probeToolLine -or $null -eq $performanceToolLine -or
+    $probeToolLine -ge $performanceToolLine) {
+    $violations.Add([pscustomobject]@{ file = $perftuneRelativePath; issue = 'standalone probe preflight must precede the performance tool' })
+} elseif (-not $perftuneContent.Contains('performanceEpoch', [StringComparison]::Ordinal) -or
+    -not $perftuneContent.Contains('physicalStateKnown: true', [StringComparison]::Ordinal)) {
+    $violations.Add([pscustomobject]@{ file = $perftuneRelativePath; issue = 'performance entrypoint lacks exact neutral-epoch validation' })
+} elseif (-not $perftuneLines[$performanceToolLine - 1].Contains('{"action":"status"}', [StringComparison]::Ordinal)) {
+    $violations.Add([pscustomobject]@{ file = $perftuneRelativePath; issue = 'first performance-tool call must be the read-only status request' })
 }
 
 foreach ($pair in @(
