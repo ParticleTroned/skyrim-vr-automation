@@ -390,8 +390,11 @@ Project the three `replacementTimeline` facets separately into `summary.json`,
 facet names; never flatten one facet over another. In particular,
 `physicalMutationStarted` comes from `firstPhysicalMutation`, while current
 presentation proof and replacement-admission blocking retain their own
-pre-mutation facets. Preserve `selectedPresentationDisposition`, current
-presentation device/resource identity, both-eye path/generation, completed-
+pre-mutation facets. Expose `currentPresentationProven`,
+`currentPresentationGeneration`, `replacementAdmissionBlocked`, and
+`replacementAdmissionBlockReasons`. Preserve
+`selectedPresentationDisposition`, current presentation device/resource
+identity, both-eye path/generation, completed-
 output reuse/ownership proof, and the relative raw receipt paths plus hashes.
 A missing timeline entry makes only that facet `INCONCLUSIVE`; do not invent it
 from a later status snapshot.

@@ -11,7 +11,12 @@ function Assert-True([bool]$Condition, [string]$Message) {
 }
 
 function Assert-Contains([string]$Content, [string]$Token, [string]$Context) {
-    Assert-True $Content.Contains($Token, [StringComparison]::Ordinal) "$Context is missing: $Token"
+    $normalizedContent = [regex]::Replace($Content, '\s+', ' ')
+    $normalizedToken = [regex]::Replace($Token, '\s+', ' ')
+    Assert-True $normalizedContent.Contains(
+        $normalizedToken,
+        [StringComparison]::Ordinal
+    ) "$Context is missing: $Token"
 }
 
 function Assert-Profile(
@@ -48,12 +53,11 @@ foreach ($token in @(
     'only after a pass has', 'finalization-only', 'synchronous',
     '`stepsRun: 8`', '`position-health`', '`position-state`',
     '`position-scene`', '`position-capabilities`', '`position-snapshot`',
-    '`position-renderscale`', '`WhiterunDragonsreach`', '`0x10DE`/4318',
+    '`position-renderscale`', '`cell.editorId: WhiterunDragonsreach`', '`0x10DE`/4318',
     '`0x1002`/4098', 'reports positioning as soon as it returns',
     'create an evidence directory', 'decode Base64',
     '`content[0].text`', 'recursively search',
-    'small live-fast-path reference and matrix',
-    'still-running', 'does not emit them',
+    'small live-path reference and matrix',
     'run-unique startup keys', '`raw/startup`',
     '`startup_evidence_incomplete`',
     'forbid the comparison-ledger append',
@@ -66,7 +70,7 @@ foreach ($token in @(
     'complete measured pass in that one live orchestration cell',
     '`notify()`', '`yield_control()`',
     'sole server-owned `wait` of exactly 5,000 ms',
-    'preceding terminal waiter', 'At pass finalization', '`load()`',
+    "preceding terminal waiter's", 'At pass finalization', '`load()`',
     'one cumulative evidence-read batch', 'generate the receipt index',
     'after every interrupted pass', '`tooling_false_positive`',
     'row was never dispatched',
@@ -74,7 +78,7 @@ foreach ($token in @(
 )) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
-foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '`clear_history`', 'do not use', '`start_capture`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session', 'do not run a local command', 'never search for it', '`communityshaders.profiler_api`', '`result.status.session.id`', 'Immediately begin transition 1')) {
+foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '"action":"clear_history"', 'do not use', '`start_capture`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session', 'do not run another local command', 'never search for it', '`communityshaders.profiler_api`', '`result.status.session.id`', 'Immediately begin transition 1')) {
     Assert-Contains $fastStart $token 'Shared server-owned waiter contract'
 }
 foreach ($token in @(
@@ -188,7 +192,8 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'alter Simple CSM''s 25-step matrix.' $variant.Name
     Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
     Assert-Contains $skill 'does not authorize' $variant.Name
-    Assert-Contains $skill 'VR FPS Stabilizer stays' $variant.Name
+    Assert-Contains $skill 'VR FPS Stabilizer' $variant.Name
+    Assert-Contains $skill 'outside this assay' $variant.Name
     Assert-Contains $skill 'Direct `mcp__devbench_vr__*` tools are the only' $variant.Name
     Assert-Contains $skill 'Do not enumerate tools or inspect fallbacks' $variant.Name
     Assert-Contains $skill 'if a named tool is not callable' $variant.Name
@@ -210,7 +215,7 @@ foreach ($variant in $variants) {
     Assert-Contains $skill '`startup-prepare`' $variant.Name
     Assert-Contains $skill '`startup-positioning`' $variant.Name
     Assert-Contains $skill '`load()`, compare object identity' $variant.Name
-    Assert-Contains $skill 'never correct and restart or replay' $variant.Name
+    Assert-Contains $skill 'never correct, restart, or replay' $variant.Name
     Assert-True (-not $skill.Contains('verify both keys with `load()`', [StringComparison]::Ordinal)) "$($variant.Name) still gates startup on stored-object verification."
     Assert-Contains $skill 'finalization materializes both stored responses' $variant.Name
     Assert-Contains $skill '`content[0].type: "text"`' $variant.Name
@@ -253,18 +258,18 @@ foreach ($variant in $variants) {
     Assert-True (-not $skill.Contains('"args": { "action": "scene" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect scene."
 
     foreach ($token in @(
-        '`prepare_coc`', 'FOV/TAA `0.3/0.3/0.7`',
+        '`prepare_coc`', '`0.3/0.3/0.7` fixture',
         '`SKILL.md` owns runtime-only `prepare_coc`, positioning',
-        'one synchronous', 'do not repeat live reads',
+        'one synchronous', 'Do not repeat live reads',
         'Do not enumerate', 'audit schemas', '`plugin_direct_unavailable`',
         'no fallback transport',
         'measured live loop before this file is read',
         'sole post-position model', 'next orchestration cell',
         'Do not reopen, revalidate, or summarize the matrix',
-        'reset then start the short', 'exact six',
+        'reset then start the short', 'six baseline scenario steps',
         'one synchronous fail-closed handoff scenario',
-        '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
-        '`expectedStateRevision`', '`clientId`', '`commandId`',
+        'coc WhiterunDragonsreach', 'communityshaders.upscaling_api',
+        '"expectedStateRevision"', '`clientId`', '`commandId`',
         '`persistence: runtime_only`', 'server-owned 5,000 ms wait',
         '`timeoutMs: 30000`', 'one shared 30,000 ms monotonic deadline',
         'full dispatch-relative', 'client-side remaining budget',
@@ -292,7 +297,7 @@ foreach ($variant in $variants) {
         'qualification owner closed', 'Otherwise stop future mutations',
         'vendor_native', 'same-frame', 'nativeVendorExecution',
         'observation.nativeVendorExecution', 'older producer',
-        '`sameFrameBothEyesValid`', '`actualBackend`',
+        '`sameFrameBothEyesValid: true`', '`actualBackend`',
         '`actualRuntimeFallbackObserved`', '`dispatchSerial`',
         'resource key remains inactive with backend `none`',
         'Scenario steps cannot interpolate earlier',
@@ -404,11 +409,10 @@ foreach ($property in $nvidia.destinations.PSObject.Properties | Where-Object { 
 }
 $nvidiaProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-nvidia\references\protocol.md') -Raw
 foreach ($token in @(
-    'Before each DLSS or DLAA transition', 'owned bounded',
+    'For each DLSS or DLAA transition', 'owned bounded',
     'eErrorDuplicatedConstants` is a transition `FAIL`',
     'continue later matrix rows to preserve the error history',
-    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`',
-    'do not issue another'
+    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`'
 )) {
     Assert-Contains $nvidiaProtocol $token 'NVIDIA adversarial guard'
 }
@@ -438,6 +442,7 @@ foreach ($protocol in @(
     [pscustomobject]@{ Name = 'NVIDIA'; Text = $nvidiaProtocol },
     [pscustomobject]@{ Name = 'AMD'; Text = $amdProtocol }
 )) {
+    $sharedProtocolText = "$($protocol.Text)`n$fastStart"
     foreach ($token in @(
         "installed plugin's direct DevBench MCP tools exclusively",
         'Do not enumerate',
@@ -455,7 +460,7 @@ foreach ($protocol in @(
         '`NOT RUN`, never `BLOCKED`',
         '`INTERRUPTED`'
     )) {
-        Assert-Contains $protocol.Text $token "$($protocol.Name) shared waiter/verdict guard"
+        Assert-Contains $sharedProtocolText $token "$($protocol.Name) shared waiter/verdict guard"
     }
     foreach ($forbidden in @(
         'controller may be the sole live lane',

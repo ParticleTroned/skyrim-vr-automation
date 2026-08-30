@@ -53,11 +53,11 @@ another call, or local work between the fixture and this request.
 ]}
 ```
 
-Do not replay a failed or lost positioning scenario. Require decoded root
-`ok`/`aborted`/`stepsRun`, labeled `results[].result`, exact cell at
-`position-scene.result.cell.editorId`, snapshot at
-`position-snapshot.result.snapshot`, and adapter at
-`position-renderscale.result.status.adapter`. Emit only a compact `notify()`.
+Require `ok:true`,`aborted:false`,`stepsRun:8`; 7 tool entries have
+label/`.result`; wait `results[1]` has `kind:"wait"`/`ms:10000` and no
+label/result; cell/snapshot/adapter at `position-scene.result.cell.editorId`,
+`position-snapshot.result.snapshot`,
+`position-renderscale.result.status.adapter`. Emit compact `notify()`.
 
 ## Post-position handoff
 
