@@ -54,17 +54,18 @@ Do not propose reusable approval for:
 - workspace `recover-legacy-selection`, because it changes the shared MO2
   selected profile after exact legacy-workspace classification;
 - `terminate-game` or `terminate`, because they force process termination;
-- workspace `refresh-fixture`, `prepare-source`, `retire`, or deprecated
+- workspace `refresh-fixture`, `complete-output`, `retire`, or deprecated
   `release`, because they
-  replace shared fixture metadata, move overwrite cache trees into a shared
-  stable mod, or recursively remove exact owned workspace paths;
+  replace shared fixture metadata, restore exact snapshotted Overwrite trees,
+  or recursively remove exact owned workspace paths;
 - any profile-control mutation, because it overwrites `modlist.txt` under its
   exact backup transaction.
 
-Workspace `create`, `resume`, `register-mod`, and `ensure-mod-wins` are eligible only
-through the exact workspace entry point and literal subcommand. Their access
-and ownership proofs remain mandatory. Profile `inspect` is read-only; all
-other profile commands remain one-shot.
+Workspace `prepare-source`, `create`, `resume`, `register-mod`, and
+`ensure-mod-wins` are eligible only through the exact workspace entry point and
+literal subcommand. Their access and ownership proofs remain mandatory.
+`prepare-source` is a non-mutating compatibility inspection. Profile `inspect`
+is read-only; all other profile commands remain one-shot.
 
 ## Approval request construction
 

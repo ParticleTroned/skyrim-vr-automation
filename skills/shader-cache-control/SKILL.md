@@ -41,10 +41,11 @@ replacement is never implied by a request to compare caches.
    still match. Do not infer semantic
    compatibility from names or timestamps.
 2. With MO2 and Skyrim closed, call catalog `prepare` before the MO2 session.
-   For an MO2 task workspace, bind the exact profile, mods root, and winning
-   task-owned cache mod and pass `-RequireMaterializedOutput`. Prepare must copy
-   every lower-provider-only `ShaderCache` path into that winning mod in MO2
-   priority order, without replacing task or seed files. Require the
+   For an MO2 task workspace, bind the exact profile, mods root, and physical
+   Overwrite cache with `-BindToOverwrite` and
+   `-RequireMaterializedOutput`. Prepare must copy every enabled-provider
+   `ShaderCache` path into Overwrite in MO2 priority order, without replacing
+   existing Overwrite or seed files. Require the
    hash-verified provider-shadow receipt and `preparedTreeSha256`; a sentinel
    directory proves only the first new path and cannot contain later writes to
    paths that already exist in a lower provider. Retain
@@ -59,10 +60,10 @@ replacement is never implied by a request to compare caches.
    required-tag gates.
 4. After MO2 and Skyrim are closed, call catalog `complete` before releasing
    the task workspace. It preserves the task result and restores the exact
-   pre-task cache. The workspace controller separately preserves the complete
-   runtime-output mod, including `ShaderCache` and generated `backup` content,
-   before retirement. Promote only after the run provides affirmative evidence
-   that the result is known-working.
+   pre-task cache. The workspace controller's `complete-output` command
+   separately preserves generated `backup` content, restores the exact pre-task
+   tree, and releases the Overwrite owner marker. Promote only after the run
+   provides affirmative evidence that the result is known-working.
 5. Preserve the plan, transaction receipts, completion receipt, catalog
    manifest, source/build/preset identities, profiler evidence, and any cache
    comparison report together. Do not delete content-addressed objects or edit

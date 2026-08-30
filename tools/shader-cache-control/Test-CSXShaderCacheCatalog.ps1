@@ -321,6 +321,39 @@ try {
     }
     Assert-Test (-not $unboundOverwrite.ok -and $unboundOverwrite.errors[0] -match 'Refusing an unbound MO2 overwrite') 'catalog refuses to infer global overwrite as the effective MO2 cache target'
 
+    $wrongOverwriteChild = Join-Path (Split-Path -Parent $overwriteCache) 'WrongCache'
+    New-Item -ItemType Directory -Path $wrongOverwriteChild -Force | Out-Null
+    $wrongOverwriteBinding = Invoke-Catalog @{
+        Command = 'prepare'; CatalogRoot = (Join-Path $resolvedTestRoot 'wrong-overwrite-catalog')
+        CachePath = $wrongOverwriteChild; ProfilePath = $profilePath; ModsPath = $modsRoot
+        BindToOverwrite = $true; EvidenceDirectory = (Join-Path $resolvedTestRoot 'wrong-overwrite-evidence')
+        ShaderCacheAbi = 'abi-bound'; ShaderSourceSha256 = $shaderSource
+        BlockingProcessNames = $blockers; Confirm = $false; Compact = $true; NoExit = $true
+    }
+    Assert-Test (-not $wrongOverwriteBinding.ok -and $wrongOverwriteBinding.errors[0] -match 'exact MO2 overwrite directory') 'Overwrite binding rejects a cache path outside the declared relative tree'
+
+    [IO.File]::WriteAllBytes((Join-Path $overwriteCache 'pre-task.bin'), [byte[]](8, 6, 7, 5))
+    $overwriteEvidence = Join-Path $resolvedTestRoot 'overwrite-task-evidence'
+    $overwritePrepare = Invoke-Catalog @{
+        Command = 'prepare'; CatalogRoot = (Join-Path $resolvedTestRoot 'overwrite-catalog')
+        CachePath = $overwriteCache; ProfilePath = $profilePath; ModsPath = $modsRoot
+        BindToOverwrite = $true; EvidenceDirectory = $overwriteEvidence
+        ShaderCacheAbi = 'abi-bound'; ShaderSourceSha256 = $shaderSource
+        BuildId = 'build-bound-fixture'; RequireMaterializedOutput = $true
+        BlockingProcessNames = $blockers; Confirm = $false; Compact = $true; NoExit = $true
+    }
+    Assert-Test ($overwritePrepare.ok -and [string]$overwritePrepare.data.task.cacheBinding.mode -eq 'mo2-overwrite-output') 'catalog explicitly binds the exact MO2 Overwrite tree'
+    Assert-Test ((Test-Path -LiteralPath (Join-Path $overwriteCache 'other-provider.bin') -PathType Leaf) -and [int]$overwritePrepare.data.task.providerShadow.receipt.requiredLowerProviderFiles -eq 2) 'Overwrite preparation materializes the complete enabled-provider union'
+    [IO.File]::WriteAllBytes((Join-Path $overwriteCache 'later-area.bin'), [byte[]](3, 1, 4, 1, 5))
+    $overwriteComplete = Invoke-Catalog @{
+        Command = 'complete'; CatalogRoot = (Join-Path $resolvedTestRoot 'overwrite-catalog')
+        CachePath = $overwriteCache; EvidenceDirectory = $overwriteEvidence
+        WorkingSetStatus = 'unverified'; BlockingProcessNames = $blockers
+        Confirm = $false; Compact = $true; NoExit = $true
+    }
+    Assert-Test ($overwriteComplete.ok -and (Test-Path -LiteralPath (Join-Path $overwriteComplete.data.task.workingTree.preservedPath 'later-area.bin') -PathType Leaf)) 'Overwrite completion preserves later-area generated cache output'
+    Assert-Test ((Test-Path -LiteralPath (Join-Path $overwriteCache 'pre-task.bin') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $overwriteCache 'later-area.bin'))) 'Overwrite completion restores the exact pre-task cache tree'
+
     $finalList = Invoke-Catalog @{ Command = 'list'; CatalogRoot = $catalogRoot; Compact = $true; NoExit = $true }
     Assert-Test (@($finalList.data.snapshots).Count -eq 3 -and @($finalList.data.issues).Count -eq 0) 'catalog retains all known-working compatibility records and validates every manifest'
 }

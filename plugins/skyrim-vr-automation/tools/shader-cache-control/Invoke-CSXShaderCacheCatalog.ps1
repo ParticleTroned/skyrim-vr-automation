@@ -16,6 +16,8 @@ param(
 
     [string]$CacheModName,
 
+    [switch]$BindToOverwrite,
+
     [string]$RelativeCachePath = 'ShaderCache',
     [string]$EvidenceDirectory,
     [string]$SourceCachePath,
@@ -597,6 +599,41 @@ function Resolve-CommunityShadersPluginBinding(
 function Resolve-TaskCacheBinding {
     $bindingValues = @($ProfilePath, $ModsPath, $CacheModName)
     $hasBindingInput = @($bindingValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
+    if ($BindToOverwrite) {
+        if ([string]::IsNullOrWhiteSpace($ProfilePath) -or [string]::IsNullOrWhiteSpace($ModsPath) -or
+            [string]::IsNullOrWhiteSpace($CachePath)) {
+            throw 'MO2 Overwrite binding requires -ProfilePath, -ModsPath, and -CachePath together.'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($CacheModName)) {
+            throw '-CacheModName cannot be combined with -BindToOverwrite.'
+        }
+        $resolvedCache = Assert-SafeDirectory $CachePath 'MO2 Overwrite shader-cache' -MustExist
+        $overwriteRoot = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedCache)).TrimEnd([IO.Path]::DirectorySeparatorChar)
+        if ([IO.Path]::GetFileName($overwriteRoot) -ine 'overwrite' -or
+            [IO.Path]::GetFileName($resolvedCache) -ine $RelativeCachePath) {
+            throw "BindToOverwrite requires CachePath below the exact MO2 overwrite directory: $resolvedCache"
+        }
+        $providerResult = Invoke-Transaction 'providers' @{
+            ProfilePath = $ProfilePath
+            ModsPath = $ModsPath
+            RelativeCachePath = $RelativeCachePath
+            DeepInventory = $false
+        }
+        $pluginBinding = Resolve-CommunityShadersPluginBinding $ProfilePath $ModsPath $BuildId $ShaderCacheAbi
+        return [pscustomobject][ordered]@{
+            cachePath = $resolvedCache
+            binding = [pscustomobject][ordered]@{
+                mode = 'mo2-overwrite-output'
+                profilePath = [string]$providerResult.data.profilePath
+                profileSha256 = [string]$providerResult.data.profileSha256
+                modsPath = [string]$providerResult.data.modsPath
+                relativeCachePath = [string]$providerResult.data.relativeCachePath
+                overwriteRoot = $overwriteRoot
+                cachePath = $resolvedCache
+                communityShadersPlugin = $pluginBinding
+            }
+        }
+    }
     if (-not $hasBindingInput) {
         $resolvedCache = Assert-SafeDirectory $CachePath 'live shader-cache' -MustExist
         if ([IO.Path]::GetFileName((Split-Path -Parent $resolvedCache)) -ieq 'overwrite') {
@@ -651,7 +688,7 @@ function Resolve-TaskCacheBinding {
 
 function Assert-TaskCacheBindingCurrent($Binding) {
     if ($null -eq $Binding) { return }
-    if ([string]$Binding.mode -cne 'mo2-winning-loose-provider') {
+    if ([string]$Binding.mode -notin @('mo2-winning-loose-provider', 'mo2-overwrite-output')) {
         throw "Unsupported task cache binding mode: $($Binding.mode)"
     }
     $providerResult = Invoke-Transaction 'providers' @{
@@ -663,12 +700,22 @@ function Assert-TaskCacheBindingCurrent($Binding) {
     if ([string]$providerResult.data.profileSha256 -cne [string]$Binding.profileSha256) {
         throw 'The task MO2 modlist changed after shader-cache prepare; refusing to complete against an unproven provider order.'
     }
-    $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
-    if ($null -eq $winner -or
-        -not [string]::Equals([string]$winner.modName, [string]$Binding.modName, [StringComparison]::OrdinalIgnoreCase) -or
-        -not (Test-SamePath ([string]$winner.cachePath) ([string]$Binding.cachePath))) {
-        $observed = if ($null -eq $winner) { '<none>' } else { "'$($winner.modName)' at '$($winner.cachePath)'" }
-        throw "The winning MO2 shader-cache provider changed after prepare. Expected '$($Binding.modName)' at '$($Binding.cachePath)'; observed $observed."
+    if ([string]$Binding.mode -ceq 'mo2-overwrite-output') {
+        $resolvedCache = Assert-SafeDirectory ([string]$Binding.cachePath) 'MO2 Overwrite shader-cache' -MustExist
+        $resolvedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedCache)).TrimEnd([IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-SamePath $resolvedRoot ([string]$Binding.overwriteRoot)) -or
+            [IO.Path]::GetFileName($resolvedRoot) -ine 'overwrite') {
+            throw 'The bound MO2 Overwrite shader-cache path changed after prepare.'
+        }
+    }
+    else {
+        $winner = $providerResult.data.effectiveWinnerAmongEnabledMods
+        if ($null -eq $winner -or
+            -not [string]::Equals([string]$winner.modName, [string]$Binding.modName, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-SamePath ([string]$winner.cachePath) ([string]$Binding.cachePath))) {
+            $observed = if ($null -eq $winner) { '<none>' } else { "'$($winner.modName)' at '$($winner.cachePath)'" }
+            throw "The winning MO2 shader-cache provider changed after prepare. Expected '$($Binding.modName)' at '$($Binding.cachePath)'; observed $observed."
+        }
     }
 
     if ((Test-Property $Binding 'communityShadersPlugin') -and $null -ne $Binding.communityShadersPlugin) {
@@ -710,7 +757,8 @@ function Complete-TaskProviderShadow($Binding, [string]$EvidenceRoot) {
     $required = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($provider in @($providerResult.data.providers | Where-Object {
         [bool]$_.enabled -and [string]$_.providerType -ceq 'directory' -and
-        -not [string]::Equals([string]$_.modName, [string]$Binding.modName, [StringComparison]::OrdinalIgnoreCase)
+        ([string]$Binding.mode -ceq 'mo2-overwrite-output' -or
+            -not [string]::Equals([string]$_.modName, [string]$Binding.modName, [StringComparison]::OrdinalIgnoreCase))
     } | Sort-Object lineNumber)) {
         foreach ($entry in @($provider.inventory.entries)) {
             $relative = [string]$entry.relativePath
@@ -763,8 +811,10 @@ function Complete-TaskProviderShadow($Binding, [string]$EvidenceRoot) {
     if ($missing.Count -gt 0) { throw "Winning shader-cache provider still lacks $($missing.Count) lower-provider path(s): $($missing -join ', ')" }
 
     $receipt = [pscustomobject][ordered]@{
-        contractVersion = '1.0.0'; state = 'materialized'; profilePath = [string]$Binding.profilePath
-        profileSha256 = [string]$Binding.profileSha256; cacheModName = [string]$Binding.modName
+        contractVersion = '1.1.0'; state = 'materialized'; bindingMode = [string]$Binding.mode
+        profilePath = [string]$Binding.profilePath
+        profileSha256 = [string]$Binding.profileSha256
+        cacheModName = $(if ([string]$Binding.mode -ceq 'mo2-winning-loose-provider') { [string]$Binding.modName } else { $null })
         cachePath = $targetRoot; requiredLowerProviderFiles = $required.Count
         copiedFiles = $copied.Count; alreadyPresentFiles = $alreadyPresent.Count
         copied = @($copied); alreadyPresent = @($alreadyPresent)

@@ -60,20 +60,20 @@ session cannot silently fall back to the plain game executable.
 Overwrite is scanned recursively for `ShaderCache` and `ShaderCache.*`
 directories. Inspection classifies active, rollback (`.Previous`), temporary
 swap (`.Swap`), and other legacy trees and marks swap state older than one hour
-as stale. Validation blocks launch whenever any such tree remains, regardless
-of ordinary file-count thresholds; use workspace `prepare-source` to move the
-complete trees into an enabled stable-profile mod first.
+as stale. An ordinary profile cannot launch with unbound cache trees. A task
+profile may use the exact `mo2-overwrite-output` workspace contract, which is
+verified separately before session preparation and launch.
 
 A `Codex Task - ...` profile has an additional launch gate. The controller
-requires the workspace-owned runtime-output mod to be enabled once, mapped from
-the exact executable without losing existing mappings, and proven as the
-winning loose `ShaderCache` provider. A launchable cache plan must be bound to
-that exact profile and mod with `RequireMaterializedOutput`; the catalog prepare
-step fills lower-provider-only paths so later shader compiles cannot write back
-into a lower mod such as a Synthesis patch. Session preparation and first
-launch require the exact prepared tree hash. A retained cycle permits new files
-inside the winning task output while rechecking complete lower-provider path
-coverage before relaunch.
+requires an exact owner marker for MO2 Overwrite and rejects both game and
+`Synthesis` entries in the cloned profile's `custom_overwrites` section. A
+launchable cache plan must use `-BindToOverwrite` and
+`RequireMaterializedOutput`. Preparation copies the complete enabled-provider
+union into `overwrite\ShaderCache`; workspace creation does the same for
+`overwrite\backup`. This makes Overwrite win paths that already existed in a
+mod while new-area paths use MO2's ordinary Overwrite route. First launch
+requires exact prepared hashes. Retained cycles may add files while every
+relaunch still checks complete provider coverage.
 
 ## Quick start
 

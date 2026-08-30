@@ -314,6 +314,215 @@ function Get-MO2PreparedBackupShadowVerification {
     }
 }
 
+function Get-MO2OverwriteWorkspaceIsolation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Owned,
+        [Parameter(Mandatory)][string]$Profile,
+        [Parameter(Mandatory)][string]$Executable,
+        [string]$AccessId,
+        [switch]$RequirePreparedCache,
+        [switch]$AllowPreparedCacheGrowth
+    )
+
+    $manifest = $Owned.data
+    $output = $manifest.runtimeOutput
+    $errors = [Collections.Generic.List[string]]::new()
+    $checks = [Collections.Generic.List[object]]::new()
+    if ([string]$manifest.status -cne 'ready') { $errors.Add("Task workspace status must be 'ready' before launch; observed '$($manifest.status)'.") }
+    if ([string]::IsNullOrWhiteSpace($AccessId) -or [string]$manifest.accessId -cne $AccessId) { $errors.Add('Task workspace and MO2 session must use the exact explicit access lease.') }
+
+    $profilesRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory))
+    )
+    $modsRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.modsDirectory)))
+    $overwriteRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.overwriteDirectory)))
+    $expectedProfilePath = Join-Path $profilesRoot $Profile
+    $modListPath = Join-Path $expectedProfilePath 'modlist.txt'
+    $expectedCachePath = Join-Path $overwriteRoot 'ShaderCache'
+    $expectedBackupPath = Join-Path $overwriteRoot 'backup'
+    $expectedMarkerPath = Join-Path $overwriteRoot '.codex-workspace-output-owner.json'
+    $outputCompleted = (Test-Path -LiteralPath ([string]$output.cacheCompletionPath) -PathType Leaf) -and
+        (Test-Path -LiteralPath ([string]$output.backupCompletionPath) -PathType Leaf)
+    foreach ($check in @(
+        [pscustomobject]@{ name = 'binding-mode'; passed = [string]$output.mode -ceq 'mo2-overwrite-output' },
+        [pscustomobject]@{ name = 'profile-path'; passed = Test-MO2SamePath ([string]$manifest.profilePath) $expectedProfilePath },
+        [pscustomobject]@{ name = 'overwrite-path'; passed = Test-MO2SamePath ([string]$output.overwritePath) $overwriteRoot },
+        [pscustomobject]@{ name = 'shader-cache-path'; passed = Test-MO2SamePath ([string]$output.cachePath) $expectedCachePath },
+        [pscustomobject]@{ name = 'backup-path'; passed = Test-MO2SamePath ([string]$output.backupPath) $expectedBackupPath },
+        [pscustomobject]@{ name = 'executable-binding'; passed = [string]$output.executable -ceq $Executable },
+        [pscustomobject]@{ name = 'shader-cache-directory'; passed = Test-Path -LiteralPath $expectedCachePath -PathType Container },
+        [pscustomobject]@{ name = 'backup-directory'; passed = Test-Path -LiteralPath $expectedBackupPath -PathType Container }
+    )) {
+        $checks.Add($check)
+        if (-not $check.passed) { $errors.Add("Task MO2 Overwrite check failed: $($check.name).") }
+    }
+
+    $markerExists = Test-Path -LiteralPath $expectedMarkerPath -PathType Leaf
+    if (-not (Test-MO2SamePath ([string]$output.ownerMarkerPath) $expectedMarkerPath) -or
+        (-not $outputCompleted -and -not $markerExists)) {
+        $errors.Add('The exact task-owned MO2 Overwrite marker is missing.')
+    }
+    elseif ($markerExists) {
+        try {
+            $markerHash = (Get-FileHash -LiteralPath $expectedMarkerPath -Algorithm SHA256).Hash
+            $marker = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $expectedMarkerPath -Raw)
+            if ($markerHash -cne [string]$output.ownerMarkerSha256 -or
+                [string]$marker.workspaceId -cne [string]$manifest.workspaceId -or
+                [string]$marker.ownershipId -cne [string]$manifest.ownershipId -or
+                [string]$marker.mode -cne 'mo2-overwrite-output' -or
+                -not (Test-MO2SamePath ([string]$marker.overwritePath) $overwriteRoot)) {
+                $errors.Add('The MO2 Overwrite owner marker does not match the workspace manifest.')
+            }
+        }
+        catch { $errors.Add("The MO2 Overwrite owner marker is unreadable: $($_.Exception.Message)") }
+    }
+
+    $settingsPath = Join-Path $expectedProfilePath 'settings.ini'
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        $errors.Add("Task profile settings do not exist: $settingsPath")
+    }
+    else {
+        $settings = Read-MO2IniFile -Path $settingsPath
+        $forbiddenMappings = @()
+        if ($settings.Contains('custom_overwrites')) {
+            $forbiddenMappings = @($settings['custom_overwrites'].Keys | Where-Object {
+                [string]::Equals([string]$_, $Executable, [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals([string]$_, 'Synthesis', [StringComparison]::OrdinalIgnoreCase)
+            })
+        }
+        if ($forbiddenMappings.Count -gt 0) {
+            $errors.Add("Task profile still diverts generated output through custom_overwrites: $($forbiddenMappings -join ', ').")
+        }
+    }
+
+    $transactionTool = Resolve-MO2ShaderCacheTransactionTool
+    $cacheProviders = $null; $backupProviders = $null; $cacheInventory = $null; $backupInventory = $null
+    try {
+        $cacheProviders = ConvertFrom-MO2JsonText ([string](& $transactionTool providers -ProfilePath $modListPath -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -DeepInventory -NoExit -Confirm:$false))
+        $backupProviders = ConvertFrom-MO2JsonText ([string](& $transactionTool providers -ProfilePath $modListPath -ModsPath $modsRoot -RelativeCachePath 'backup' -DeepInventory -NoExit -Confirm:$false))
+        $cacheInspection = ConvertFrom-MO2JsonText ([string](& $transactionTool inspect -CachePath $expectedCachePath -RelativeCachePath 'ShaderCache' -NoExit -Confirm:$false))
+        $backupInspection = ConvertFrom-MO2JsonText ([string](& $transactionTool inspect -CachePath $expectedBackupPath -RelativeCachePath 'backup' -NoExit -Confirm:$false))
+        foreach ($operation in @(
+            [pscustomobject]@{ name = 'ShaderCache providers'; result = $cacheProviders },
+            [pscustomobject]@{ name = 'backup providers'; result = $backupProviders },
+            [pscustomobject]@{ name = 'ShaderCache inspection'; result = $cacheInspection },
+            [pscustomobject]@{ name = 'backup inspection'; result = $backupInspection }
+        )) {
+            if (-not [bool]$operation.result.ok) {
+                throw "$($operation.name) failed: $(@($operation.result.errors) -join '; ')"
+            }
+        }
+        $cacheInventory = $cacheInspection.data
+        $backupInventory = $backupInspection.data
+    }
+    catch { $errors.Add("Could not inspect bound MO2 Overwrite output: $($_.Exception.Message)") }
+
+    $testProviderCoverage = {
+        param($ProviderResult, $Inventory, [string]$RelativePath)
+        $required = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($provider in @($ProviderResult.data.providers | Where-Object enabled | Sort-Object lineNumber)) {
+            if ([string]$provider.providerType -cne 'directory' -or $null -eq $provider.inventory) {
+                $errors.Add("An enabled $RelativePath provider is not an inventoried directory: $($provider.modName).")
+                continue
+            }
+            foreach ($entry in @($provider.inventory.entries)) { $null = $required.Add(([string]$entry.relativePath).Replace('/', '\')) }
+        }
+        $present = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in @($Inventory.entries)) { $null = $present.Add(([string]$entry.relativePath).Replace('/', '\')) }
+        $missing = @($required | Where-Object { -not $present.Contains([string]$_) } | Sort-Object)
+        if ($missing.Count -gt 0) { $errors.Add("MO2 Overwrite $RelativePath lacks $($missing.Count) enabled-provider path(s): $($missing -join ', ')") }
+        return [pscustomobject]@{ requiredFiles = $required.Count; missingPaths = $missing }
+    }
+
+    $backupCompletionPath = [string]$output.backupCompletionPath
+    $backupCompleted = Test-Path -LiteralPath $backupCompletionPath -PathType Leaf
+    $backupVerification = $null
+    if ($null -ne $backupProviders -and $null -ne $backupInventory) {
+        $receipt = $output.shadowReceipt
+        if ($RequirePreparedCache -and $backupCompleted) { $errors.Add('The task backup transaction is already complete and cannot authorize another launch.') }
+        if (-not $backupCompleted) {
+            if ($null -eq $receipt -or [string]$receipt.contractVersion -cne '3.0.0' -or
+                [string]$receipt.bindingMode -cne 'mo2-overwrite-output' -or
+                -not (Test-MO2SamePath ([string]$receipt.profilePath) $modListPath) -or
+                [string]$receipt.profileSha256 -cne [string]$backupProviders.data.profileSha256 -or
+                -not (Test-MO2SamePath ([string]$receipt.targetPath) $expectedBackupPath)) {
+                $errors.Add('The backup receipt does not bind the current task profile and MO2 Overwrite tree.')
+            }
+            $coverage = & $testProviderCoverage $backupProviders $backupInventory 'backup'
+            if (-not $AllowPreparedCacheGrowth -and [string]$backupInventory.treeSha256 -cne [string]$receipt.preparedInventory.treeSha256) {
+                $errors.Add('MO2 Overwrite backup changed after workspace creation and before its first launch.')
+            }
+            if ([int]$receipt.requiredProviderFiles -ne [int]$coverage.requiredFiles) { $errors.Add('The backup receipt no longer covers the current enabled-provider inventory.') }
+            $backupVerification = [pscustomobject]@{
+                ok = @($coverage.missingPaths).Count -eq 0
+                allowPreparedCacheGrowth = [bool]$AllowPreparedCacheGrowth
+                requiredProviderFiles = [int]$coverage.requiredFiles
+                missingProviderPaths = @($coverage.missingPaths)
+            }
+        }
+        else {
+            try {
+                $backupCompletion = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $backupCompletionPath -Raw)
+                if ([string]$backupCompletion.state -cne 'complete' -or
+                    -not (Test-MO2SamePath ([string]$backupCompletion.backupPath) $expectedBackupPath) -or
+                    [string]$backupCompletion.restoredTreeSha256 -cne [string]$receipt.beforeTreeSha256) {
+                    $errors.Add('The backup completion does not restore the exact pre-task MO2 Overwrite tree.')
+                }
+            }
+            catch { $errors.Add("The backup completion is unreadable: $($_.Exception.Message)") }
+        }
+    }
+
+    $planPath = [string]$output.cachePlanPath
+    $completionPath = [string]$output.cacheCompletionPath
+    $plan = $null; $cacheVerification = $null
+    if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+        try { $plan = ConvertFrom-MO2JsonText (Get-Content -LiteralPath $planPath -Raw) }
+        catch { $errors.Add("Shader-cache plan is unreadable: $planPath. $($_.Exception.Message)") }
+    }
+    elseif ($RequirePreparedCache) { $errors.Add("Task launch requires the bound shader-cache prepare plan: $planPath") }
+    if ($null -ne $plan -and $null -ne $cacheProviders -and $null -ne $cacheInventory) {
+        $binding = $plan.cacheBinding
+        $completionExists = Test-Path -LiteralPath $completionPath -PathType Leaf
+        $restored = -not $RequirePreparedCache -and $completionExists -and [string]$plan.state -ceq 'restored'
+        $prepared = [string]$plan.state -ceq 'prepared' -and $null -ne $binding -and
+            [string]$binding.mode -ceq 'mo2-overwrite-output' -and
+            (Test-MO2SamePath ([string]$binding.profilePath) $modListPath) -and
+            (Test-MO2SamePath ([string]$binding.modsPath) $modsRoot) -and
+            (Test-MO2SamePath ([string]$binding.overwriteRoot) $overwriteRoot) -and
+            (Test-MO2SamePath ([string]$binding.cachePath) $expectedCachePath) -and
+            [string]$binding.profileSha256 -ceq [string]$cacheProviders.data.profileSha256 -and
+            [bool]$plan.requireMaterializedOutput
+        if (-not ($restored -or $prepared)) { $errors.Add('Shader-cache plan is not bound to the exact task profile and MO2 Overwrite tree.') }
+        if ($RequirePreparedCache -and $prepared) {
+            if ($completionExists) { $errors.Add('The task shader-cache transaction is already complete and cannot authorize another launch.') }
+            $coverage = & $testProviderCoverage $cacheProviders $cacheInventory 'ShaderCache'
+            if (-not $AllowPreparedCacheGrowth -and [string]$cacheInventory.treeSha256 -cne [string]$plan.preparedTreeSha256) {
+                $errors.Add('MO2 Overwrite ShaderCache changed after prepare and before its first launch.')
+            }
+            $shadowReceipt = if ($plan.PSObject.Properties['providerShadow']) { $plan.providerShadow.receipt } else { $null }
+            if ($null -eq $shadowReceipt -or [string]$shadowReceipt.bindingMode -cne 'mo2-overwrite-output' -or
+                [int]$shadowReceipt.requiredLowerProviderFiles -ne [int]$coverage.requiredFiles) {
+                $errors.Add('The shader-cache provider receipt no longer covers the current enabled-provider inventory.')
+            }
+            $cacheVerification = [pscustomobject]@{
+                ok = @($coverage.missingPaths).Count -eq 0
+                allowPreparedCacheGrowth = [bool]$AllowPreparedCacheGrowth
+                requiredProviderFiles = [int]$coverage.requiredFiles
+                missingProviderPaths = @($coverage.missingPaths)
+            }
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        applicable = $true; ok = $errors.Count -eq 0; profile = $Profile; executable = $Executable
+        workspace = $Owned; runtimeOutput = $output
+        cachePlan = [pscustomobject]@{ required = [bool]$RequirePreparedCache; path = $planPath; completionPath = $completionPath; verification = $cacheVerification }
+        backupVerification = $backupVerification; checks = @($checks); errors = @($errors)
+    }
+}
+
 function Get-MO2TaskWorkspaceIsolation {
     [CmdletBinding()]
     param(
@@ -381,6 +590,9 @@ function Get-MO2TaskWorkspaceIsolation {
     }
 
     $output = $manifest.runtimeOutput
+    if ([string]$output.mode -ceq 'mo2-overwrite-output') {
+        return Get-MO2OverwriteWorkspaceIsolation -Config $Config -Owned $owned -Profile $Profile -Executable $Executable -AccessId $AccessId -RequirePreparedCache:$RequirePreparedCache -AllowPreparedCacheGrowth:$AllowPreparedCacheGrowth
+    }
     $profilesRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.profilesDirectory)))
     $modsRoot = [IO.Path]::GetFullPath((Resolve-MO2ControlPath ([string]$Config.mo2.modsDirectory)))
     $expectedProfilePath = Join-Path $profilesRoot $Profile
@@ -547,7 +759,7 @@ function Get-MO2SelectedTaskWorkspace {
         -not $Profile.StartsWith('Codex Task - ', [StringComparison]::Ordinal)) {
         return [pscustomobject][ordered]@{
             applicable = $false; profile = $Profile; identified = $false
-            legacy = $false; recoverable = $false; errors = @()
+            legacy = $false; recoverable = $false; runtimeOutputMode = $null; errors = @()
         }
     }
 
@@ -580,7 +792,7 @@ function Get-MO2SelectedTaskWorkspace {
             applicable = $true; profile = $Profile; identified = $false
             legacy = $true; recoverable = $false; manifestPath = $null
             workspaceId = $null; contractVersion = $null; status = $null
-            sourceProfile = $null; profilePath = $null; hasRuntimeOutput = $false
+            sourceProfile = $null; profilePath = $null; hasRuntimeOutput = $false; runtimeOutputMode = $null
             errors = @($errors)
         }
     }
@@ -629,7 +841,9 @@ function Get-MO2SelectedTaskWorkspace {
         manifestPath = [string]$owned.path; workspaceId = $workspaceId
         contractVersion = [string]$manifest.contractVersion; status = [string]$manifest.status
         sourceProfile = $sourceProfile; profilePath = $profilePath
-        hasRuntimeOutput = [bool]$hasRuntimeOutput; errors = @($errors)
+        hasRuntimeOutput = [bool]$hasRuntimeOutput
+        runtimeOutputMode = $(if ($hasRuntimeOutput -and $manifest.runtimeOutput.PSObject.Properties['mode']) { [string]$manifest.runtimeOutput.mode } else { $null })
+        errors = @($errors)
     }
 }
 
@@ -1225,7 +1439,7 @@ function Invoke-MO2Inspect {
     )
     $checks += New-MO2Check -Name 'overwrite-scan' -Status $(if ($overwriteNeedsAttention) { 'warn' } else { 'pass' }) -Message $(
         if ($data.overwrite.errors.Count -gt 0) { 'Overwrite inspection completed with filesystem errors.' }
-        elseif ($data.overwrite.shaderCaches.Count -gt 0) { "Overwrite contains $($data.overwrite.shaderCaches.Count) forbidden ShaderCache tree(s); run workspace prepare-source before testing." }
+        elseif ($data.overwrite.shaderCaches.Count -gt 0) { "Overwrite contains $($data.overwrite.shaderCaches.Count) ShaderCache tree(s); task launch requires an exact workspace output transaction." }
         elseif ($data.overwrite.truncated) { "Overwrite inspection stopped at the configured limit of $($Config.limits.maxEnumeratedFiles) files." }
         elseif ($overwriteNeedsAttention) { "Overwrite needs attention: $($data.overwrite.fileCount) files using $($data.overwrite.bytes) bytes." }
         else { "Overwrite contains $($data.overwrite.fileCount) files using $($data.overwrite.bytes) bytes." }
@@ -1248,6 +1462,8 @@ function Invoke-MO2Validate {
 
     $data = Get-MO2InspectionData -Config $Config -RequestedProfile $Profile -RequestedExecutable $Executable
     $checks = @()
+    $requestedTaskWorkspace = Get-MO2SelectedTaskWorkspace -Config $Config -Profile ([string]$data.requested.profile)
+    $overwriteIsTaskOutput = $requestedTaskWorkspace.identified -and [string]$requestedTaskWorkspace.runtimeOutputMode -ceq 'mo2-overwrite-output'
 
     foreach ($pathCheck in @(
         @{ Name = 'mo2-root'; Path = $data.config.mo2Root; Type = 'Container' },
@@ -1322,7 +1538,10 @@ function Invoke-MO2Validate {
         $checks += New-MO2Check -Name 'overwrite' -Status 'fail' -Message 'MO2 overwrite inspection encountered filesystem errors.' -Details $data.overwrite
     }
     elseif ($data.overwrite.shaderCaches.Count -gt 0) {
-        $checks += New-MO2Check -Name 'overwrite' -Status 'fail' -Message "MO2 overwrite contains forbidden ShaderCache trees. Move them into an enabled stable-profile mod with workspace prepare-source before launch: $($data.overwrite.shaderCaches.relativePath -join ', ')." -Details $data.overwrite
+        $checks += New-MO2Check -Name 'overwrite' -Status $(if ($overwriteIsTaskOutput) { 'pass' } else { 'fail' }) -Message $(
+            if ($overwriteIsTaskOutput) { "MO2 Overwrite ShaderCache is declared task output; prepare and launch verify its exact owner, profile binding, provider union, and transaction." }
+            else { "MO2 Overwrite contains ShaderCache trees without a requested task-workspace output contract: $($data.overwrite.shaderCaches.relativePath -join ', ')." }
+        ) -Details $data.overwrite
     }
     elseif ($data.overwrite.truncated -or $data.overwrite.fileCount -ge [int]$Config.limits.overwriteBlockFiles -or $data.overwrite.bytes -ge [long]$Config.limits.overwriteBlockBytes) {
         $checks += New-MO2Check -Name 'overwrite' -Status 'fail' -Message "MO2 overwrite exceeds or cannot be proven below the automation safety limit: files=$($data.overwrite.fileCount), bytes=$($data.overwrite.bytes), truncated=$($data.overwrite.truncated)." -Details $data.overwrite

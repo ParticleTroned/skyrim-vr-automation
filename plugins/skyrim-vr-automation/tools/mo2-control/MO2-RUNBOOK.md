@@ -138,9 +138,11 @@ or resume one while holding access. On the first request, prepare the configured
 stable source and create a task workspace. On later requests, select an exact
 retained WorkspaceId or explicitly request a fresh clone. Pass the returned
 task profile explicitly to `prepare`.
-Source preparation moves every legacy `ShaderCache*` directory out of overwrite
-into a newly enabled stable-source mod; creation refuses to continue if any
-remain. Fresh creation also refuses to continue unless `fixture-status` is
+`prepare-source` now reports existing cache trees without moving them. Creation
+binds the workspace to snapshotted MO2 Overwrite output, removes the cloned
+profile's game and `Synthesis` custom-overwrite mappings, and materializes the
+enabled `backup` provider union there. Cache catalog preparation does the same
+for `ShaderCache`. Fresh creation also requires `fixture-status` to be
 `fixture-valid` for the maintained source's default world-entry save:
 
 ```text
@@ -149,6 +151,7 @@ remain. Fresh creation also refuses to continue unless `fixture-status` is
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> list-task -TaskId <stable-task-id> -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -TaskId <stable-task-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> resume -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <exact-retained-workspace-id> -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> complete-output -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <exact-workspace-id> -Confirm:$false -Compact
 ```
 
 After each live use, release the evidence session and access lease but retain
