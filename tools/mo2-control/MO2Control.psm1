@@ -1080,6 +1080,7 @@ function Get-MO2AccessLeaseSummary {
         leaseId = $(if (-not [string]::IsNullOrWhiteSpace([string]$Lock.leaseId)) { $Lock.leaseId } else { 'legacy-access-lease' })
         sessionId = $Lock.sessionId
         label = $(if ($Lock.data.PSObject.Properties['label']) { [string]$Lock.data.label } else { $null })
+        ownerTaskId = $(if ($Lock.data.PSObject.Properties['ownerTaskId']) { [string]$Lock.data.ownerTaskId } else { $null })
         acquisitionMode = $Lock.acquisitionMode
         requestedUtc = $(if ($Lock.data.PSObject.Properties['requestedUtc']) { [string]$Lock.data.requestedUtc } else { $null })
         lastRenewedUtc = $(if ($Lock.data.PSObject.Properties['lastRenewedUtc']) { [string]$Lock.data.lastRenewedUtc } else { $null })
@@ -1122,6 +1123,7 @@ function Invoke-MO2RequestAccess {
     param(
         [Parameter(Mandatory)]$Config,
         [string]$Label = 'automation',
+        [string]$TaskId,
         [Nullable[int]]$EstimatedMinutes,
         [ValidateRange(0, 600)][int]$WaitSeconds = 0,
         [switch]$WhatIf
@@ -1129,6 +1131,12 @@ function Invoke-MO2RequestAccess {
 
     if ($null -ne $EstimatedMinutes -and ($EstimatedMinutes -lt 1 -or $EstimatedMinutes -gt 1440)) {
         throw 'EstimatedMinutes must be between 1 and 1440 when supplied.'
+    }
+    if ([string]::IsNullOrWhiteSpace($TaskId)) {
+        $TaskId = if (-not [string]::IsNullOrWhiteSpace($env:CODEX_THREAD_ID)) { $env:CODEX_THREAD_ID } elseif (-not [string]::IsNullOrWhiteSpace($env:CODEX_TASK_ID)) { $env:CODEX_TASK_ID } else { $null }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TaskId) -and ($TaskId.Length -gt 256 -or $TaskId -match '[\r\n]')) {
+        throw 'TaskId is malformed.'
     }
     $lockPath = Resolve-MO2ControlPath ([string]$Config.session.lockFile)
     $safeLabel = ConvertTo-MO2SafeLabel $Label
@@ -1143,6 +1151,7 @@ function Invoke-MO2RequestAccess {
         acquisitionMode = 'explicit-access'
         status = 'access-held'
         label = $safeLabel
+        ownerTaskId = $TaskId
         requestedUtc = $now.ToString('o')
         lastRenewedUtc = $now.ToString('o')
         estimatedDurationMinutes = $EstimatedMinutes
@@ -1437,6 +1446,30 @@ function Get-MO2UnlockButtons {
     return @(Get-MO2NamedButtons -Window $Window -Name 'Unlock')
 }
 
+function Invoke-MO2UiAutomationFindAll {
+    param(
+        [Parameter(Mandatory)]$Window,
+        [Parameter(Mandatory)]$Scope,
+        [Parameter(Mandatory)]$Condition,
+        [ValidateRange(1, 3)][int]$MaxAttempts = 2,
+        [ValidateRange(0, 1000)][int]$RetryDelayMilliseconds = 100
+    )
+
+    $failures = [Collections.Generic.List[string]]::new()
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return @($Window.FindAll($Scope, $Condition))
+        }
+        catch {
+            $failures.Add("attempt ${attempt}: $($_.Exception.Message)")
+            if ($attempt -lt $MaxAttempts -and $RetryDelayMilliseconds -gt 0) {
+                Start-Sleep -Milliseconds $RetryDelayMilliseconds
+            }
+        }
+    }
+    throw "UI Automation descendant enumeration failed after $MaxAttempts bounded attempts: $($failures -join '; ')"
+}
+
 function Get-MO2NamedButtons {
     param(
         [Parameter(Mandatory)]$Window,
@@ -1453,7 +1486,7 @@ function Get-MO2NamedButtons {
         [System.Windows.Automation.PropertyConditionFlags]::IgnoreCase
     )
     $condition = [System.Windows.Automation.AndCondition]::new($buttonCondition, $nameCondition)
-    return @($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+    return @(Invoke-MO2UiAutomationFindAll -Window $Window -Scope ([System.Windows.Automation.TreeScope]::Descendants) -Condition $condition)
 }
 
 function Get-MO2WindowTextElements {
@@ -1470,7 +1503,7 @@ function Get-MO2WindowTextElements {
         )
     )
     $values = [Collections.Generic.List[string]]::new()
-    foreach ($element in @($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))) {
+    foreach ($element in @(Invoke-MO2UiAutomationFindAll -Window $Window -Scope ([System.Windows.Automation.TreeScope]::Descendants) -Condition $condition)) {
         $name = ConvertTo-MO2ControlName ([string]$element.Current.Name)
         if (-not [string]::IsNullOrWhiteSpace($name) -and -not $values.Contains($name)) {
             $values.Add($(if ($name.Length -gt 512) { $name.Substring(0, 512) } else { $name }))
@@ -1514,7 +1547,7 @@ function Get-MO2NamedMenuItems {
         [System.Windows.Automation.PropertyConditionFlags]::IgnoreCase
     )
     $condition = [System.Windows.Automation.AndCondition]::new($menuCondition, $nameCondition)
-    return @($Window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+    return @(Invoke-MO2UiAutomationFindAll -Window $Window -Scope ([System.Windows.Automation.TreeScope]::Descendants) -Condition $condition)
 }
 
 function Expand-MO2AutomationMenu {
@@ -1556,7 +1589,7 @@ function Get-MO2WindowSnapshot {
                     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
                     [System.Windows.Automation.ControlType]::Button
                 )
-                foreach ($button in @($window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition))) {
+                foreach ($button in @(Invoke-MO2UiAutomationFindAll -Window $window -Scope ([System.Windows.Automation.TreeScope]::Descendants) -Condition $buttonCondition)) {
                     $buttons += [pscustomobject][ordered]@{
                         name = ConvertTo-MO2ControlName ([string]$button.Current.Name)
                         automationId = [string]$button.Current.AutomationId
@@ -2192,6 +2225,20 @@ function Invoke-MO2UnlockOnly {
     return [pscustomobject][ordered]@{ restored = $remainingBuildData.Count -eq 0; actions=@($actions); remainingBuildData=@($remainingBuildData | ForEach-Object path); mo2Processes=@($final.processes.mo2); gameProcesses=@($final.processes.game) }
 }
 
+function Test-MO2OpeningReady {
+    param(
+        [Parameter(Mandatory)]$Owned,
+        [AllowNull()]$OwnershipResolution,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$MO2Processes,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$GameProcesses,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Windows
+    )
+
+    if ([string]$Owned.data.status -cne 'opening' -or $GameProcesses.Count -ne 0 -or $MO2Processes.Count -ne 1) { return $false }
+    if ($null -eq $OwnershipResolution -or -not [bool]$OwnershipResolution.ok -or @($OwnershipResolution.targets).Count -ne 1) { return $false }
+    return @($Windows | Where-Object { $_.visible -and [string]$_.automationId -ceq 'MainWindow' }).Count -eq 1
+}
+
 function Invoke-MO2Status {
     [CmdletBinding()]
     param(
@@ -2215,6 +2262,12 @@ function Invoke-MO2Status {
     }
     $buildData = @($data.rootBuilder.active | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ieq 'BuildData.json' })
     $windows = if ($data.processes.mo2.Count -gt 0) { @(Get-MO2WindowSnapshot -Processes @($data.processes.mo2)) } else { @() }
+    $openingCompleted = $false
+    if ($owned -and (Test-MO2OpeningReady -Owned $owned -OwnershipResolution $ownershipResolution -MO2Processes @($data.processes.mo2) -GameProcesses @($data.processes.game) -Windows @($windows))) {
+        Set-MO2OwnedSessionStatus -Owned $owned -Status 'mo2-open' -TimestampProperty 'openCompletedUtc'
+        $owned = Get-MO2OwnedSession -Config $Config -SessionId $SessionId
+        $openingCompleted = $true
+    }
     $headlessMO2 = $data.processes.mo2.Count -gt 0 -and @($windows | Where-Object visible).Count -eq 0
     $launchGraceSeconds = 30
     if ($Config.limits.PSObject.Properties['launchPendingGraceSeconds']) {
@@ -2254,6 +2307,7 @@ function Invoke-MO2Status {
         headlessMO2 = $headlessMO2
         activeBuildData = @($buildData | ForEach-Object path)
         ownershipResolution = $ownershipResolution
+        openingCompleted = $openingCompleted
         launchPending = $launchPending
         launchElapsedSeconds = $launchElapsedSeconds
         launchGraceSeconds = $launchGraceSeconds
@@ -2761,6 +2815,12 @@ function Invoke-MO2StopGame {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     $closed = $after.processes.game.Count -eq 0
+    $retention = $null
+    if ($closed) {
+        $retention = Wait-MO2RetainedProcessStability -Config $Config -Owned $owned -InitialInspection $after
+        $after = $retention.finalInspection
+        Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-retention-stability.json') -Value $retention
+    }
     $dialogCleanup = $null
     $dialogNeedsAttention = $false
     if ($closed -and $after.processes.mo2.Count -gt 0) {
@@ -2774,12 +2834,6 @@ function Invoke-MO2StopGame {
             $dialogNeedsAttention = $true
         }
         Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-retained-dialog-cleanup.json') -Value $dialogCleanup
-    }
-    $retention = $null
-    if ($closed) {
-        $retention = Wait-MO2RetainedProcessStability -Config $Config -Owned $owned -InitialInspection $after
-        $after = $retention.finalInspection
-        Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-retention-stability.json') -Value $retention
     }
     $mo2Retained = $closed -and $retention -and $retention.stable
     $owned.data.status = if (-not $closed) { 'game-stop-incomplete' } elseif (-not $mo2Retained) { 'mo2-exited-after-game-stop' } elseif ($dialogNeedsAttention) { 'game-stopped-needs-attention' } else { 'game-stopped' }

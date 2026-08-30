@@ -161,6 +161,20 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($unlockDialogKind -eq 'unlock-required') 'Unlock dialog is classified structurally even when titled with a child executable'
     $failedRunDialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'Mod Organizer' -Texts @('Failed to run SkyrimVR.exe') -Buttons @([pscustomobject]@{name='OK'}) }
     Assert-MO2Test ($failedRunDialogKind -eq 'failed-to-run') 'retained failed-to-run dialog is classified without matching the main window'
+    $transientWindow = [pscustomobject]@{ callCount = 0 }
+    $transientWindow | Add-Member -MemberType ScriptMethod -Name FindAll -Value {
+        param($scope, $condition)
+        $this.callCount++
+        if ($this.callCount -eq 1) { throw [InvalidOperationException]::new('Unrecognized error') }
+        return @('recovered')
+    }
+    $uiaRecovered = & $mo2Module { param($window) Invoke-MO2UiAutomationFindAll -Window $window -Scope 'fixture-scope' -Condition 'fixture-condition' -RetryDelayMilliseconds 0 } $transientWindow
+    Assert-MO2Test ($transientWindow.callCount -eq 2 -and @($uiaRecovered).Count -eq 1 -and @($uiaRecovered)[0] -eq 'recovered') 'transient UI Automation enumeration is retried once within a bounded operation'
+
+    $openingOwned = [pscustomobject]@{ data = [pscustomobject]@{ status = 'opening' } }
+    $openingResolution = [pscustomobject]@{ ok = $true; targets = @([pscustomobject]@{ id = 101 }) }
+    $openingReady = & $mo2Module { param($owned, $resolution) Test-MO2OpeningReady -Owned $owned -OwnershipResolution $resolution -MO2Processes @([pscustomobject]@{ id = 101 }) -GameProcesses @() -Windows @([pscustomobject]@{ visible = $true; automationId = 'MainWindow' }) } $openingOwned $openingResolution
+    Assert-MO2Test $openingReady 'an exact adopted StartOnly MO2 main window is eligible for durable mo2-open promotion'
 
     $missingProfile = Invoke-MO2Validate -Config $config -Profile 'Does Not Exist'
     Assert-MO2Test (-not $missingProfile.ok) 'missing exact profile blocks validation'
@@ -188,11 +202,11 @@ selected_profile=@ByteArray(Codex)
     }
     Assert-MO2Test $transitionTimedOut 'lease transitions fail boundedly while another writer owns the companion lock'
 
-    $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15 -WhatIf
-    Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory) 'access request dry-run reports an advisory estimate without locking'
+    $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -TaskId 'fixture-task' -EstimatedMinutes 15 -WhatIf
+    Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory -and $accessDryRun.data.access.ownerTaskId -eq 'fixture-task') 'access request dry-run reports an advisory estimate and explicit task identity without locking'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'access request dry-run creates no lock'
-    $entryAccessDryRun = & (Join-Path $packageRoot 'Invoke-MO2Control.ps1') request-access -ConfigPath $configPath -Label 'approval fixture' -EstimatedMinutes 5 -WhatIf -Compact -NoExit | ConvertFrom-Json
-    Assert-MO2Test ($entryAccessDryRun.ok -and $entryAccessDryRun.data.configuration.exists -and $entryAccessDryRun.data.approval.reusableApprovalEligible -and $entryAccessDryRun.data.approval.reusablePrefix[5] -eq 'request-access') 'dictionary-backed entry-point results retain configuration and approval metadata'
+    $entryAccessDryRun = & (Join-Path $packageRoot 'Invoke-MO2Control.ps1') request-access -ConfigPath $configPath -Label 'approval fixture' -TaskId 'entry-fixture-task' -EstimatedMinutes 5 -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-MO2Test ($entryAccessDryRun.ok -and $entryAccessDryRun.data.access.ownerTaskId -eq 'entry-fixture-task' -and $entryAccessDryRun.data.configuration.exists -and $entryAccessDryRun.data.approval.reusableApprovalEligible -and $entryAccessDryRun.data.approval.reusablePrefix[5] -eq 'request-access') 'dictionary-backed entry-point results retain task identity, configuration, and approval metadata'
 
     $access = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15
     $accessId = [string]$access.data.access.accessId
