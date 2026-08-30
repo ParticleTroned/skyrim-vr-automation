@@ -11,6 +11,7 @@ param(
     [string]$ToolFilter,
     [switch]$NamesOnly,
     [switch]$RequireSuccess,
+    [switch]$RequirePerformanceNeutral,
     [switch]$SkipRuntimeIdentityVerification,
     [string]$EvidenceDirectory,
     [string]$EvidenceLabel,
@@ -33,6 +34,11 @@ param(
     [string]$ExpectedErrorCode,
     [string]$ProgressLogPath,
     [string[]]$IgnoredMenus = @('HUD Menu'),
+    [string[]]$DismissBlockingMenus = @(),
+    [ValidateRange(1, 10)]
+    [int]$MaxMenuDismissals = 1,
+    [ValidateRange(0, 60)]
+    [int]$MinimumMenuStableSeconds = 0,
     [switch]$AcceptAlreadyLoaded,
     [switch]$AllowUnsafeTfc1,
     [switch]$AllowUnprovenGameMutation,
@@ -314,6 +320,37 @@ function Invoke-ToolRpc {
     return [pscustomobject][ordered]@{ tool = $Name; content = $parsed; rawResult = $rpc.json.result }
 }
 
+function Get-PerformanceMeasurementGuard {
+    param([object[]]$Tools, [hashtable]$Headers)
+    $probeTool = 'skyrimvrupscaler.temporalProbe'
+    $probeToolCount = @($Tools | Where-Object name -eq $probeTool).Count
+    if ($probeToolCount -eq 0) {
+        return [pscustomobject][ordered]@{
+            applicable = $false
+            neutral = $true
+            performanceDistorted = $false
+            performanceEpoch = $null
+            physicalStateKnown = $true
+            reason = 'standalone-temporal-probe-not-registered'
+            tool = $probeTool
+        }
+    }
+    if ($probeToolCount -ne 1) {
+        throw "Performance measurement rejected: ambiguous registration for '$probeTool'."
+    }
+    $status = Invoke-ToolRpc -Name $probeTool -Arguments @{ action = 'status' } -Headers $Headers
+    $assessment = Test-DevBenchPerformanceNeutral -Content @($status.content)
+    return [pscustomobject][ordered]@{
+        applicable = $true
+        neutral = [bool]$assessment.neutral
+        performanceDistorted = [bool]$assessment.performanceDistorted
+        performanceEpoch = $assessment.performanceEpoch
+        physicalStateKnown = [bool]$assessment.physicalStateKnown
+        reason = [string]$assessment.reason
+        tool = $probeTool
+    }
+}
+
 function Test-WaitRetryableException {
     param([Parameter(Mandatory)]$Exception)
     $message = [string]$Exception.Message
@@ -538,38 +575,83 @@ try {
     }
     elseif ($Command -eq 'call') {
         if (@($tools | Where-Object name -eq $Tool).Count -ne 1) { throw "Tool '$Tool' is not present in the authoritative tools/list response." }
-        Update-InvocationEvidence -State 'dispatching'
-        $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers -Mutation
-        $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
-        if ($Tool -eq 'communityshaders.profiler' -and -not $semantic.known) {
-            $profilerPayload = @($data.content | Select-Object -First 1)
-            if ($profilerPayload.Count -eq 1 -and -not $profilerPayload[0].PSObject.Properties['error']) {
-                $requestedAction = [string]$arguments['action']
-                $profilerSuccess =
-                    ($requestedAction -eq 'status' -and $profilerPayload[0].PSObject.Properties['status'] -and $profilerPayload[0].status.PSObject.Properties['frame_count']) -or
-                    ($requestedAction -eq 'enable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and [bool]$profilerPayload[0].enabled) -or
-                    ($requestedAction -eq 'disable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and -not [bool]$profilerPayload[0].enabled)
-                if ($profilerSuccess) {
-                    $semantic.known = $true
+        $performanceGuard = if ($RequirePerformanceNeutral) {
+            Get-PerformanceMeasurementGuard -Tools $tools -Headers $headers
+        }
+        else { $null }
+        if ($performanceGuard -and -not $performanceGuard.neutral) {
+            $data = [pscustomobject][ordered]@{
+                tool = $Tool
+                toolCallSkipped = $true
+                performanceGuard = $performanceGuard
+            }
+            $semantic = [pscustomobject][ordered]@{
+                known = $true
+                ok = $false
+                outcome = 'guard-rejected'
+                guarded = $true
+                transient = $false
+                codes = @('performance_measurement_distorted')
+                states = @()
+                reasons = @("Performance measurement rejected: $($performanceGuard.reason).")
+            }
+        }
+        else {
+            Update-InvocationEvidence -State 'dispatching'
+            $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers -Mutation
+            if ($performanceGuard) {
+                $data | Add-Member -NotePropertyName performanceGuard -NotePropertyValue $performanceGuard -Force
+            }
+            $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
+            if ($Tool -eq 'communityshaders.profiler' -and -not $semantic.known) {
+                $profilerPayload = @($data.content | Select-Object -First 1)
+                if ($profilerPayload.Count -eq 1 -and -not $profilerPayload[0].PSObject.Properties['error']) {
+                    $requestedAction = [string]$arguments['action']
+                    $profilerSuccess =
+                        ($requestedAction -eq 'status' -and $profilerPayload[0].PSObject.Properties['status'] -and $profilerPayload[0].status.PSObject.Properties['frame_count']) -or
+                        ($requestedAction -eq 'enable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and [bool]$profilerPayload[0].enabled) -or
+                        ($requestedAction -eq 'disable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and -not [bool]$profilerPayload[0].enabled)
+                    if ($profilerSuccess) {
+                        $semantic.known = $true
+                        $semantic.ok = $true
+                        $semantic.outcome = 'profiler-contract-satisfied'
+                        $semantic.reasons = @()
+                    }
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
+                $matched = @($semantic.codes | Where-Object { $_ -eq $ExpectedErrorCode }).Count -gt 0
+                $semantic | Add-Member -NotePropertyName expectedErrorCode -NotePropertyValue $ExpectedErrorCode -Force
+                $semantic | Add-Member -NotePropertyName expectedErrorMatched -NotePropertyValue $matched -Force
+                if ($matched) {
                     $semantic.ok = $true
-                    $semantic.outcome = 'profiler-contract-satisfied'
+                    $semantic.outcome = 'expected-guard'
                     $semantic.reasons = @()
                 }
             }
-        }
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
-            $matched = @($semantic.codes | Where-Object { $_ -eq $ExpectedErrorCode }).Count -gt 0
-            $semantic | Add-Member -NotePropertyName expectedErrorCode -NotePropertyValue $ExpectedErrorCode -Force
-            $semantic | Add-Member -NotePropertyName expectedErrorMatched -NotePropertyValue $matched -Force
-            if ($matched) {
-                $semantic.ok = $true
-                $semantic.outcome = 'expected-guard'
-                $semantic.reasons = @()
+            if ($performanceGuard) {
+                $performanceGuardAfter = Get-PerformanceMeasurementGuard -Tools $tools -Headers $headers
+                $performanceWindow = Test-DevBenchPerformanceWindow -Before $performanceGuard -After $performanceGuardAfter
+                $data | Add-Member -NotePropertyName performanceWindow -NotePropertyValue $performanceWindow -Force
+                if (-not $performanceWindow.valid) {
+                    $semantic = [pscustomobject][ordered]@{
+                        known = $true
+                        ok = $false
+                        outcome = 'guard-invalidated'
+                        guarded = $true
+                        transient = $false
+                        codes = @('performance_measurement_invalidated')
+                        states = @()
+                        reasons = @("Performance measurement rejected: $($performanceWindow.reason).")
+                    }
+                }
             }
         }
     }
     else {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
+        if ($DismissBlockingMenus.Count -gt 0 -and $Condition -ne 'noBlockingMenu') { throw '-DismissBlockingMenus is valid only with -Condition noBlockingMenu.' }
+        if ($MinimumMenuStableSeconds -gt 0 -and $Condition -ne 'noBlockingMenu') { throw '-MinimumMenuStableSeconds is valid only with -Condition noBlockingMenu.' }
         $requiredTool = if ($Condition -eq 'noBlockingMenu') { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
         $waitArguments = @{}
         $waitArgumentsResolved = $Condition -ne 'serviceReady'
@@ -588,6 +670,8 @@ try {
         $lastCpu = $null
         $playerTransitionObserved = $false
         $playerInitialState = $null
+        $menuDismissals = [Collections.Generic.List[object]]::new()
+        $menuStableSinceUtc = $null
         do {
             $attempts++
             if ($null -eq $headers) {
@@ -638,12 +722,43 @@ try {
                 try {
                     $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
                     $observation = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                    if (-not $observation.satisfied -and $DismissBlockingMenus.Count -gt 0) {
+                        $plan = Get-DevBenchMenuDismissalPlan -MenuObservation $observation -DismissBlockingMenus $DismissBlockingMenus
+                        $observation | Add-Member -NotePropertyName dismissalPlan -NotePropertyValue $plan
+                        if ($plan.permitted) {
+                            foreach ($menuName in @($plan.dismissMenus)) {
+                                $priorCount = @($menuDismissals | Where-Object menu -eq $menuName).Count
+                                if ($priorCount -ge $MaxMenuDismissals) { continue }
+                                $dismissal = Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'close'; name = $menuName } -Headers $headers -Mutation
+                                $menuDismissals.Add([pscustomobject][ordered]@{
+                                    menu = $menuName
+                                    waitAttempt = $attempts
+                                    timestampUtc = [DateTime]::UtcNow.ToString('o')
+                                    result = @($dismissal.content)
+                                })
+                            }
+                        }
+                    }
                 }
                 catch {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
                     $headers = $null
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; probeError = $_.Exception.Message }
                 }
+                $baseSatisfied = [bool]$observation.satisfied
+                if ($baseSatisfied) {
+                    $now = [DateTime]::UtcNow
+                    if ($null -eq $menuStableSinceUtc) { $menuStableSinceUtc = $now }
+                    $stableSeconds = [Math]::Round(($now - $menuStableSinceUtc).TotalSeconds, 3)
+                    $observation.satisfied = $stableSeconds -ge $MinimumMenuStableSeconds
+                }
+                else {
+                    $menuStableSinceUtc = $null
+                    $stableSeconds = 0.0
+                }
+                $observation | Add-Member -NotePropertyName baseSatisfied -NotePropertyValue $baseSatisfied -Force
+                $observation | Add-Member -NotePropertyName stableSeconds -NotePropertyValue $stableSeconds -Force
+                $observation | Add-Member -NotePropertyName requiredStableSeconds -NotePropertyValue $MinimumMenuStableSeconds -Force
             }
             elseif ($Condition -eq 'playerLoaded') {
                 try {
@@ -744,14 +859,14 @@ try {
             Start-OperationDelay -RequestedMilliseconds $currentDelay
             if ($Condition -in @('toolAvailable', 'serviceReady')) { $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2) }
         } while ([DateTime]::UtcNow -lt $deadline)
-        $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; observation = $observation }
+        $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; minimumMenuStableSeconds = $MinimumMenuStableSeconds; menuDismissals = @($menuDismissals); observation = $observation }
         if ($observation.satisfied -and -not $SkipRuntimeIdentityVerification) { $evidencePath = Write-RuntimeEvidence $runtimeIdentity }
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }
 
-    if ($RequireSuccess -and -not $semantic.known) {
+    if (($RequireSuccess -or $RequirePerformanceNeutral) -and -not $semantic.known) {
         $semantic.outcome = 'unverified'
-        $semantic.reasons = @($semantic.reasons) + 'RequireSuccess was requested, but the response did not provide a verified semantic outcome.'
+        $semantic.reasons = @($semantic.reasons) + 'A verified semantic outcome was required, but the response did not provide one.'
     }
     $semanticFailure = if ($Command -eq 'call') { -not $semantic.known -or -not $semantic.ok } elseif ($RequireSuccess) { -not $semantic.known -or -not $semantic.ok } else { $semantic.known -and -not $semantic.ok -and $Command -eq 'wait' }
     $result = [pscustomobject][ordered]@{
@@ -768,7 +883,8 @@ try {
         data = $data
         errors = $(if ($semanticFailure) { @($semantic.reasons) } else { @() })
     }
-    Update-InvocationEvidence -State 'completed' -Semantic $semantic -Data $data -Errors @($result.errors)
+    $completionState = if ($semantic.guarded -and -not $semantic.ok) { 'guard-rejected' } else { 'completed' }
+    Update-InvocationEvidence -State $completionState -Semantic $semantic -Data $data -Errors @($result.errors)
 }
 catch {
     $failureMessage = $_.Exception.Message

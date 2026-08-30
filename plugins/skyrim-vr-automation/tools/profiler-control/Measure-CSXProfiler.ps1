@@ -138,11 +138,12 @@ $runDirectory = Join-Path ([IO.Path]::GetFullPath($EvidenceDirectory)) "profiler
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
 $receiptPath = Join-Path $runDirectory 'capture.receipt.json'
 $receipt = [ordered]@{
-    schemaVersion = 2; operation = 'measure-profiler'; transactionId = $transactionId; state = 'prepared'
+    schemaVersion = 3; operation = 'measure-profiler'; transactionId = $transactionId; state = 'prepared'
     label = $Label; runtimePath = [IO.Path]::GetFullPath($RuntimePath); context = $context
     preparedUtc = [DateTime]::UtcNow.ToString('o'); priorEnabled = $null; finalEnabled = $null
     totalTimeoutSeconds = $TotalTimeoutSeconds; restoreReserveSeconds = $RestoreReserveSeconds
-    stateRestored = $false; restoreErrors = @(); captureError = $null; runtimeIdentityObservations = @()
+    stateRestored = $false; restoreErrors = @(); captureError = $null
+    runtimeIdentityObservations = @(); performanceObservations = @()
 }
 Write-JsonAtomic $receiptPath $receipt
 
@@ -150,6 +151,9 @@ $operationDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TotalTimeoutSeconds)
 $captureDeadlineUtc = $operationDeadlineUtc.AddSeconds(-$RestoreReserveSeconds)
 $expectedRuntimeIdentity = $null
 $expectedRuntimeIdentityFingerprint = $null
+$performanceGuardInitialized = $false
+$expectedPerformanceApplicable = $false
+$expectedPerformanceEpoch = $null
 
 function Get-RemainingProfilerSeconds([switch]$ForRestore) {
     $deadline = if ($ForRestore) { $operationDeadlineUtc } else { $captureDeadlineUtc }
@@ -171,7 +175,32 @@ function Start-ProfilerDelay([int]$RequestedMilliseconds) {
 function Invoke-ProfilerAction([string]$Action, [switch]$ForRestore) {
     $arguments = @{ action = $Action } | ConvertTo-Json -Compress
     $remainingSeconds = Get-RemainingProfilerSeconds -ForRestore:$ForRestore
-    $call = & $control call -Tool 'communityshaders.profiler' -ArgumentsJson $arguments -RuntimePath $RuntimePath -EvidenceDirectory $runDirectory -EvidenceLabel "profiler-$Action" -TimeoutSeconds $remainingSeconds -RequireSuccess -NoExit -Compact | ConvertFrom-Json -Depth 80
+    $call = & $control call -Tool 'communityshaders.profiler' -ArgumentsJson $arguments -RuntimePath $RuntimePath -EvidenceDirectory $runDirectory -EvidenceLabel "profiler-$Action" -TimeoutSeconds $remainingSeconds -RequireSuccess -RequirePerformanceNeutral:(-not $ForRestore) -NoExit -Compact | ConvertFrom-Json -Depth 80
+    if (-not $ForRestore -and $call.data) {
+        $performanceGuard = if ($call.data.PSObject.Properties['performanceGuard']) { $call.data.performanceGuard } else { $null }
+        $performanceWindow = if ($call.data.PSObject.Properties['performanceWindow']) { $call.data.performanceWindow } else { $null }
+        $script:receipt.performanceObservations = @($script:receipt.performanceObservations) + @([pscustomobject][ordered]@{
+            action = $Action
+            observedUtc = [DateTime]::UtcNow.ToString('o')
+            guard = $performanceGuard
+            window = $performanceWindow
+            evidencePath = $call.invocationEvidencePath
+        })
+        if ($null -eq $performanceGuard -or $null -eq $performanceWindow -or -not $performanceWindow.valid) {
+            throw "DevBench profiler '$Action' did not preserve a valid performance-neutrality window."
+        }
+        $applicable = [bool]$performanceGuard.applicable
+        $epoch = if ($applicable) { $performanceGuard.performanceEpoch } else { $null }
+        if (-not $script:performanceGuardInitialized) {
+            $script:performanceGuardInitialized = $true
+            $script:expectedPerformanceApplicable = $applicable
+            $script:expectedPerformanceEpoch = $epoch
+        }
+        elseif ($applicable -ne $script:expectedPerformanceApplicable -or
+            ($applicable -and [uint64]$epoch -ne [uint64]$script:expectedPerformanceEpoch)) {
+            throw "DevBench profiler '$Action' observed a changed performance-probe registration or ownership epoch."
+        }
+    }
     if (-not $call.ok) { throw "DevBench profiler '$Action' failed: $($call.errors -join '; ')" }
     $payload = @($call.data.content | Where-Object { $null -ne $_ } | Select-Object -First 1)
     if ($payload.Count -ne 1) { throw "DevBench profiler '$Action' returned no structured content." }
@@ -407,12 +436,13 @@ $timerSummaries = foreach ($group in ($timerRows | Group-Object name | Sort-Obje
     }
 }
 $summary = [pscustomobject][ordered]@{
-    schemaVersion = 2; transactionId = $transactionId; label = $Label; startedUtc = $startedUtc.ToString('o'); endedUtc = $endedUtc.ToString('o')
+    schemaVersion = 3; transactionId = $transactionId; label = $Label; startedUtc = $startedUtc.ToString('o'); endedUtc = $endedUtc.ToString('o')
     durationSeconds = ($endedUtc - $startedUtc).TotalSeconds; requestedSamples = $Samples; warmupSamples = $WarmupSamples; collectedSamples = $records.Count
     uniqueFreshFrames = @($records.frame | Sort-Object -Unique).Count; intervalMs = $IntervalMs; totalTimeoutSeconds = $TotalTimeoutSeconds
     runtimeIdentity = $runtimeIdentity; runtimeIdentityFingerprint = $expectedRuntimeIdentityFingerprint
     context = $context; contextFingerprint = $receipt.contextFingerprint; treatmentFingerprint = $receipt.treatmentFingerprint
     priorProfilerEnabled = $receipt.priorEnabled; profilerStateRestored = $receipt.stateRestored; receiptPath = $receiptPath
+    performanceObservations = @($receipt.performanceObservations)
     resolvedTotalMs = Get-MetricSummary ([double[]]@($records.resolvedTotalMs)); resolvedCpuTotalMs = Get-MetricSummary ([double[]]@($records.resolvedCpuTotalMs))
     maxSlotRefusals = [int](($records | Measure-Object slotRefusals -Maximum).Maximum); timers = @($timerSummaries)
 }

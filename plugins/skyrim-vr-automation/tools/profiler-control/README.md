@@ -18,6 +18,15 @@ pre-state: it restores the exact profiler state when the same runtime survives,
 or terminally records that the old process was replaced without toggling the
 new process.
 
+Every non-restoration profiler call uses the central controller's
+`-RequirePerformanceNeutral` guard. If the standalone temporal probe is
+registered, each call requires a proven neutral physical state and unchanged
+ownership epoch before and after dispatch. The capture also pins that epoch
+across all warm-up and measured samples. Registration or epoch drift invalidates
+the run, while the reserved restoration path remains available to restore the
+profiler's prior state. Guard observations are retained in receipt and summary
+schema 3; the collector never disarms the probe.
+
 ```powershell
 .\Measure-CSXProfiler.ps1 `
   -Label 'breezehome-enabled' `

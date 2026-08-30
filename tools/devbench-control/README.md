@@ -9,7 +9,12 @@ client.
 .\Invoke-DevBenchControl.ps1 list -RuntimePath 'C:\Path\To\runtime.json'
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}'
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}' -RequireSuccess
+.\Invoke-DevBenchControl.ps1 call -Tool 'measurement_tool' `
+  -ArgumentsJson '{"action":"status"}' -RequirePerformanceNeutral
 .\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu -TimeoutSeconds 30
+.\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu `
+  -DismissBlockingMenus InventoryMenu -MaxMenuDismissals 1 `
+  -MinimumMenuStableSeconds 5 -TimeoutSeconds 30
 .\Invoke-DevBenchControl.ps1 wait -Condition toolAvailable `
   -Tool communityshaders.profiler_api -TimeoutSeconds 600 `
   -ProgressLogPath C:\Evidence\CommunityShaders.log
@@ -56,6 +61,14 @@ Nested `error.code`, `status`, and `result.state` values are classified. Use
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
 exponential retry and are preserved under `transportRetries`.
 
+Every timing, frame-rate, CPU, or GPU capture must use
+`-RequirePerformanceNeutral`. When the standalone upscaler temporal probe is
+registered, the controller requires a proven neutral physical state and
+ownership epoch before the target call. It reads the status again afterward and
+rejects the result if the probe became active or the epoch changed. Legacy or
+unproven status fails closed. The guard never disarms the probe; that is a
+separate runtime mutation requiring its own authorization.
+
 The exact Skyrim VR console command `tfc 1` is denied wherever it appears in a
 tool argument tree because it has a confirmed player-camera null-write crash
 path under null-HMD automation. Prefer a naturally stationary scene for
@@ -76,6 +89,11 @@ save availability.
 the explicitly listed `-IgnoredMenus` (HUD by default), and always reports the
 actual timeout and final observation. This avoids the server-side `noMenu`
 condition being held open forever by Skyrim's permanent HUD menu.
+`-DismissBlockingMenus` optionally allows only the named blocking menu to be
+closed, with `-MaxMenuDismissals` bounding each menu and
+`-MinimumMenuStableSeconds` requiring a continuous clear interval afterward.
+Message boxes and any unlisted blocking menu always prevent dismissal. This is
+an explicit unattended-recovery action, not a background menu monitor.
 
 `toolAvailable` repeatedly refreshes the authoritative tool inventory rather
 than freezing the initial list. `serviceReady` additionally calls a controller-

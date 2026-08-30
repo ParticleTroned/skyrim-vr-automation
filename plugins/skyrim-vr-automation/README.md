@@ -60,6 +60,8 @@ new task to the bundled implementations and their operational contracts:
 - `$shader-cache-control` prepares tasks from compatible known-working compiled
   caches, restores prior state, promotes verified results, and compares trees
   by SHA-256.
+- `$perftune-upscaling` runs the server-owned NVIDIA or AMD Upscaling cost
+  sweep, including raw cooldown telemetry and None-relative results.
 
 Install from the public Git marketplace:
 

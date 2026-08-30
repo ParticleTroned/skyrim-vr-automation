@@ -135,7 +135,7 @@ try {
     [IO.File]::WriteAllText($runtimePath, '{}', [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($fakeControl, @'
-param([string]$Command,[string]$Tool,[string]$ArgumentsJson,[string]$RuntimePath,[string]$EvidenceDirectory,[string]$EvidenceLabel,[int]$TimeoutSeconds,[switch]$RequireSuccess,[switch]$NoExit,[switch]$Compact)
+param([string]$Command,[string]$Tool,[string]$ArgumentsJson,[string]$RuntimePath,[string]$EvidenceDirectory,[string]$EvidenceLabel,[int]$TimeoutSeconds,[switch]$RequireSuccess,[switch]$RequirePerformanceNeutral,[switch]$NoExit,[switch]$Compact)
 $state = Get-Content -LiteralPath $env:CSX_PROFILER_TEST_STATE -Raw | ConvertFrom-Json -AsHashtable
 $state.calls = [int]$state.calls + 1
 $action = ($ArgumentsJson | ConvertFrom-Json).action
@@ -146,7 +146,13 @@ $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:CSX_PROFILER_T
 $timer = [pscustomobject]@{name='Synthetic';activeGpu=$true;activeCpu=$true;hasGpu=$true;hasCpu=$true;gpuMs=1.0;topLevelMs=1.0;cpuMs=0.1}
 $status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.1;acquiredSlots=1;slotRefusals=0;timers=@($timer)}
 $listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIFT_AT_CALL) -and [int]$env:CSX_PROFILER_TEST_DRIFT_AT_CALL -eq [int]$state.calls) { 456 } else { 123 }
-[pscustomobject]@{ok=$true;runtimeIdentity=[pscustomobject]@{complete=$true;verified=$true;listenerPid=$listenerPid;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");data=[pscustomobject]@{content=@([pscustomobject]@{ok=$true;status=$status})};errors=@()} | ConvertTo-Json -Depth 20 -Compress
+$data = [ordered]@{content=@([pscustomobject]@{ok=$true;status=$status})}
+if ($RequirePerformanceNeutral) {
+    $guard = [pscustomobject]@{applicable=$true;neutral=$true;performanceDistorted=$false;performanceEpoch=7;physicalStateKnown=$true;reason='intrusive-temporal-probe-disarmed'}
+    $data.performanceGuard = $guard
+    $data.performanceWindow = [pscustomobject]@{valid=$true;applicable=$true;sameEpoch=$true;before=$guard;after=$guard;reason='performance-window-neutral'}
+}
+[pscustomobject]@{ok=$true;runtimeIdentity=[pscustomobject]@{complete=$true;verified=$true;listenerPid=$listenerPid;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");data=[pscustomobject]$data;errors=@()} | ConvertTo-Json -Depth 20 -Compress
 '@, [Text.UTF8Encoding]::new($false))
     $env:CSX_PROFILER_TEST_STATE = $statePath
     $env:CSX_PROFILER_CONTROL_ROOT = Join-Path $resolvedTestRoot 'profiler-control'
@@ -159,6 +165,8 @@ $listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIF
     $measuredRecords = @(Get-Content -LiteralPath $measurement.rawPath -Raw | ConvertFrom-Json)
     $measurementReceipt = Get-Content -LiteralPath $measurement.receiptPath -Raw | ConvertFrom-Json
     Assert-Test (@($measuredRecords.runtimeIdentityFingerprint | Sort-Object -Unique).Count -eq 1 -and @($measurementReceipt.runtimeIdentityObservations).Count -ge 7) 'measurement binds every accepted response and sample to one verified runtime identity'
+    Assert-Test ($measurement.summary.schemaVersion -eq 3 -and @($measurement.summary.performanceObservations).Count -ge 5) 'measurement preserves performance-neutrality evidence in summary schema 3'
+    Assert-Test (@($measurement.summary.performanceObservations | Where-Object { -not $_.window.valid -or $_.guard.performanceEpoch -ne 7 }).Count -eq 0) 'measurement retains one valid performance epoch across the capture'
 
     $recoveryMirror = Join-Path $resolvedTestRoot 'interrupted-profiler.journal.json'
     $authoritativeJournal = Join-Path $env:CSX_PROFILER_CONTROL_ROOT 'transaction.journal.json'
@@ -197,6 +205,11 @@ $listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIF
         Assert-Test ($leaseError -match 'Timed out waiting for the profiler capture lease') 'measurement serializes captures for the same runtime under one bounded lease'
     }
     finally { $heldLease.Dispose() }
+
+    $measureText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Measure-CSXProfiler.ps1') -Raw
+    Assert-Test ($measureText -match '-RequirePerformanceNeutral:\(-not \$ForRestore\)') 'capture guards measurement calls while preserving the restoration path'
+    Assert-Test ($measureText -match '\$expectedPerformanceEpoch') 'capture pins the performance ownership epoch across samples'
+    Assert-Test ($measureText -match 'schemaVersion = 3') 'capture stores performance guard evidence under schema 3'
 }
 finally {
     Remove-Item Env:CSX_PROFILER_TEST_STATE -ErrorAction SilentlyContinue

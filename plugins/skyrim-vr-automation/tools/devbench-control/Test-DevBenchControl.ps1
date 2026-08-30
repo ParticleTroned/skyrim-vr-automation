@@ -22,6 +22,25 @@ $transient = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ result = [
 Assert-Test ($transient.transient -and $transient.states -contains 'service_unavailable') 'transient service state is classified recursively'
 $unknown = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ playerLoaded = $true })
 Assert-Test (-not $unknown.known -and $unknown.ok) 'unclassified content remains transport-successful'
+$neutralPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $false; performanceEpoch = 7; physicalStateKnown = $true })
+Assert-Test ($neutralPerformance.known -and $neutralPerformance.neutral -and $neutralPerformance.performanceEpoch -eq 7) 'proven disarmed standalone probe permits performance measurement'
+$distortedPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $true; performanceEpoch = 8; physicalStateKnown = $true })
+Assert-Test ($distortedPerformance.known -and -not $distortedPerformance.neutral -and $distortedPerformance.reason -eq 'intrusive-temporal-probe-armed') 'armed standalone probe rejects performance measurement'
+$unprovenPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $false; performanceEpoch = 9; physicalStateKnown = $false })
+Assert-Test ($unprovenPerformance.known -and -not $unprovenPerformance.neutral -and $unprovenPerformance.reason -eq 'performance-physical-state-unproven') 'unproven physical cleanup fails closed'
+$unknownPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $false })
+Assert-Test (-not $unknownPerformance.known -and -not $unknownPerformance.neutral -and $unknownPerformance.reason -eq 'performance-ownership-state-missing') 'registered legacy probe without ownership epoch fails closed'
+$guardBefore = [pscustomobject]@{ applicable = $true; neutral = $true; performanceEpoch = 12; reason = 'intrusive-temporal-probe-disarmed' }
+$guardAfter = [pscustomobject]@{ applicable = $true; neutral = $true; performanceEpoch = 12; reason = 'intrusive-temporal-probe-disarmed' }
+$stableWindow = Test-DevBenchPerformanceWindow -Before $guardBefore -After $guardAfter
+Assert-Test ($stableWindow.valid -and $stableWindow.sameEpoch) 'unchanged neutral probe epoch admits a measurement window'
+$guardAfter.performanceEpoch = 13
+$changedWindow = Test-DevBenchPerformanceWindow -Before $guardBefore -After $guardAfter
+Assert-Test (-not $changedWindow.valid -and $changedWindow.reason -eq 'performance-probe-epoch-changed') 'arm/disarm activity invalidates a measurement window'
 $schedulerOnly = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ done = $true; ok = $true; runId = 2; result = [pscustomobject]@{ ok = $true; aborted = $false; stepsRun = 2397; elapsedMs = 161035 } })
 Assert-Test (-not $schedulerOnly.known -and $schedulerOnly.ok -and $schedulerOnly.schedulerOnly -and $schedulerOnly.outcome -eq 'scheduler-complete-unverified') 'replay scheduler completion is not promoted to semantic success'
 $verifiedReplay = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ done = $true; ok = $true; runId = 3; result = [pscustomobject]@{ ok = $true; stepsRun = 10 }; postconditions = [pscustomobject]@{ ok = $true } })
@@ -52,6 +71,15 @@ $inventory = Test-DevBenchNoBlockingMenu -MenuState ([pscustomobject]@{ openMenu
 Assert-Test (-not $inventory.satisfied -and $inventory.blockingMenus[0] -eq 'InventoryMenu') 'non-HUD menus remain blocking'
 $modal = Test-DevBenchNoBlockingMenu -MenuState ([pscustomobject]@{ openMenus = @('HUD Menu'); messageBoxOpen = $true })
 Assert-Test (-not $modal.satisfied) 'message boxes remain blocking'
+$inventoryDismissal = Get-DevBenchMenuDismissalPlan -MenuObservation $inventory -DismissBlockingMenus @('InventoryMenu')
+Assert-Test ($inventoryDismissal.permitted -and $inventoryDismissal.dismissMenus[0] -eq 'InventoryMenu') 'explicitly listed blocking menu permits bounded dismissal'
+$unlistedDismissal = Get-DevBenchMenuDismissalPlan -MenuObservation $inventory
+Assert-Test (-not $unlistedDismissal.permitted -and $unlistedDismissal.reason -eq 'unlisted-blocking-menu') 'menu dismissal remains opt-in'
+$mixedMenus = Test-DevBenchNoBlockingMenu -MenuState ([pscustomobject]@{ openMenus = @('HUD Menu', 'InventoryMenu', 'MapMenu'); messageBoxOpen = $false })
+$mixedDismissal = Get-DevBenchMenuDismissalPlan -MenuObservation $mixedMenus -DismissBlockingMenus @('InventoryMenu')
+Assert-Test (-not $mixedDismissal.permitted -and $mixedDismissal.retainedMenus[0] -eq 'MapMenu') 'unlisted blocking menus prevent partial dismissal'
+$modalDismissal = Get-DevBenchMenuDismissalPlan -MenuObservation $modal -DismissBlockingMenus @('InventoryMenu')
+Assert-Test (-not $modalDismissal.permitted -and $modalDismissal.reason -eq 'message-box-requires-explicit-answer') 'message boxes are never auto-dismissed'
 
 $expectations = Get-DevBenchRuntimeExpectations -Runtime ([pscustomobject]@{ port = 8921; pid = 123; exe = 'SkyrimVR.exe'; buildId = 'build-1'; dllPath = 'C:\Test\CommunityShaders.dll'; artifactSha256 = 'ABC' })
 Assert-Test ($expectations.port -eq 8921 -and $expectations.pid -eq 123 -and $expectations.exe -eq 'SkyrimVR.exe') 'runtime expectations preserve process identity fields'
@@ -86,7 +114,7 @@ Assert-Test ($entryPointText -notmatch '(?im)^\s*\$pid\s*=') 'entry point never 
 Assert-Test ($entryPointText -match '\$expectations\.buildId\s+-and\s+\$actualBuildId\s+-and') 'deferred build identity never compares a missing runtime build ID'
 Assert-Test ($entryPointText -match '\$Command -eq ''wait'' -and \$statusCode -eq 404') 'transient MCP 404 recovery is restricted to bounded waits'
 Assert-Test ($entryPointText -match 'full-runtime-rebind-required') 'bounded waits route invalidated MCP sessions through a full runtime rebind'
-Assert-Test ($entryPointText -match 'if \(\$RequireSuccess\) \{ -not \$semantic\.known -or -not \$semantic\.ok \}') 'RequireSuccess rejects unknown as well as failed semantic outcomes'
+Assert-Test ($entryPointText -match '\(\$RequireSuccess -or \$RequirePerformanceNeutral\) -and -not \$semantic\.known') 'required semantic outcomes reject unknown responses'
 Assert-Test ($entryPointText -match '\$semantic\.known -and -not \$semantic\.ok -and \$Command -eq ''wait''') 'unsatisfied waits fail even without RequireSuccess'
 Assert-Test ($entryPointText -match '\$Command -eq ''call'' -and -not \$runtimeIdentity\.complete') 'mutation-capable calls require complete runtime identity'
 Assert-Test ($entryPointText -match 'if \(\$Command -eq ''call''\) \{ -not \$semantic\.known -or -not \$semantic\.ok \}') 'mutation-capable calls fail closed on unknown semantic outcomes'
@@ -111,6 +139,15 @@ Assert-Test ($entryPointText -match "phase = 'initialize'; recovery = 'outer-wai
 Assert-Test ($entryPointText -match '\$null -eq \$headers') 'bounded waits establish or re-establish the MCP session inside the polling loop'
 Assert-Test ($entryPointText -match '\[switch\]\$AcceptAlreadyLoaded') 'playerLoaded exposes an explicit compatibility opt-out for freshness'
 Assert-Test ($entryPointText -match '\$playerTransitionObserved') 'playerLoaded requires an observed unloaded-to-loaded transition by default'
+Assert-Test ($entryPointText -match '\[string\[\]\]\$DismissBlockingMenus') 'menu recovery requires an explicit menu allowlist'
+Assert-Test ($entryPointText -match 'action = ''close''; name = \$menuName') 'menu recovery uses the registered menu close action'
+Assert-Test ($entryPointText -match '\[int\]\$MinimumMenuStableSeconds') 'menu recovery can require a continuous stable window'
+Assert-Test ($entryPointText -match '\$menuStableSinceUtc = \$null') 'a blocking observation resets menu stabilization'
+Assert-Test ($entryPointText -match '\[switch\]\$RequirePerformanceNeutral') 'performance calls expose an explicit fail-closed guard'
+Assert-Test ($entryPointText -match "'skyrimvrupscaler\.temporalProbe'") 'performance guard queries the standalone probe owner'
+Assert-Test ($entryPointText -match 'toolCallSkipped = \$true') 'distorted performance guard skips the requested tool call'
+Assert-Test ($entryPointText -match 'Test-DevBenchPerformanceWindow') 'guarded calls verify the probe again after the requested tool returns'
+Assert-Test ($entryPointText -match "outcome = 'guard-invalidated'") 'changed probe ownership invalidates completed measurement calls'
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('devbench-control-' + [guid]::NewGuid().ToString('N'))
 try {
