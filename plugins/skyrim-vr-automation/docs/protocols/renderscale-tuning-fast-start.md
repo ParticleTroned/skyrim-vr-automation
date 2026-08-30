@@ -45,17 +45,22 @@ reads.
 
 The vendor `SKILL.md` stores the exact `prepare_coc` and positioning responses
 under run-unique startup keys before this contract is read. They are startup
-identity/admission evidence, not measurement timing evidence. Load them only
-inside the later orchestration/finalization cells; do not print them to chat or
-perform another live startup read. During finalization, materialize both under
-`raw/startup` and include them in the one receipt-index/hash batch.
+identity/admission evidence, not measurement timing evidence. The live path
+keeps the returned envelopes in local variables and must not call `load()` or
+compare object identity to verify storage. Load the stored values only during
+finalization; do not print them to chat or perform another live startup read.
+Materialize both under `raw/startup` and include them in the one
+receipt-index/hash batch.
 
 If either stored startup receipt is unexpectedly unavailable, never replay a
 startup call or invalidate completed render rows. Record
 `startup_evidence_incomplete`, forbid the comparison-ledger append, and make the
 missing receipt explicit in the report. The normal protocol must not produce
-this state because both keys are stored and verified before positioning is
-reported.
+this state because both keys are stored before positioning is reported.
+
+After the first live startup call returns, a client, orchestration, storage, or
+validation error ends that invocation. Never correct the check and restart the
+fixture/positioning prefix in place; require a fresh user invocation.
 
 Every later mutation and ownership scenario remains synchronous with
 `async: false` and `continueOnError: false`.

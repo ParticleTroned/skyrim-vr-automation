@@ -203,7 +203,9 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'one orchestration cell' $variant.Name
     Assert-Contains $skill '`startup-prepare`' $variant.Name
     Assert-Contains $skill '`startup-positioning`' $variant.Name
-    Assert-Contains $skill 'verify both keys with `load()`' $variant.Name
+    Assert-Contains $skill 'do not call `load()`, compare' $variant.Name
+    Assert-Contains $skill 'Never correct and restart the' $variant.Name
+    Assert-True (-not $skill.Contains('verify both keys with `load()`', [StringComparison]::Ordinal)) "$($variant.Name) still gates startup on stored-object verification."
     Assert-Contains $skill 'finalization materializes both stored responses' $variant.Name
     Assert-Contains $skill '`content[0].type: "text"`' $variant.Name
     Assert-Contains $skill '`JSON.parse`' $variant.Name

@@ -16,9 +16,11 @@ before positioning.
 
 Run the fixture call and positioning scenario in one orchestration cell using
 the installed direct tools. Immediately `store()` each exact response under
-run-unique `startup-prepare` and `startup-positioning` keys and verify both keys
-with `load()` in memory. Emit only a compact positioning projection with
-`notify()`; do not end the orchestration cell.
+run-unique `startup-prepare` and `startup-positioning` keys. Keep each returned
+envelope in its local variable for live control; do not call `load()`, compare
+object identity, stringify, or otherwise verify the stored copy during startup.
+Emit only a compact positioning projection with `notify()`; do not end the
+orchestration cell.
 Do not create a file, hash, encode, or expand either startup response here;
 finalization materializes both stored responses.
 
@@ -36,6 +38,11 @@ Skyrim VR/in-game readiness and VR FPS Stabilizer, debug logging, and FOV/TAA
 `0.3/0.3/0.7`. Compare the three `after.foveation` floating-point values with
 absolute tolerance `0.000001`. The `before` object is historical evidence;
 never validate the fixture from `before`.
+
+Once this first live call returns, any client, orchestration, storage, or
+validation error ends this invocation without replaying `prepare_coc`, the
+positioning scenario, or any earlier live call. Never correct and restart the
+live prefix in place; ask the user to invoke the protocol again.
 
 Immediately submit the following synchronous scenario, replacing only
 `<bound-build-id>` with that producer Build ID. Do not insert commentary,
