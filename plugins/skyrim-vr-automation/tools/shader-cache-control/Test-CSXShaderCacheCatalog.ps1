@@ -49,7 +49,8 @@ try {
         ShaderCacheAbi = 'abi-1'
         ShaderSourceSha256 = $shaderSource
         GameRuntime = 'SkyrimVR-1.4.15'
-        RenderPath = 'vr'
+        RenderPath = 'steamvr-physical'
+        BytecodeCompatibilityClass = 'skyrimvr-d3d11'
         BuildId = 'build-fixture'
         PresetSha256 = $preset
         Tags = @('Quality', 'Full-Render')
@@ -84,10 +85,12 @@ try {
 
     $selectArgs = @{} + $common
     $selectArgs.Command = 'select'
+    $selectArgs.RenderPath = 'steamvr-null'
     $selectArgs.RequiredTags = @('quality')
     $select = Invoke-Catalog $selectArgs
-    Assert-Test ($select.ok -and $select.state -eq 'snapshot-selected') 'selection finds an exact source, build, preset, runtime, render-path, ABI, and tag match'
+    Assert-Test ($select.ok -and $select.state -eq 'snapshot-selected') 'selection finds an exact bytecode-compatible source across physical and null SteamVR provenance'
     Assert-Test ($select.data.selection.selected.exactShaderSource -and $select.data.selection.selected.exactBuild -and $select.data.selection.selected.exactPreset) 'selection reports why the preferred snapshot won'
+    Assert-Test (-not $select.data.selection.selected.exactRenderPathProvenance -and $select.data.selection.selected.bytecodeCompatibilityClass -eq 'skyrimvr-d3d11') 'selection separates bytecode compatibility from exact render-route provenance'
 
     $mismatchArgs = @{} + $selectArgs
     $mismatchArgs.ShaderSourceSha256 = $differentShaderSource

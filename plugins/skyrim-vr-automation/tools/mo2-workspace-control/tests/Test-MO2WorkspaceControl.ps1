@@ -73,6 +73,7 @@ try {
     if ($refreshedFixture.data.approval.reusableApprovalEligible -or [string]::IsNullOrWhiteSpace([string]$refreshedFixture.data.approval.oneShotReason)) { throw 'Shared fixture replacement was not explicitly classified as a one-shot approval.' }
     $created = & $entry create -ConfigPath $configPath -AccessId $accessId -Label weather -SavePolicy FreshGame -Confirm:$false | ConvertFrom-Json
     if (-not $created.ok -or $created.state -ne 'workspace-ready') { throw 'Workspace creation failed.' }
+    if ($created.data.configuration.source -ne 'explicit' -or [IO.Path]::GetFullPath([string]$created.data.configuration.path) -ne [IO.Path]::GetFullPath($configPath)) { throw 'Workspace result did not expose exact configuration resolution provenance.' }
     if ($created.data.profileName -ne $created.data.profile -or $created.data.profileDirectory -ne $created.data.profilePath -or $created.data.modListPath -ne (Join-Path $created.data.profilePath 'modlist.txt')) { throw 'Workspace profile identity fields are not explicit and canonical.' }
     if (Test-Path -LiteralPath (Join-Path $created.data.profilePath 'saves\unknown.ess')) { throw 'Workspace inherited an unknown save.' }
     $verified = & $entry create -ConfigPath $configPath -AccessId $accessId -Label verified -SavePolicy VerifiedFixture -Confirm:$false | ConvertFrom-Json
@@ -86,7 +87,9 @@ try {
     $newMod = Join-Path $mods 'Owned Test Mod'; New-Item -ItemType Directory -Path $newMod -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $newMod 'SKSE\Plugins') -Force | Out-Null
     'task-provider' | Set-Content -LiteralPath (Join-Path $newMod 'SKSE\Plugins\Example.dll') -Encoding utf8
-    $registered = & $entry register-mod -ConfigPath $configPath -AccessId $accessId -WorkspaceId $created.data.workspaceId -ModName 'Owned Test Mod' -ModDirectory $newMod -WinningPaths 'SKSE\Plugins\Example.dll' -Confirm:$false | ConvertFrom-Json
+    $winningPathsFile = Join-Path $fixture 'winning-paths.txt'
+    "SKSE\Plugins\Example.dll" | Set-Content -LiteralPath $winningPathsFile -Encoding utf8
+    $registered = & $entry register-mod -ConfigPath $configPath -AccessId $accessId -WorkspaceId $created.data.workspaceId -ModName 'Owned Test Mod' -ModDirectory $newMod -WinningPathsFile $winningPathsFile -Confirm:$false | ConvertFrom-Json
     if (-not $registered.ok -or -not $registered.data.registration.enabled) { throw "Owned winning mod registration failed: $($registered | ConvertTo-Json -Depth 8 -Compress)" }
     $winnerReceipt = Get-Content -LiteralPath $registered.data.registration.receiptPath -Raw | ConvertFrom-Json
     if (-not $winnerReceipt.winnerProof.verified -or $winnerReceipt.relativeToMod -ne 'Loader') { throw 'Workspace registration did not prove the task DLL wins.' }
@@ -101,8 +104,20 @@ try {
     if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $loaderMod)) { throw 'Workspace cleanup damaged stable state.' }
     $releasedVerified = & $entry release -ConfigPath $configPath -AccessId $accessId -WorkspaceId $verified.data.workspaceId -Confirm:$false | ConvertFrom-Json
     if (-not $releasedVerified.ok -or (Test-Path -LiteralPath $verified.data.profilePath)) { throw 'Verified fixture workspace cleanup failed.' }
+    $abandoned = & $entry create -ConfigPath $configPath -AccessId $accessId -Label abandoned -SavePolicy MainMenuOnly -Confirm:$false | ConvertFrom-Json
+    if (-not $abandoned.ok) { throw 'Abandonment recovery fixture workspace creation failed.' }
+    $previousAccessId = $accessId
+    $prematureRelease = Invoke-MO2ReleaseAccess -Config $config -AccessId $previousAccessId
+    if (-not $prematureRelease.ok) { throw 'Could not release the fixture workspace owner lease.' }
+    $replacementAccess = Invoke-MO2RequestAccess -Config $config -Label 'replacement task' -EstimatedMinutes 5
+    $accessId = [string]$replacementAccess.data.access.accessId
+    $adopted = & $entry adopt -ConfigPath $configPath -AccessId $accessId -PreviousAccessId $previousAccessId -WorkspaceId $abandoned.data.workspaceId -ConfirmAbandoned -Confirm:$false | ConvertFrom-Json
+    if (-not $adopted.ok -or $adopted.state -ne 'workspace-adopted' -or $adopted.data.adoption.previousAccessId -ne $previousAccessId) { throw 'Guarded workspace ownership recovery failed.' }
+    if ($adopted.data.approval.reusableApprovalEligible -or [string]::IsNullOrWhiteSpace([string]$adopted.data.approval.oneShotReason)) { throw 'Workspace adoption was not classified as one-shot approval.' }
+    $releasedAbandoned = & $entry release -ConfigPath $configPath -AccessId $accessId -WorkspaceId $abandoned.data.workspaceId -Confirm:$false | ConvertFrom-Json
+    if (-not $releasedAbandoned.ok -or (Test-Path -LiteralPath $abandoned.data.profilePath)) { throw 'Adopted workspace cleanup failed.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     if (-not $releasedAccess.ok) { throw 'Access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=33; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=34; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
 finally { if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }

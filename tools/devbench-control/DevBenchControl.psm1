@@ -163,6 +163,26 @@ function Test-DevBenchNoBlockingMenu {
     }
 }
 
+function Test-DevBenchMainMenuReady {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$MenuState,
+        [string[]]$AllowedMenus = @('HUD Menu', 'Main Menu')
+    )
+    $openMenus = if ($MenuState.PSObject.Properties['openMenus']) { @($MenuState.openMenus) } else { @() }
+    $unexpected = @($openMenus | Where-Object { $_ -notin $AllowedMenus })
+    $messageBoxOpen = $MenuState.PSObject.Properties['messageBoxOpen'] -and [bool]$MenuState.messageBoxOpen
+    $mainMenuOpen = $openMenus -contains 'Main Menu'
+    return [pscustomobject][ordered]@{
+        satisfied = $mainMenuOpen -and $unexpected.Count -eq 0 -and -not $messageBoxOpen
+        mainMenuOpen = $mainMenuOpen
+        openMenus = $openMenus
+        allowedMenus = @($AllowedMenus)
+        unexpectedMenus = $unexpected
+        messageBoxOpen = [bool]$messageBoxOpen
+    }
+}
+
 function Get-DevBenchRuntimeExpectations {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Runtime)
@@ -182,4 +202,4 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchRuntimeExpectations
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchRuntimeExpectations

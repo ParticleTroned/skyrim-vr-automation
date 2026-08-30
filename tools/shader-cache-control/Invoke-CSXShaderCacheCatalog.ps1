@@ -20,6 +20,7 @@ param(
     [string]$PresetSha256,
     [string]$GameRuntime = 'SkyrimVR-1.4.15',
     [string]$RenderPath = 'vr',
+    [string]$BytecodeCompatibilityClass = 'skyrimvr-d3d11',
     [string[]]$Tags = @(),
     [string[]]$RequiredTags = @(),
     [ValidateSet('known-working', 'unverified')]
@@ -271,6 +272,7 @@ function Assert-CompatibilityInput {
     if ([string]::IsNullOrWhiteSpace($ShaderCacheAbi)) { throw '-ShaderCacheAbi is required.' }
     if ([string]::IsNullOrWhiteSpace($GameRuntime)) { throw '-GameRuntime is required.' }
     if ([string]::IsNullOrWhiteSpace($RenderPath)) { throw '-RenderPath is required.' }
+    if ([string]::IsNullOrWhiteSpace($BytecodeCompatibilityClass)) { throw '-BytecodeCompatibilityClass is required.' }
     $script:ShaderSourceSha256 = Assert-Hash $ShaderSourceSha256 'ShaderSourceSha256'
     if (-not [string]::IsNullOrWhiteSpace($PresetSha256)) { $script:PresetSha256 = Assert-Hash $PresetSha256 'PresetSha256' }
     if ($AllowSourceMismatch -and [string]::IsNullOrWhiteSpace($CompatibilityReason)) {
@@ -286,6 +288,7 @@ function New-CompatibilityRecord {
     return [pscustomobject][ordered]@{
         shaderCacheAbi = $ShaderCacheAbi
         gameRuntime = $GameRuntime
+        bytecodeCompatibilityClass = $BytecodeCompatibilityClass
         renderPath = $RenderPath
         shaderSourceSha256 = $ShaderSourceSha256
         buildId = $(if ([string]::IsNullOrWhiteSpace($BuildId)) { $null } else { $BuildId })
@@ -405,7 +408,8 @@ function Select-CatalogSnapshot($Storage) {
         if ([string]$m.status -cne 'known-working') { $reasons += 'not-known-working' }
         if ([string]$m.compatibility.shaderCacheAbi -cne $ShaderCacheAbi) { $reasons += 'shader-cache-abi-mismatch' }
         if ([string]$m.compatibility.gameRuntime -cne $GameRuntime) { $reasons += 'game-runtime-mismatch' }
-        if ([string]$m.compatibility.renderPath -cne $RenderPath) { $reasons += 'render-path-mismatch' }
+        $candidateBytecodeClass = [string](Get-PropertyValue $m.compatibility 'bytecodeCompatibilityClass' $(if ([string]$m.compatibility.gameRuntime -like 'SkyrimVR*') { 'skyrimvr-d3d11' } else { [string]$m.compatibility.renderPath }))
+        if ($candidateBytecodeClass -cne $BytecodeCompatibilityClass) { $reasons += 'bytecode-compatibility-class-mismatch' }
         $sourceExact = [string]$m.compatibility.shaderSourceSha256 -ieq $ShaderSourceSha256
         if (-not $sourceExact -and -not $AllowSourceMismatch) { $reasons += 'shader-source-mismatch' }
         $candidateTags = @(Get-NormalizedStrings @($m.compatibility.tags))
@@ -416,13 +420,16 @@ function Select-CatalogSnapshot($Storage) {
         }
         $buildExact = -not [string]::IsNullOrWhiteSpace($BuildId) -and [string](Get-PropertyValue $m.compatibility 'buildId' '') -ceq $BuildId
         $presetExact = -not [string]::IsNullOrWhiteSpace($PresetSha256) -and [string](Get-PropertyValue $m.compatibility 'presetSha256' '') -ieq $PresetSha256
-        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + ($required.Count * 10)
+        $renderPathExact = [string]$m.compatibility.renderPath -ceq $RenderPath
+        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + $(if ($renderPathExact) { 100 } else { 0 }) + ($required.Count * 10)
         $eligible += [pscustomobject][ordered]@{
             snapshotId = [string]$m.snapshotId
             score = $score
             exactShaderSource = $sourceExact
             exactBuild = $buildExact
             exactPreset = $presetExact
+            exactRenderPathProvenance = $renderPathExact
+            bytecodeCompatibilityClass = $candidateBytecodeClass
             files = [int]$m.inventory.files
             bytes = [long]$m.inventory.bytes
             createdUtc = [string]$m.createdUtc

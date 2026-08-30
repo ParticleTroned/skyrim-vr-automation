@@ -13,7 +13,8 @@ seed, and restore refuse to run while MO2, Skyrim, or the SKSE loader is active.
 `Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
 cache management. It stores immutable, content-addressed cache objects and
 separate snapshot manifests carrying the cache ABI, game runtime, render path,
-shader-source hash, optional build and preset hashes, normalized tags, status,
+shader-source hash, explicit bytecode compatibility class, optional build and
+preset hashes, normalized tags, status,
 and receipt provenance. There is no mutable index to repair: `list` validates
 the manifests and derives the catalog view from disk.
 
@@ -66,10 +67,15 @@ Configure a permanent catalog outside MO2 and the checkout:
 `CSX_SHADER_CACHE_CATALOG_ROOT`, the configured path, `CODEX_HOME`, and the
 user-local application-data fallback. A catalog candidate is never accepted
 from its label alone. The hard compatibility gates are known-working status,
-exact shader-cache ABI, game runtime, render path, required tags, and—by
+exact shader-cache ABI, game runtime, bytecode compatibility class, required tags, and—by
 default—exact shader-source SHA-256. Among compatible candidates, exact source,
 build, and preset matches rank first, followed by broader verified coverage and
 recency. `select` returns both the ranking and explicit exclusion reasons.
+
+The exact render path remains immutable provenance and an exact-match ranking
+signal. The default `skyrimvr-d3d11` class deliberately permits reuse across
+SteamVR physical, SteamVR null-HMD, and OpenComposite when every bytecode input
+matches; use a different explicit class when a route is proven bytecode-affecting.
 
 First admit a receipt-proven snapshot:
 
@@ -124,7 +130,7 @@ caller explicitly classifies the task result as `known-working`. An unverified
 or failed task result is still preserved as evidence but is not added to the
 catalog. A shader-source mismatch remains excluded unless
 `-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
-this exception does not bypass ABI, runtime, render-path, status, or tag gates.
+this exception does not bypass ABI, runtime, bytecode-class, status, or tag gates.
 
 `seed` requires the existing snapshot receipt for the same live cache and
 evidence directory, verifies the exact source tree, stages it, swaps it into

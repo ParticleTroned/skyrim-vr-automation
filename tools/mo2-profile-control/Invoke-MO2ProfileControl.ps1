@@ -24,6 +24,8 @@ param(
 
     [string[]]$WinningPaths,
 
+    [string]$WinningPathsFile,
+
     [switch]$RegisterEnabled,
 
     [string]$EvidenceDirectory,
@@ -36,6 +38,27 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Resolve-WinningPathInput([string[]]$Inline, [string]$File) {
+    $values = [Collections.Generic.List[string]]::new()
+    foreach ($value in @($Inline)) { if (-not [string]::IsNullOrWhiteSpace($value)) { $values.Add($value.Trim()) } }
+    if (-not [string]::IsNullOrWhiteSpace($File)) {
+        $resolved = [IO.Path]::GetFullPath($File)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "WinningPathsFile does not exist: $resolved" }
+        $raw = Get-Content -LiteralPath $resolved -Raw
+        $parsed = $null
+        $jsonArray = $raw.TrimStart().StartsWith('[')
+        try { $parsed = $raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop } catch { if ($jsonArray) { throw 'WinningPathsFile begins as JSON but is not a valid JSON string array.' } }
+        $entries = if ($jsonArray) { @($parsed) } else { @($raw -split '\r?\n' | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }) }
+        foreach ($entry in $entries) {
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) { throw 'WinningPathsFile must contain a JSON string array or one relative path per line.' }
+            $values.Add($entry.Trim())
+        }
+    }
+    return @($values | Select-Object -Unique)
+}
+
+$resolvedWinningPaths = @(Resolve-WinningPathInput -Inline $WinningPaths -File $WinningPathsFile)
 
 function New-ProfileApprovalMetadata([string]$Subcommand) {
     $hostExecutable = [string][Environment]::ProcessPath
@@ -272,7 +295,7 @@ if ($Command -in @('register', 'register-winning')) {
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) { throw "Refusing to overwrite an existing exact backup: $backupPath" }
     $winningPlan = $null
     if ($Command -eq 'register-winning') {
-        $winningPlan = Resolve-WinningPlan -Bytes $beforeBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+        $winningPlan = Resolve-WinningPlan -Bytes $beforeBytes -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $resolvedWinningPaths
         $effectivePlacement = if ([string]::IsNullOrWhiteSpace([string]$winningPlan.placeBeforeMod)) { 'End' } else { 'Before' }
         $effectiveRelative = [string]$winningPlan.placeBeforeMod
         $afterBytes = Add-ModLine -Bytes $beforeBytes -Name $ModName -Enabled $true -LinePlacement $effectivePlacement -RelativeName $effectiveRelative
@@ -288,7 +311,7 @@ if ($Command -in @('register', 'register-winning')) {
         Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
         $afterLine = Get-ModLineRecord -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -Name $ModName
         $afterHash = Get-Sha256 $resolvedProfile
-        $winnerProof = if ($Command -eq 'register-winning') { Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths } else { $null }
+        $winnerProof = if ($Command -eq 'register-winning') { Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $resolvedWinningPaths } else { $null }
         [pscustomobject][ordered]@{
             contractVersion = '1.4.0'; operation = $Command; profilePath = $resolvedProfile
             profileName = $profileName; profileDirectory = $profileDirectory; modListPath = $resolvedProfile
@@ -305,7 +328,7 @@ elseif ($Command -eq 'ensure-winner') {
     if ([string]::IsNullOrWhiteSpace($ModDirectory)) { throw '-ModDirectory is required for ensure-winner.' }
     $resolvedModDirectory = [IO.Path]::GetFullPath($ModDirectory)
     $withoutTarget = Remove-ModLine -Bytes $beforeBytes -Name $ModName
-    $winningPlan = Resolve-WinningPlan -Bytes $withoutTarget -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+    $winningPlan = Resolve-WinningPlan -Bytes $withoutTarget -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $resolvedWinningPaths
     $effectivePlacement = if ([string]::IsNullOrWhiteSpace([string]$winningPlan.placeBeforeMod)) { 'End' } else { 'Before' }
     $effectiveRelative = [string]$winningPlan.placeBeforeMod
     $afterBytes = Add-ModLine -Bytes $withoutTarget -Name $ModName -Enabled $true -LinePlacement $effectivePlacement -RelativeName $effectiveRelative
@@ -315,7 +338,7 @@ elseif ($Command -eq 'ensure-winner') {
         [IO.File]::WriteAllBytes($backupPath, $beforeBytes)
         Write-BytesAtomically -Path $resolvedProfile -Bytes $afterBytes
         $afterHash = Get-Sha256 $resolvedProfile
-        $winnerProof = Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $WinningPaths
+        $winnerProof = Test-WinningPostcondition -Bytes ([IO.File]::ReadAllBytes($resolvedProfile)) -TargetName $ModName -TargetDirectory $resolvedModDirectory -ModRoot $ModsDirectory -Paths $resolvedWinningPaths
         [pscustomobject][ordered]@{
             contractVersion = '1.4.0'; operation = 'ensure-winner'; profilePath = $resolvedProfile
             profileName = $profileName; profileDirectory = $profileDirectory; modListPath = $resolvedProfile

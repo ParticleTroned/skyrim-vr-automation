@@ -4,6 +4,19 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add a correlated capture/interaction framework with latest committed frame
+  selection, continuous or on-demand stereo capture, full-state recording,
+  pose-preserving named actions, direct DevBench passthrough, orderly
+  finalization, and UTC-safe stable-save waits.
+- Add read-only physical HMD/controller observation and correlation IDs to the
+  DevBench input/recording contracts used by the framework.
+- Add `mainMenuReady`, a real `validate-closed` alias, approval-compatible
+  multi-path files, guarded workspace adoption after a released access lease,
+  and exact configuration-resolution provenance.
+- Treat SteamVR physical, SteamVR null-HMD, and OpenComposite execution routes
+  as provenance within one explicit Skyrim VR D3D11 bytecode compatibility
+  class while preserving their exact route for ranking and evidence.
+
 - Require task profiles to clone the configured primary/stable profile only
   after recursively evacuating every legacy `ShaderCache*` directory from MO2
   overwrite into a newly enabled, receipt-backed VFS mod.

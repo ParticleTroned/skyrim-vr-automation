@@ -3,11 +3,12 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'prepare-source', 'register-mod', 'ensure-mod-wins', 'release')]
+    [ValidateSet('create', 'inspect', 'fixture-status', 'refresh-fixture', 'prepare-source', 'adopt', 'register-mod', 'ensure-mod-wins', 'release')]
     [string]$Command,
 
     [string]$ConfigPath,
     [string]$AccessId,
+    [string]$PreviousAccessId,
     [string]$WorkspaceId,
     [string]$Label = 'task',
     [string]$SourceProfile,
@@ -21,8 +22,10 @@ param(
     [string]$Placement = 'End',
     [string]$RelativeToMod,
     [string[]]$WinningPaths,
+    [string]$WinningPathsFile,
     [switch]$RegisterEnabled,
     [switch]$CleanupOwnedMods,
+    [switch]$ConfirmAbandoned,
     [switch]$Compact,
     [switch]$NoExit
 )
@@ -33,17 +36,38 @@ $toolRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $toolRoot 'mo2-control\ConfigResolution.psm1') -Force
 Import-Module (Join-Path $toolRoot 'mo2-control\MO2Control.psm1') -Force
 
+function Resolve-WorkspaceWinningPaths([string[]]$Inline, [string]$File) {
+    $values = [Collections.Generic.List[string]]::new()
+    foreach ($value in @($Inline)) { if (-not [string]::IsNullOrWhiteSpace($value)) { $values.Add($value.Trim()) } }
+    if (-not [string]::IsNullOrWhiteSpace($File)) {
+        $resolved = [IO.Path]::GetFullPath($File)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "WinningPathsFile does not exist: $resolved" }
+        $raw = Get-Content -LiteralPath $resolved -Raw
+        $parsed = $null
+        $jsonArray = $raw.TrimStart().StartsWith('[')
+        try { $parsed = $raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop } catch { if ($jsonArray) { throw 'WinningPathsFile begins as JSON but is not a valid JSON string array.' } }
+        $entries = if ($jsonArray) { @($parsed) } else { @($raw -split '\r?\n' | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }) }
+        foreach ($entry in $entries) {
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) { throw 'WinningPathsFile must contain a JSON string array or one relative path per line.' }
+            $values.Add($entry.Trim())
+        }
+    }
+    return @($values | Select-Object -Unique)
+}
+
+$resolvedWinningPaths = @(Resolve-WorkspaceWinningPaths -Inline $WinningPaths -File $WinningPathsFile)
+
 function New-WorkspaceApprovalMetadata([string]$Subcommand) {
     $hostExecutable = [string][Environment]::ProcessPath
     if ([string]::IsNullOrWhiteSpace($hostExecutable)) { $hostExecutable = [string](Get-Process -Id $PID -ErrorAction Stop).Path }
     $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
-    $oneShotCommands = @('refresh-fixture', 'prepare-source', 'release')
+    $oneShotCommands = @('refresh-fixture', 'prepare-source', 'adopt', 'release')
     return [pscustomobject][ordered]@{
         hostExecutable = $hostExecutable; entryPoint = $entryPoint; subcommand = $Subcommand
         reusablePrefix = @($hostExecutable, '-NoProfile', '-NonInteractive', '-File', $entryPoint, $Subcommand)
         reusableApprovalEligible = $Subcommand -notin $oneShotCommands
         escalationUsuallyRequired = $Subcommand -notin @('inspect', 'fixture-status')
-        oneShotReason = if ($Subcommand -eq 'refresh-fixture') { 'Shared fixture replacement must remain a one-shot approval.' } elseif ($Subcommand -eq 'prepare-source') { 'Moving overwrite cache trees into a shared stable-profile mod must remain a one-shot approval.' } elseif ($Subcommand -eq 'release') { 'Recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
+        oneShotReason = if ($Subcommand -eq 'refresh-fixture') { 'Shared fixture replacement must remain a one-shot approval.' } elseif ($Subcommand -eq 'prepare-source') { 'Moving overwrite cache trees into a shared stable-profile mod must remain a one-shot approval.' } elseif ($Subcommand -eq 'adopt') { 'Transferring an abandoned workspace to a new exact lease must remain a one-shot approval.' } elseif ($Subcommand -eq 'release') { 'Recursive owned-workspace removal must remain a one-shot approval.' } else { $null }
         invocationRule = 'Use this literal prefix directly. Put changing access, workspace, mod, and evidence arguments afterward; do not hide the prefix in variables, -Command, pipelines, or a command string.'
     }
 }
@@ -244,6 +268,15 @@ function Read-OwnedWorkspace($Config, [string]$Id, [string]$OwnedAccessId) {
     return [pscustomobject]@{ path = $path; data = $manifest }
 }
 
+function Read-WorkspaceForAdoption($Config, [string]$Id) {
+    if ([string]::IsNullOrWhiteSpace($Id)) { throw '-WorkspaceId is required.' }
+    $path = Get-WorkspaceManifestPath -Config $Config -Id $Id
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Workspace does not exist: $Id" }
+    $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 30
+    if ([string]$manifest.workspaceId -cne $Id) { throw 'Workspace manifest identity does not match its filename.' }
+    return [pscustomobject]@{ path = $path; data = $manifest }
+}
+
 function Assert-AccessAndClosed($Config, [string]$OwnedAccessId, [string]$Profile, [switch]$AllowOverwriteShaderCaches) {
     if ([string]::IsNullOrWhiteSpace($OwnedAccessId)) { throw '-AccessId is required for workspace mutation.' }
     $access = Invoke-MO2AccessStatus -Config $Config -AccessId $OwnedAccessId
@@ -369,6 +402,7 @@ function Move-OverwriteShaderCachesToStableMod($Config, [string]$SourceName, [st
     }
 }
 
+$resolvedConfig = $null
 try {
     $resolvedConfig = Resolve-MO2ControlConfigPath -ConfigPath $ConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control')
     if (-not $resolvedConfig.exists) { throw "MO2 configuration was not found: $($resolvedConfig.path)" }
@@ -500,6 +534,33 @@ try {
         }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-ready' }); data = $manifest }
     }
+    elseif ($Command -eq 'adopt') {
+        if (-not $ConfirmAbandoned) { throw 'adopt requires -ConfirmAbandoned after the previous workspace access lease has been released.' }
+        if ([string]::IsNullOrWhiteSpace($PreviousAccessId)) { throw 'adopt requires -PreviousAccessId matching the workspace manifest.' }
+        if ([string]::IsNullOrWhiteSpace($AccessId) -or $AccessId -ceq $PreviousAccessId) { throw 'adopt requires a distinct currently owned -AccessId.' }
+        $owned = Read-WorkspaceForAdoption -Config $config -Id $WorkspaceId
+        if ([string]$owned.data.status -cne 'ready') { throw "Only a ready workspace can be adopted; current status is '$($owned.data.status)'." }
+        if ([string]$owned.data.accessId -cne $PreviousAccessId) { throw 'PreviousAccessId does not match the workspace owner recorded in its manifest.' }
+        $previous = Invoke-MO2AccessStatus -Config $config -AccessId $PreviousAccessId
+        if ($previous.ok -and $previous.data.owned) { throw 'The previous access lease is still active; renew or use it instead of adopting.' }
+        $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile ([string]$owned.data.profile)
+        $sourceNow = Get-ProfileSnapshot -Path ([string]$owned.data.sourceProfilePath)
+        if ([string]$sourceNow.sha256 -cne [string]$owned.data.sourceSnapshot.sha256) { throw 'Stable source profile changed after workspace creation; refusing ownership transfer.' }
+        $profileNow = Get-ProfileSnapshot -Path ([string]$owned.data.profilePath)
+        if ([string]$profileNow.sha256 -cne [string]$owned.data.profileSnapshot.sha256) { throw 'Task profile changed outside its last recorded workspace transaction; refusing ownership transfer.' }
+        $history = if ($owned.data.PSObject.Properties['accessHistory']) { @($owned.data.accessHistory) } else { @() }
+        $adoption = [pscustomobject][ordered]@{
+            previousAccessId = $PreviousAccessId; accessId = $AccessId
+            confirmedAbandoned = $true; adoptedUtc = [DateTime]::UtcNow.ToString('o')
+            sourceProfileSha256 = [string]$sourceNow.sha256; taskProfileSha256 = [string]$profileNow.sha256
+        }
+        if ($PSCmdlet.ShouldProcess($owned.path, "transfer exact workspace ownership from released lease '$PreviousAccessId' to '$AccessId'")) {
+            $owned.data.accessId = $AccessId
+            $owned.data | Add-Member -NotePropertyName accessHistory -NotePropertyValue ($history + @($adoption)) -Force
+            Write-WorkspaceJsonAtomic -Path $owned.path -Value $owned.data
+        }
+        $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-adopted' }); data = [pscustomobject][ordered]@{ workspaceId=$WorkspaceId; manifestPath=$owned.path; adoption=$adoption; workspace=$owned.data } }
+    }
     elseif ($Command -eq 'inspect') {
         $owned = Read-OwnedWorkspace -Config $config -Id $WorkspaceId -OwnedAccessId $AccessId
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = [string]$owned.data.status; data = $owned.data }
@@ -515,7 +576,7 @@ try {
         if ($resolvedMod -cne $expectedMod) { throw "ModDirectory must be the exact task-owned MO2 mod path: $expectedMod" }
         $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-register-' + (Get-SafeName $ModName))
         $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
-        $winning = @($WinningPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $winning = @($resolvedWinningPaths)
         $arguments = @{
             Command = $(if ($winning.Count -gt 0) { 'register-winning' } else { 'register' }); ProfilePath = (Join-Path ([string]$owned.data.profilePath) 'modlist.txt')
             ModName = $ModName; ModDirectory = $resolvedMod; Placement = $Placement
@@ -539,7 +600,7 @@ try {
         if ([string]::IsNullOrWhiteSpace($ModName)) { throw 'ensure-mod-wins requires ModName.' }
         $matches = @($owned.data.registeredMods | Where-Object { [string]$_.name -ceq $ModName })
         if ($matches.Count -ne 1) { throw "ensure-mod-wins requires exactly one task-owned registered mod named '$ModName'; found $($matches.Count)." }
-        $winning = @($WinningPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $winning = @($resolvedWinningPaths)
         if ($winning.Count -eq 0) { throw 'ensure-mod-wins requires at least one WinningPaths entry.' }
         $registered = $matches[0]
         $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-winner-' + (Get-SafeName $ModName) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -603,6 +664,14 @@ catch {
 }
 
 $result.data | Add-Member -NotePropertyName approval -NotePropertyValue (New-WorkspaceApprovalMetadata -Subcommand $Command) -Force
+if ($null -ne $resolvedConfig) {
+    $result.data | Add-Member -NotePropertyName configuration -NotePropertyValue ([pscustomobject][ordered]@{
+        path = [string]$resolvedConfig.path
+        source = [string]$resolvedConfig.source
+        exists = [bool]$resolvedConfig.exists
+        candidates = @($resolvedConfig.candidates)
+    }) -Force
+}
 $jsonParameters = @{ InputObject = $result; Depth = 18 }
 if ($Compact) { $jsonParameters['Compress'] = $true }
 ConvertTo-Json @jsonParameters
