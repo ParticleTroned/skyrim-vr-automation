@@ -47,6 +47,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:CatalogCommandContext = $PSCmdlet
 $contractVersion = '1.0.0'
 $transactionTool = Join-Path $PSScriptRoot 'Invoke-CSXShaderCacheTransaction.ps1'
 . (Join-Path $PSScriptRoot 'ShaderCacheInventory.ps1')
@@ -308,7 +309,15 @@ function New-CompatibilityRecord {
     }
 }
 
-function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [string]$ReceiptPath, [string]$Status) {
+function New-CatalogSnapshot {
+    param(
+        [Parameter(Mandatory)]$Storage,
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$ExpectedHash,
+        [Parameter(Mandatory)][string]$ReceiptPath,
+        [Parameter(Mandatory)][string]$Status,
+        [Parameter(Mandatory)][Management.Automation.PSCmdlet]$Caller
+    )
     Assert-CompatibilityInput
     $resolvedSource = Assert-SafeDirectory $Source 'preserved shader-cache source' -MustExist
     $expected = Assert-Hash $ExpectedHash 'ExpectedSourceTreeSha256'
@@ -369,7 +378,7 @@ function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [
             $existing = Get-TreeInventory $objectPath
             if ($existing.treeSha256 -ne $expected) { throw "Catalog object is corrupt: $objectPath" }
         }
-        elseif ($PSCmdlet.ShouldProcess($objectPath, 'Add verified content-addressed shader-cache object')) {
+        elseif ($Caller.ShouldProcess($objectPath, 'Add verified content-addressed shader-cache object')) {
             $incoming = Join-Path $layout.incoming ([guid]::NewGuid().ToString('N'))
             $incomingCache = Join-Path $incoming 'ShaderCache'
             try {
@@ -399,7 +408,7 @@ function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [
             compatibility = $compatibility
             provenance = [pscustomobject][ordered]@{ sourceReceipt = $proof; sourceLeaf = [IO.Path]::GetFileName($resolvedSource) }
         }
-        if ($PSCmdlet.ShouldProcess($manifestPath, 'Publish immutable shader-cache snapshot manifest')) {
+        if ($Caller.ShouldProcess($manifestPath, 'Publish immutable shader-cache snapshot manifest')) {
             Write-JsonAtomic $manifestPath $manifest -RefuseExisting
         }
         return [pscustomobject][ordered]@{ state = $(if ($WhatIfPreference) { 'dry-run' } else { 'captured' }); record = [pscustomobject]@{ manifestPath = $manifestPath; cachePath = $objectPath; manifest = $manifest } }
@@ -625,7 +634,7 @@ function Complete-TaskCache($Storage) {
         $script:FeatureSetSha256 = [string](Get-PropertyValue $request 'featureSetSha256' '')
         $script:Tags = @($request.tags)
         $script:Label = if ([string]::IsNullOrWhiteSpace($Label)) { 'task-complete-' + [IO.Path]::GetFileName($evidence) } else { $Label }
-        $promoted = New-CatalogSnapshot $Storage ([string]$restore.data.displacedPath) ([string]$currentBeforeRestore.data.treeSha256) ([string]$restore.data.restoreReceiptPath) 'known-working'
+        $promoted = New-CatalogSnapshot -Storage $Storage -Source ([string]$restore.data.displacedPath) -ExpectedHash ([string]$currentBeforeRestore.data.treeSha256) -ReceiptPath ([string]$restore.data.restoreReceiptPath) -Status 'known-working' -Caller $script:CatalogCommandContext
     }
     $completion = [pscustomobject][ordered]@{
         contractVersion = $contractVersion
@@ -650,7 +659,7 @@ try {
     }
     elseif ($Command -eq 'capture') {
         if ([string]::IsNullOrWhiteSpace($SourceCachePath) -or [string]::IsNullOrWhiteSpace($ExpectedSourceTreeSha256) -or [string]::IsNullOrWhiteSpace($SourceReceiptPath)) { throw 'capture requires SourceCachePath, ExpectedSourceTreeSha256, and SourceReceiptPath.' }
-        $captured = New-CatalogSnapshot $storage $SourceCachePath $ExpectedSourceTreeSha256 $SourceReceiptPath $SnapshotStatus
+        $captured = New-CatalogSnapshot -Storage $storage -Source $SourceCachePath -ExpectedHash $ExpectedSourceTreeSha256 -ReceiptPath $SourceReceiptPath -Status $SnapshotStatus -Caller $script:CatalogCommandContext
         $result = [pscustomobject][ordered]@{ contractVersion = $contractVersion; ok = $true; command = $Command; state = $captured.state; data = @{ storage = $storage; snapshot = $captured.record }; errors = @() }
     }
     elseif ($Command -eq 'select') {

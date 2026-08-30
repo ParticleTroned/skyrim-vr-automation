@@ -16,6 +16,9 @@ param(
 
     [string]$AccessId,
 
+    [Alias('ReporterTaskId')]
+    [string]$TaskId,
+
     [string]$Label = 'automation',
 
     [ValidateRange(1, 600)]
@@ -133,7 +136,7 @@ try {
             Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
         }
         'request-access' {
-            Invoke-MO2RequestAccess -Config $config -Label $Label -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
+            Invoke-MO2RequestAccess -Config $config -Label $Label -TaskId $TaskId -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
         }
         'access-status' {
             Invoke-MO2AccessStatus -Config $config -AccessId $AccessId

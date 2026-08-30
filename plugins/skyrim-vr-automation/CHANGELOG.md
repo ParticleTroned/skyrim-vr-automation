@@ -4,6 +4,12 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Let MO2 access requests retain an explicit stable task identity, complete
+  asynchronous `-StartOnly` opens from proven main-window state, retry transient
+  UI Automation enumeration once, and clean late failure dialogs after the
+  retained-process stability window.
+- Preserve the invoking command context through shader-cache completion so
+  promoted working caches retain functional `ShouldProcess` authorization.
 - Serialize every SteamVR/OpenVR command with a bounded lock derived from the
   canonical live targets, move recovery authority to a deterministic per-user
   journal independent of caller evidence directories, and replace repeated
