@@ -23,6 +23,16 @@ Assert-Test ($transient.transient -and $transient.states -contains 'service_unav
 $unknown = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ playerLoaded = $true })
 Assert-Test (-not $unknown.known -and $unknown.ok) 'unclassified content remains transport-successful'
 
+$neutralPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $false })
+Assert-Test ($neutralPerformance.known -and $neutralPerformance.neutral) 'disarmed standalone probe permits performance measurement'
+$distortedPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ performanceDistorted = $true })
+Assert-Test ($distortedPerformance.known -and -not $distortedPerformance.neutral -and $distortedPerformance.reason -eq 'intrusive-temporal-probe-armed') 'armed standalone probe rejects performance measurement'
+$unknownPerformance = Test-DevBenchPerformanceNeutral -Content @(
+    [pscustomobject]@{ stateCode = 2 })
+Assert-Test (-not $unknownPerformance.known -and -not $unknownPerformance.neutral) 'registered legacy probe without distortion state fails closed'
+
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })
 Assert-Test ($ready.ready -and -not $ready.retryable -and $ready.statePath -eq 'content.result.state') 'service readiness prefers result.state'
 $waiting = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'compiling' } })
@@ -59,7 +69,7 @@ Assert-Test ($entryPointText -notmatch '(?im)^\s*\$pid\s*=') 'entry point never 
 Assert-Test ($entryPointText -match '\$expectations\.buildId\s+-and\s+\$actualBuildId\s+-and') 'deferred build identity never compares a missing runtime build ID'
 Assert-Test ($entryPointText -match '\$Command -eq ''wait'' -and \$statusCode -eq 404') 'transient MCP 404 recovery is restricted to bounded waits'
 Assert-Test ($entryPointText -match 'mcp-session-reinitialized') 'bounded waits reinitialize invalidated MCP sessions'
-Assert-Test ($entryPointText -match '\(\$RequireSuccess -or \$Command -eq ''wait''\)') 'unsatisfied waits fail even without RequireSuccess'
+Assert-Test ($entryPointText -match '\(\$RequireSuccess -or \$RequirePerformanceNeutral -or \$Command -eq ''wait''\)') 'unsatisfied waits fail even without RequireSuccess'
 Assert-Test ($entryPointText -match '\[string\]\$EvidenceLabel') 'runtime binding evidence accepts an explicit invocation label'
 Assert-Test ($entryPointText -match 'devbench-runtime-binding\.\$safeLabel\.\$stamp\.\$PID\.json') 'parallel runtime bindings use invocation-unique filenames'
 Assert-Test ($entryPointText -match 'function Test-WaitRetryableException') 'bounded waits classify exhausted transient probe failures'
@@ -69,6 +79,9 @@ Assert-Test ($entryPointText -match '\[string\[\]\]\$DismissBlockingMenus') 'men
 Assert-Test ($entryPointText -match 'action = ''close''; name = \$menuName') 'menu recovery uses the registered menu close action'
 Assert-Test ($entryPointText -match '\[int\]\$MinimumMenuStableSeconds') 'menu recovery can require a continuous stable window'
 Assert-Test ($entryPointText -match '\$menuStableSinceUtc = \$null') 'a blocking observation resets menu stabilization'
+Assert-Test ($entryPointText -match '\[switch\]\$RequirePerformanceNeutral') 'performance calls expose an explicit fail-closed guard'
+Assert-Test ($entryPointText -match "'skyrimvrupscaler\.temporalProbe'") 'performance guard queries the standalone probe owner'
+Assert-Test ($entryPointText -match 'toolCallSkipped = \$true') 'distorted performance guard skips the requested tool call'
 
 [pscustomobject][ordered]@{ ok = $failures.Count -eq 0; passed = $passes.Count; failed = $failures.Count; passes = @($passes); failures = @($failures) } | ConvertTo-Json -Depth 10
 if ($failures.Count -gt 0) { exit 1 }

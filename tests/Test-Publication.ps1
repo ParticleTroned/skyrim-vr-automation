@@ -23,6 +23,8 @@ $requiredFiles = @(
     'skills/steamvr-null-hmd/agents/openai.yaml',
     'skills/devbench-control/SKILL.md',
     'skills/devbench-control/agents/openai.yaml',
+    'plugins/skyrim-vr-automation/skills/devbench-control/SKILL.md',
+    'plugins/skyrim-vr-automation/skills/devbench-control/agents/openai.yaml',
     'skills/profiler-control/SKILL.md',
     'skills/profiler-control/agents/openai.yaml',
     'skills/shader-cache-control/SKILL.md',
@@ -112,13 +114,23 @@ if ($null -eq $firstDirectToolLine -or $firstDirectToolLine -gt 17) {
 }
 
 foreach ($pair in @(
+    @('skills/devbench-control/SKILL.md', 'plugins/skyrim-vr-automation/skills/devbench-control/SKILL.md'),
+    @('skills/devbench-control/agents/openai.yaml', 'plugins/skyrim-vr-automation/skills/devbench-control/agents/openai.yaml'),
+    @('tools/devbench-control/DevBenchControl.psm1', 'plugins/skyrim-vr-automation/tools/devbench-control/DevBenchControl.psm1'),
+    @('tools/devbench-control/Invoke-DevBenchControl.ps1', 'plugins/skyrim-vr-automation/tools/devbench-control/Invoke-DevBenchControl.ps1'),
+    @('tools/devbench-control/Test-DevBenchControl.ps1', 'plugins/skyrim-vr-automation/tools/devbench-control/Test-DevBenchControl.ps1'),
+    @('tools/devbench-control/README.md', 'plugins/skyrim-vr-automation/tools/devbench-control/README.md'),
+    @('skills/profiler-control/SKILL.md', 'plugins/skyrim-vr-automation/skills/profiler-control/SKILL.md'),
+    @('tools/profiler-control/Measure-CSXProfiler.ps1', 'plugins/skyrim-vr-automation/tools/profiler-control/Measure-CSXProfiler.ps1'),
+    @('tools/profiler-control/Test-ProfilerControl.ps1', 'plugins/skyrim-vr-automation/tools/profiler-control/Test-ProfilerControl.ps1'),
+    @('tools/profiler-control/README.md', 'plugins/skyrim-vr-automation/tools/profiler-control/README.md'),
     @('skills/perftune-upscaling/SKILL.md', 'plugins/skyrim-vr-automation/skills/perftune-upscaling/SKILL.md'),
     @('skills/perftune-upscaling/agents/openai.yaml', 'plugins/skyrim-vr-automation/skills/perftune-upscaling/agents/openai.yaml')
 )) {
-    $sourceHash = (Get-FileHash -LiteralPath (Join-Path $repositoryRoot $pair[0]) -Algorithm SHA256).Hash
-    $packagedHash = (Get-FileHash -LiteralPath (Join-Path $repositoryRoot $pair[1]) -Algorithm SHA256).Hash
-    if ($sourceHash -ne $packagedHash) {
-        $violations.Add([pscustomobject]@{ file = $pair[1]; issue = "packaged skill differs from $($pair[0])" })
+    $sourceContent = (Get-Content -LiteralPath (Join-Path $repositoryRoot $pair[0]) -Raw) -replace "`r`n", "`n"
+    $packagedContent = (Get-Content -LiteralPath (Join-Path $repositoryRoot $pair[1]) -Raw) -replace "`r`n", "`n"
+    if ($sourceContent -cne $packagedContent) {
+        $violations.Add([pscustomobject]@{ file = $pair[1]; issue = "packaged copy differs from $($pair[0])" })
     }
 }
 

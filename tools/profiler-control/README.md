@@ -5,6 +5,12 @@ profiler, discards a configurable warm-up period, and records resolved GPU/CPU
 timer samples to raw JSON, a summary JSON, and timer CSV. If DevBench expires
 the MCP session during a longer capture, the collector reinitializes it and
 records the reconnect count in the summary without shortening the sample set.
+Before enabling the profiler, it lists the authoritative DevBench tools and, if
+the standalone temporal probe is registered, requires its structured
+`performanceDistorted` field to be explicitly false. An armed/quarantined probe
+or a registered older probe with no field aborts before any profiler mutation.
+The collector never disarms the probe. The accepted guard result is preserved
+in summary schema 2.
 
 ```powershell
 .\Measure-CSXProfiler.ps1 `

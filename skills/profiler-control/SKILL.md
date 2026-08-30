@@ -23,9 +23,13 @@ comparing data. Use these entry points:
    state, warm-up, sample count, and interval before comparing captures.
 3. A capture enables the CSX profiler. That mutation requires the user's run or
    measurement authority; a request to review existing data does not.
-4. Write to a dedicated evidence directory outside live MO2 overwrite and
+4. Before enabling the profiler, the collector must read the registered
+   standalone `skyrimvrupscaler.temporalProbe` status and reject capture unless
+   `performanceDistorted` is explicitly false. A registered older probe with no
+   such field fails closed. Never disarm it as part of profiler collection.
+5. Write to a dedicated evidence directory outside live MO2 overwrite and
    shader-cache trees. Keep raw JSON; summaries alone cannot be re-analysed.
-5. Compare at least two raw captures and identify the reference explicitly.
+6. Compare at least two raw captures and identify the reference explicitly.
    Treat the total as the active CSX profiler block, not whole-frame cost. Do
    not sum correlated timer deltas into a fictional independent total.
 

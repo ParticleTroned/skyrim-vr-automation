@@ -12,6 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'devbench-control\DevBenchControl.psm1') -Force
 
 function Invoke-McpRequest {
     param([string]$Endpoint, [hashtable]$Headers, $Payload)
@@ -69,6 +70,56 @@ function Initialize-McpSession {
 Initialize-McpSession
 $sessionReconnects = 0
 
+# Performance capture must not begin while the standalone's intrusive temporal
+# hardware-breakpoint probe is active. This read-only preflight uses the probe
+# owner's structured state and never disarms or otherwise mutates it.
+$listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $script:headers -Payload @{
+    jsonrpc = '2.0'; id = 2; method = 'tools/list'; params = @{}
+}
+if ($listRpc.json.PSObject.Properties['error']) {
+    throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)"
+}
+$probeTool = 'skyrimvrupscaler.temporalProbe'
+$probeToolCount = @($listRpc.json.result.tools | Where-Object name -eq $probeTool).Count
+if ($probeToolCount -gt 1) {
+    throw "Profiler capture rejected: ambiguous registration for '$probeTool'."
+}
+$probeRegistered = $probeToolCount -eq 1
+$performanceGuard = if ($probeRegistered) {
+    $probeRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $script:headers -Payload @{
+        jsonrpc = '2.0'; id = 3; method = 'tools/call'; params = @{
+            name = $probeTool; arguments = @{ action = 'status' }
+        }
+    }
+    if ($probeRpc.json.PSObject.Properties['error'] -or
+        ($probeRpc.json.result.PSObject.Properties['isError'] -and
+            $probeRpc.json.result.isError)) {
+        throw 'Standalone temporal-probe performance preflight failed.'
+    }
+    $probeContent = @($probeRpc.json.result.content | Where-Object type -eq 'text' |
+        ForEach-Object { $_.text | ConvertFrom-Json -Depth 60 })
+    $assessment = Test-DevBenchPerformanceNeutral -Content $probeContent
+    [pscustomobject][ordered]@{
+        applicable = $true
+        neutral = [bool]$assessment.neutral
+        performanceDistorted = [bool]$assessment.performanceDistorted
+        reason = [string]$assessment.reason
+        tool = $probeTool
+    }
+}
+else {
+    [pscustomobject][ordered]@{
+        applicable = $false
+        neutral = $true
+        performanceDistorted = $false
+        reason = 'standalone-temporal-probe-not-registered'
+        tool = $probeTool
+    }
+}
+if (-not $performanceGuard.neutral) {
+    throw "Profiler capture rejected: $($performanceGuard.reason)."
+}
+
 function Invoke-ProfilerAction {
     param([string]$Action)
     for ($attempt = 0; $attempt -lt 2; $attempt++) {
@@ -96,7 +147,7 @@ function Invoke-ProfilerAction {
     }
 }
 
-$requestId = 1
+$requestId = 3
 New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
 $startedUtc = [DateTime]::UtcNow
 $enableResult = Invoke-ProfilerAction -Action 'enable'
@@ -159,7 +210,7 @@ foreach ($group in ($timerRows | Group-Object name | Sort-Object Name)) {
 }
 
 $summary = [pscustomobject][ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     label = $Label
     startedUtc = $startedUtc.ToString('o')
     endedUtc = $endedUtc.ToString('o')
@@ -170,6 +221,7 @@ $summary = [pscustomobject][ordered]@{
     intervalMs = $IntervalMs
     endpoint = $endpoint
     sessionReconnects = $sessionReconnects
+    performanceGuard = $performanceGuard
     profilerEnableResult = $enableResult
     resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedTotalMs }))
     resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($records | ForEach-Object { $_.resolvedCpuTotalMs }))

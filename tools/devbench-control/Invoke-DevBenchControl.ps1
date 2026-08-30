@@ -11,6 +11,7 @@ param(
     [string]$ToolFilter,
     [switch]$NamesOnly,
     [switch]$RequireSuccess,
+    [switch]$RequirePerformanceNeutral,
     [switch]$SkipRuntimeIdentityVerification,
     [string]$EvidenceDirectory,
     [string]$EvidenceLabel,
@@ -129,6 +130,33 @@ function Invoke-ToolRpc {
         else { $parsed += ,$item }
     }
     return [pscustomobject][ordered]@{ tool = $Name; content = $parsed; rawResult = $rpc.json.result }
+}
+
+function Get-PerformanceMeasurementGuard {
+    param([object[]]$Tools, [hashtable]$Headers)
+    $probeTool = 'skyrimvrupscaler.temporalProbe'
+    $probeToolCount = @($Tools | Where-Object name -eq $probeTool).Count
+    if ($probeToolCount -eq 0) {
+        return [pscustomobject][ordered]@{
+            applicable = $false
+            neutral = $true
+            performanceDistorted = $false
+            reason = 'standalone-temporal-probe-not-registered'
+            tool = $probeTool
+        }
+    }
+    if ($probeToolCount -ne 1) {
+        throw "Performance measurement rejected: ambiguous registration for '$probeTool'."
+    }
+    $status = Invoke-ToolRpc -Name $probeTool -Arguments @{ action = 'status' } -Headers $Headers
+    $assessment = Test-DevBenchPerformanceNeutral -Content @($status.content)
+    return [pscustomobject][ordered]@{
+        applicable = $true
+        neutral = [bool]$assessment.neutral
+        performanceDistorted = [bool]$assessment.performanceDistorted
+        reason = [string]$assessment.reason
+        tool = $probeTool
+    }
 }
 
 function Test-WaitRetryableException {
@@ -320,16 +348,42 @@ try {
         if ([string]::IsNullOrWhiteSpace($Tool)) { throw 'Tool is required for call.' }
         if (@($tools | Where-Object name -eq $Tool).Count -ne 1) { throw "Tool '$Tool' is not present in the authoritative tools/list response." }
         try { $arguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
-        $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers
-        $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
-            $matched = @($semantic.codes | Where-Object { $_ -eq $ExpectedErrorCode }).Count -gt 0
-            $semantic | Add-Member -NotePropertyName expectedErrorCode -NotePropertyValue $ExpectedErrorCode -Force
-            $semantic | Add-Member -NotePropertyName expectedErrorMatched -NotePropertyValue $matched -Force
-            if ($matched) {
-                $semantic.ok = $true
-                $semantic.outcome = 'expected-guard'
-                $semantic.reasons = @()
+        $performanceGuard = if ($RequirePerformanceNeutral) {
+            Get-PerformanceMeasurementGuard -Tools $tools -Headers $headers
+        }
+        else { $null }
+        if ($performanceGuard -and -not $performanceGuard.neutral) {
+            $data = [pscustomobject][ordered]@{
+                tool = $Tool
+                toolCallSkipped = $true
+                performanceGuard = $performanceGuard
+            }
+            $semantic = [pscustomobject][ordered]@{
+                known = $true
+                ok = $false
+                outcome = 'guard-rejected'
+                guarded = $true
+                transient = $false
+                codes = @('performance_measurement_distorted')
+                states = @()
+                reasons = @("Performance measurement rejected: $($performanceGuard.reason).")
+            }
+        }
+        else {
+            $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers
+            if ($performanceGuard) {
+                $data | Add-Member -NotePropertyName performanceGuard -NotePropertyValue $performanceGuard -Force
+            }
+            $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
+                $matched = @($semantic.codes | Where-Object { $_ -eq $ExpectedErrorCode }).Count -gt 0
+                $semantic | Add-Member -NotePropertyName expectedErrorCode -NotePropertyValue $ExpectedErrorCode -Force
+                $semantic | Add-Member -NotePropertyName expectedErrorMatched -NotePropertyValue $matched -Force
+                if ($matched) {
+                    $semantic.ok = $true
+                    $semantic.outcome = 'expected-guard'
+                    $semantic.reasons = @()
+                }
             }
         }
     }
@@ -483,7 +537,8 @@ try {
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }
 
-    $semanticFailure = $semantic.known -and -not $semantic.ok -and ($RequireSuccess -or $Command -eq 'wait')
+    $semanticFailure = $semantic.known -and -not $semantic.ok -and
+        ($RequireSuccess -or $RequirePerformanceNeutral -or $Command -eq 'wait')
     $result = [pscustomobject][ordered]@{
         ok = -not $semanticFailure
         transportOk = $true

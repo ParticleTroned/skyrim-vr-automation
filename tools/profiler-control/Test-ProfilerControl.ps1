@@ -94,6 +94,14 @@ try {
     }
     catch { $schemaError = $_.Exception.Message }
     Assert-Test ($schemaError -like 'Profiler comparison requires per-sample *.raw.json input*') 'aggregated summary input fails with a specific schema error'
+
+    $measureText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Measure-CSXProfiler.ps1') -Raw
+    Assert-Test ($measureText -match "'skyrimvrupscaler\.temporalProbe'") 'capture preflights the standalone temporal probe'
+    Assert-Test ($measureText -match 'Test-DevBenchPerformanceNeutral') 'capture consumes the shared structured performance guard'
+    $guardIndex = $measureText.IndexOf('if (-not $performanceGuard.neutral)', [StringComparison]::Ordinal)
+    $enableIndex = $measureText.IndexOf("Invoke-ProfilerAction -Action 'enable'", [StringComparison]::Ordinal)
+    Assert-Test ($guardIndex -ge 0 -and $enableIndex -gt $guardIndex) 'performance guard rejects before profiler enable mutation'
+    Assert-Test ($measureText -match 'schemaVersion = 2') 'capture preserves the accepted guard in summary schema 2'
 }
 finally {
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {

@@ -9,6 +9,7 @@ client.
 .\Invoke-DevBenchControl.ps1 list -RuntimePath 'C:\Path\To\runtime.json'
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}'
 .\Invoke-DevBenchControl.ps1 call -Tool 'tool_name' -ArgumentsJson '{}' -RequireSuccess
+.\Invoke-DevBenchControl.ps1 call -Tool 'performance_tool' -ArgumentsJson '{}' -RequirePerformanceNeutral -RequireSuccess
 .\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu -TimeoutSeconds 30
 .\Invoke-DevBenchControl.ps1 wait -Condition noBlockingMenu `
   -DismissBlockingMenus InventoryMenu -MaxMenuDismissals 1 `
@@ -42,6 +43,13 @@ Nested `error.code`, `status`, and `result.state` values are classified. Use
 `-ExpectedErrorCode producer_mismatch` when a guarded rejection is the intended
 test outcome. Transient HTTP 429/502/503/504 responses and timeouts use bounded
 exponential retry and are preserved under `transportRetries`.
+
+Every timing, frame-rate, CPU, or GPU capture must use
+`-RequirePerformanceNeutral`. When the standalone upscaler temporal probe is
+registered, the client reads its structured status first and skips the target
+call unless `performanceDistorted` is explicitly false. Missing status from an
+older registered probe fails closed. The guard never disarms the probe; that is
+a separate runtime mutation requiring its own authorization.
 
 `wait -Condition noBlockingMenu` polls the menu tool client-side, ignores only
 the explicitly listed `-IgnoredMenus` (HUD by default), and always reports the

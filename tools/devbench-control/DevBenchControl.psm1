@@ -224,4 +224,47 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchMenuDismissalPlan, Get-DevBenchRuntimeExpectations
+function Test-DevBenchPerformanceNeutral {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][object[]]$Content)
+
+    $observations = [Collections.Generic.List[bool]]::new()
+    function Visit-PerformanceState($Value) {
+        if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return }
+        $properties = if ($Value -is [Collections.IDictionary]) {
+            @($Value.GetEnumerator() | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Key; Value = $_.Value } })
+        }
+        elseif ($Value -is [Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
+            foreach ($entry in $Value) { Visit-PerformanceState $entry }
+            return
+        }
+        else { @($Value.PSObject.Properties) }
+        foreach ($property in $properties) {
+            if ([string]$property.Name -eq 'performanceDistorted' -and
+                $property.Value -is [bool]) {
+                $observations.Add([bool]$property.Value)
+            }
+            Visit-PerformanceState $property.Value
+        }
+    }
+
+    foreach ($item in @($Content)) { Visit-PerformanceState $item }
+    $known = $observations.Count -gt 0
+    $distorted = @($observations | Where-Object { $_ }).Count -gt 0
+    return [pscustomobject][ordered]@{
+        known = $known
+        neutral = $known -and -not $distorted
+        performanceDistorted = $distorted
+        reason = if (-not $known) {
+            'performance-distortion-state-missing'
+        }
+        elseif ($distorted) {
+            'intrusive-temporal-probe-armed'
+        }
+        else {
+            'intrusive-temporal-probe-disarmed'
+        }
+    }
+}
+
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchMenuDismissalPlan, Get-DevBenchRuntimeExpectations, Test-DevBenchPerformanceNeutral
