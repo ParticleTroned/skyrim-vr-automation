@@ -4,6 +4,8 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add bounded whole-runtime Skyrim quiet-window capture and informational
+  comparison reports alongside the existing CSX timer profiler.
 - Add a native, fixed-standing SteamVR head-pose provider for Valve null-HMD,
   a versioned shared-memory control/acknowledgement contract, independent
   application-facing OpenVR qualification, transactional installation, and
