@@ -117,23 +117,16 @@ command IDs. Preserve every response even when it is anomalous.
 Use the same caller-generated `transitionId` and `ownerId` for that entry's
 begin, dispatch, wait, and any cancellation; never reuse either pair.
 
-1. Run a synchronous (`async: false`), server-owned 5,000 ms settling scenario. It contains no
-   mutation. Read the authoritative API snapshot immediately after it and
-   record its Build ID, session ID,
-   `stateRevision`, profile-presence flags, complete configured/requested/
-   applying/effective/stable/persisted profiles, conditions, operation state,
-   and physical dimensions.
-   A 429/502/503/504 from this read-only snapshot is a control-plane
-   interruption, not a profile result. Use only the selected live lane's short
-   bounded retry budget for that exact snapshot. While unavailable, do not
-   launch a scenario, cancel, or apply. If it does not recover, record
-   `pre_snapshot_transport_unavailable`, stop future mutations, preserve the
-   exact error receipt and task-owned session IDs, send no further DevBench
-   calls, and ask the user immediately to repair or restart the control plane.
-   Do not attempt cleanup until the user explicitly directs it and the control
-   plane responds. Do not consume the 30-second completion deadline or add
-   another extended wait.
-2. Require complete configured, requested, effective, and stable API profiles,
+1. Use the preceding strict terminal receipt's authoritative final public
+   snapshot as this row's precondition. Require the exact Build ID, complete
+   configured/requested/effective/stable profiles, no active operation, and no
+   unresolved physical mutation. Transition 1 uses the terminal baseline
+   receipt. Do not issue a separate settle scenario, snapshot, operation read,
+   or status call. Start this row's mutation scenario immediately after the
+   preceding terminal receipt; its first step is the sole server-owned 5,000 ms
+   wait.
+2. Require complete configured, requested, effective, and stable API profiles
+   in that terminal snapshot,
    exact requested/effective/stable agreement, and no active operation.
    Construct the complete API target from the effective profile's `name`
    fields; mutate only `method`, `qualityMode`, and
@@ -143,20 +136,24 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    render-scale controller applied/stable resource keys as physical telemetry;
    for a native target they must be inactive with backend `none` and retain
    that target's exact method.
-3. Materialize the snapshot-derived string target and every guarded apply
-   argument before submitting one synchronous (`async: false`) server scenario with
-   `continueOnError: false`. Its consecutive mutation steps are
-   `qualification_begin`, the transition-1 profiler start when applicable,
+3. Materialize the terminal-snapshot-derived string target and every guarded
+   apply argument before submitting one synchronous (`async: false`) server
+   scenario with `continueOnError: false`. Its first step is `wait` with
+   exactly 5,000 ms.
+   For DLSS/DLAA, reset and start that row's trace immediately after the wait.
+   Its consecutive mutation steps then are `qualification_begin`, the
+   transition-1 profiler start when applicable,
    `qualification_dispatch`, `communityshaders.upscaling_api` `apply`, and the
-   target-correlated `qualification_wait` as the final step. Label the last two
-   steps `profile-apply` and `qualification-wait`.
+   target-correlated `qualification_wait`. Label the apply and waiter steps
+   `profile-apply` and `qualification-wait`. For DLSS/DLAA only, stop the exact
+   owned trace as the final scenario step; do not read it separately.
    No wait, snapshot, client round trip, menu action, or other tool may appear
    between dispatch and apply. Scenario steps cannot interpolate earlier
    results, so no snapshot-dependent value may be deferred to scenario
    execution. Set `startPerformanceTelemetry: true` only on
    transition 1 so CPU/GPU counters and the transition QPC/frame share the
    actual apply's timing origin. Set it false on every other transition.
-4. Apply only the constructed target with the immediately preceding snapshot
+4. Apply only the constructed target with the preceding terminal snapshot's
    `stateRevision`, exact Build ID, unique `clientId` and `commandId`,
    `purpose: direct`, and `persistence: runtime_only`. Require API status and
    result status `success`, `idempotentReplay: false`, admitted state revision
@@ -166,8 +163,9 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    non-retryable admission failure is a control failure: cancel the owner only
    if needed, preserve receipts, and stop further mutations. Never retry,
    recover, or substitute a matrix row.
-5. The final scenario step is `qualification_wait`. For vendor destinations,
-   pass the full
+5. `qualification_wait` is the final qualification step. It is the scenario's
+   final step except for the owned DLSS trace stop described above. For vendor
+   destinations, pass the full
    dispatch-relative `timeoutMs: 30000`; never calculate or pass a client-side
    remaining budget. This is the one shared 30,000 ms monotonic deadline from
    dispatch, not a second window. It must return upon its first successful
@@ -222,38 +220,44 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    controller state. Native TAA legitimately reports `active/active`. Its
    physical render-scale resource key remains inactive with backend `none` but
    retains method TAA. Do not poll `operation` or start a second 30-second window.
-   Read that apply's operation exactly once after the terminal waiter receipt;
+   Use the apply operation and final snapshot embedded in the terminal waiter;
    require its target and effective profile to match, its state to be
-   `completed`, and the final snapshot to have no active operation. The waiter
+   `completed`, and no active operation. Do not issue a separate read. The
+   waiter
    closes the timing owner; do not call `qualification_cancel` after any
    terminal waiter receipt. Cancellation is only for an owner that has not
-   entered its waiter. On the next pre-apply snapshot, require the public
-   requested/effective/stable profiles to remain exact and preserve the
-   separate inactive native physical key as telemetry.
+   entered its waiter. Require public requested/effective/stable profiles to
+   remain exact in the terminal snapshot and preserve the separate inactive
+   native physical key as telemetry.
    The terminal waiter receipt closes the timing bracket and is not a render
    failure.
-7. Read the operation, transition-filtered API events, authoritative API
-   snapshot, render-scale status, preparation trace, and applicable DLSS
-   trace. Inspect the completed transition before allowing the next apply.
+7. Preserve the terminal waiter response handle immediately and derive only
+   the shared contract's compact safety/classification projection. Do not read
+   operation/event history, status, another snapshot, preparation records, or
+   cumulative telemetry before starting the next row. A DLSS trace owner may
+   be stopped in the same scenario after its waiter; defer its full read until
+   pass finalization.
 
-For each transition, persist the exact decoded response bodies in one local
-batch under `raw/transitions/transition-NN/`: settle scenario, pre-snapshot,
-mutation-and-wait scenario (or recovered
-`qualification_status.lastEvidence` when that scenario response is lost),
-operation, API events, final snapshot,
-render-scale status, preparation trace, and any DLSS trace lifecycle receipts.
-Add and rehash their `receipt-index.json` entries before the next apply. Never
-substitute a transcript reference or MCP/store key for one of these files.
+During the measured loop, retain only the exact terminal waiter response in
+the client response store and the compact transition projection in context.
+Do not create per-row files or update `receipt-index.json` before the next
+apply. At pass finalization, materialize the exact terminal responses under
+`raw/transitions/transition-NN/`, collect operation/events, final status,
+preparation, telemetry, and trace history once, correlate it by transition
+ID/QPC/frame, and write and hash the complete evidence bundle in one local
+batch. A response-store handle is permitted during the live loop but every
+retained terminal response must be a decoded raw file in the completed bundle.
 This transition evidence requirement does not include `prepare_coc` or the
 positioning scenario. Missing startup receipts are a non-blocking anomaly and
 never stop a valid matrix.
 
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
-row or retry it. Continue with the next matrix row only when the game remains
-responsive, the qualification owner is closed, the final snapshot has no active
-operation or unresolved physical mutation, and exact PID/build ownership still
-holds. Otherwise stop future mutations without attempting repair.
+row or retry it. Continue with the next matrix row when the terminal waiter
+proves the game responsive, the qualification owner closed, no active
+operation or unresolved physical mutation, and exact PID/build ownership.
+Do not demand a second snapshot or status receipt for those same facts.
+Otherwise stop future mutations without attempting repair.
 
 A completed transition-level physical-contract, presentation, lifecycle, or
 both-eye fidelity mismatch makes that row `FAIL`; it does not by itself make
@@ -264,11 +268,12 @@ or mutation, a still-active owner/operation, stale or mixed resources still in
 use, producer terminal failure, device loss, OOM, identity loss, or transport
 loss whose terminal receipt cannot be recovered.
 
-Except for the pre-snapshot transport-unavailable path, which asks the user
-before any further call, preserve the terminal receipt first on every stop
-path. Then stop only a task-owned trace, profiler, or telemetry session using
-its exact returned ownership guard. A cleanup failure is a separately recorded
-anomaly and never authorizes another apply, retry, recovery, or substitution.
+Preserve the terminal receipt first on every stop path. While direct control
+remains callable, finalize immediately: stop only task-owned trace, profiler,
+and telemetry sessions with their exact returned guards and verify them
+inactive. A cleanup failure is a separately recorded anomaly and never
+authorizes another apply, retry, recovery, or substitution. When transport is
+genuinely unavailable, retain the guards and ask the user before later cleanup.
 
 Every entry has exactly one begin, one dispatch, one apply, and one terminal
 qualification receipt from the same strict waiter for every destination. The
@@ -371,23 +376,34 @@ Every transition record must retain direct raw paths for:
   33, plus all stress, fidelity, stereo, lifetime, load-presentation, and trace
   session identities.
 
-Project these producer fields verbatim from the terminal receipt's
-`replacementTimeline` into `summary.json`, `transitions.csv`, and the rendered
-report: `currentPresentationProven`, `currentPresentationGeneration`,
-`replacementAdmissionBlocked`, `replacementAdmissionBlockReasons`,
-`physicalMutationStarted`, and `selectedPresentationDisposition`. Also retain
-the current presentation device/resource identity, both-eye path/generation,
-completed-output reuse/ownership proof, and the relative raw receipt paths plus
-their SHA-256 values. Use `lastPreMutation` for the pre-mutation facet,
-`blockedPreMutation` for blocked-admission proof, and
-`firstPhysicalMutation` for the mutation boundary. A missing required timeline
-entry makes only that evidence facet `INCONCLUSIVE`; do not invent it from a
-later status snapshot.
+Project the three `replacementTimeline` facets separately into `summary.json`,
+`transitions.csv`, and the rendered report. Prefix fields from
+`lastPreMutation`, `blockedPreMutation`, and `firstPhysicalMutation` with those
+facet names; never flatten one facet over another. In particular,
+`physicalMutationStarted` comes from `firstPhysicalMutation`, while current
+presentation proof and replacement-admission blocking retain their own
+pre-mutation facets. Preserve `selectedPresentationDisposition`, current
+presentation device/resource identity, both-eye path/generation, completed-
+output reuse/ownership proof, and the relative raw receipt paths plus hashes.
+A missing timeline entry makes only that facet `INCONCLUSIVE`; do not invent it
+from a later status snapshot.
 
-Before each DLSS or DLAA transition, reset and start exactly one owned bounded
-DLSS trace. Stop and read that same trace after the terminal receipt. A missing
-trace action is `BLOCKED`; an exposed trace action that fails is a control
-failure. Do not start a DLSS trace for FSR, TAA, or None.
+Project final method, quality, render-scale mode, and state revision from the
+terminal waiter's authoritative stable profile. For scaled vendor rows,
+project the actual backend from the physical-stable/actual-dispatch evidence;
+for vendor-native rows, project it only from `nativeVendorExecution`; for None
+and TAA it is `none`. Never fill these PASS fields from an inactive native
+resource key, and write `not_exposed` rather than JSON null when the producer
+did not expose a facet. Report `PresentationStretch` selections and their
+consecutive frames/recovery as anomalies even when the row passes. Likewise,
+report absent duplicate-constants or evaluation-failure counters as
+`not_exposed`, never as zero.
+
+For each DLSS or DLAA transition, reset/start exactly one owned bounded DLSS
+trace after the row's five-second wait and stop it after the terminal waiter in
+the same scenario. Materialize its retained receipt only at pass finalization.
+A missing trace action is `BLOCKED`; an exposed trace action that fails is a
+control failure. Do not start a DLSS trace for FSR, TAA, or None.
 
 Unsupported preparation providers are `n/a`, never zero. Preserve raw values
 before summarizing. Archive any log before reading it under the repository's
@@ -410,11 +426,11 @@ ownership/fidelity evidence violates this protocol. Never accept stale DLSS
 output after destructive mutation. A proven old provider may remain active only
 before mutation begins.
 
-After pass 2 transition 33, stop only task-owned telemetry and retain final
-status. Persist every pass 2 stop/final-status response under
-`raw/pass-2/finalization`, then verify
-that every `receipt-index.json` entry exists and matches its byte length and
-SHA-256 before producing summaries or appending the ledger. An evidence root
+After every complete or interrupted pass, run the shared ownership-guarded
+finalization. Retrieve cumulative operation/event/status/trace/telemetry data
+once, materialize retained terminal receipts, persist stop/final-status
+responses under that pass's `finalization` directory, then build and verify
+`receipt-index.json` once. Do not hash or render per row. An evidence root
 containing only `summary.json` and `transitions.csv` is incomplete and cannot
 support a ledger append.
 Append one uniquely headed result column only after the complete two-pass
@@ -530,6 +546,12 @@ Produce separate tables for:
 2. NVIDIA FSR3 transitions.
 3. NVIDIA provider-crossing transitions.
 4. NVIDIA TAA and None transitions.
+
+Keep chat output compact: print pass/lane totals, terminal failure counts,
+timing aggregates, cleanup-tail aggregates, stretch/retry anomalies, memory
+classification, and evidence links. Store the complete row tables and raw
+receipts in the evidence bundle; do not emit megabytes of decoded receipts or
+all row objects through chat.
 
 Show pass 1 and pass 2 side by side for every transition. Preserve each
 pass's classification and timings, and report whether every failure or anomaly

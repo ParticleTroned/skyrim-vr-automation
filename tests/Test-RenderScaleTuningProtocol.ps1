@@ -57,7 +57,16 @@ foreach ($token in @(
     'not a render, control, or assay failure',
     'Every later mutation and ownership scenario remains synchronous',
     'terminal baseline waiter receipt', '`milestoneTimings`',
-    '`replacementTimeline`'
+    '`replacementTimeline`', 'Fast measured-loop contract',
+    'terminal `qualification-wait` receipt is the transition boundary',
+    'Do not invent another previous-transition safety gate',
+    '`store()` that exact terminal receipt', 'return only a compact', '`text()`',
+    'complete measured pass in that one live orchestration cell',
+    '`notify()`', '`yield_control()`',
+    'sole server-owned `wait` of exactly 5,000 ms',
+    'preceding terminal waiter', 'At pass finalization', '`load()`',
+    'one cumulative evidence-read batch', 'generate the receipt index',
+    'after every interrupted pass'
 )) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
@@ -207,7 +216,7 @@ foreach ($variant in $variants) {
         'one synchronous fail-closed handoff scenario',
         '`coc WhiterunDragonsreach`', 'communityshaders.upscaling_api',
         '`expectedStateRevision`', '`clientId`', '`commandId`',
-        '`persistence: runtime_only`', 'server-owned 5,000 ms settling scenario',
+        '`persistence: runtime_only`', 'server-owned 5,000 ms wait',
         '`timeoutMs: 30000`', 'one shared 30,000 ms monotonic deadline',
         'full dispatch-relative', 'client-side remaining budget',
         'return upon its first successful receipt',
@@ -229,9 +238,9 @@ foreach ($variant in $variants) {
         'target-correlated server barrier', 'advancing coherent native presentation',
         '`active/active` native controller state',
         'do not call `qualification_cancel` after any terminal waiter receipt',
-        'public requested/effective/stable profiles to remain exact',
+        'in the terminal snapshot',
         'recorded transition `FAIL` or `INCONCLUSIVE`',
-        'qualification owner is closed', 'Otherwise stop future mutations',
+        'qualification owner closed', 'Otherwise stop future mutations',
         'vendor_native', 'same-frame', 'nativeVendorExecution',
         'observation.nativeVendorExecution', 'older producer',
         '`sameFrameBothEyesValid`', '`actualBackend`',
@@ -240,15 +249,11 @@ foreach ($variant in $variants) {
         'Scenario steps cannot interpolate earlier',
         'short ownership sequence', 'Do not issue a separate',
         'atomically resets/starts', '`clear_history`',
-        'selected live lane''s short', 'pre_snapshot_transport_unavailable',
-        'send no further DevBench', 'ask the user immediately',
-        'Do not attempt cleanup until',
         'positioning `communityshaders.renderscale status` result',
         'they are output evidence',
-        'Except for the pre-snapshot transport-unavailable path',
         'Native-generation evidence is optional',
         'do not relabel a core `PASS`',
-        'using its exact returned', 'ownership guard',
+        'with their exact returned guards',
         'physicalMutationStarted', 'not merely engine-target creator entry',
         'ordinary world frame', 'mixed eye, mixed generation',
         'CPU', 'GPU', 'profiler', 'current/completed/published publication generations',
@@ -257,12 +262,13 @@ foreach ($variant in $variants) {
         'shader-cache waits', 'SSS/SSGI prewarm',
         'DLSS, FSR,', 'request-to-prepared', 'prepared-to-creator',
         'replacement admission state and all reasons', 'consecutive stretch frames',
-        '`raw/transitions/', '`receipt-index.json`', 'exact decoded response bodies',
+        '`raw/transitions/', '`receipt-index.json`', 'client response store',
+        'compact transition projection',
         '`milestoneTimings`', '`cleanupTailMs`', '`sameObservation`',
         '`replacementTimeline`', '`currentPresentationProven`',
         '`currentPresentationGeneration`', '`replacementAdmissionBlocked`',
         '`replacementAdmissionBlockReasons`', '`physicalMutationStarted`',
-        '`selectedPresentationDisposition`', 'their SHA-256 values',
+        '`selectedPresentationDisposition`', 'relative raw receipt paths plus hashes',
         'only `summary.json` and `transitions.csv` is incomplete',
         'exact matrix twice in the same Skyrim process',
         'exactly one synchronous', 'server-owned 10,000 ms wait',
@@ -416,6 +422,28 @@ foreach ($protocol in @(
         'measurement admission and reset receipts'
     )) {
         Assert-True (-not $protocol.Text.Contains($forbidden, [StringComparison]::Ordinal)) "$($protocol.Name) permits the controller transport: $forbidden"
+    }
+    foreach ($forbidden in @(
+        'Add and rehash their `receipt-index.json` entries before the next apply',
+        'Inspect the completed transition before allowing the next apply',
+        'Run a synchronous (`async: false`), server-owned 5,000 ms settling scenario',
+        'pre_snapshot_transport_unavailable',
+        'Do not attempt cleanup until the user explicitly directs it'
+    )) {
+        Assert-True (-not $protocol.Text.Contains($forbidden, [StringComparison]::Ordinal)) "$($protocol.Name) retains blocking per-row work: $forbidden"
+    }
+    foreach ($required in @(
+        'preceding strict terminal receipt',
+        'exactly 5,000 ms',
+        'Do not create per-row files',
+        'compact transition projection',
+        'write and hash the complete evidence bundle',
+        'finalize immediately',
+        'Do not demand a second snapshot or status receipt',
+        'Keep chat output compact',
+        'rather than JSON null'
+    )) {
+        Assert-Contains $protocol.Text $required "$($protocol.Name) fast measured-loop guard"
     }
 }
 

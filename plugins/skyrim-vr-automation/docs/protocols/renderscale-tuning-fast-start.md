@@ -161,11 +161,79 @@ as a `communityshaders.profiler_api` step immediately before
 `qualification_dispatch`; use new client/command IDs and do not use
 `start_capture` or invent `frameCount`. Transition 1's
 `qualification_dispatch` is the sole CPU/GPU reset/start and timing origin.
-Immediately begin transition 1's 5,000 ms settling scenario after the handoff
-returns. Retain every owner receipt. A failed or
+Immediately begin transition 1's measured scenario after the handoff returns;
+its first step owns the 5,000 ms wait. Retain every owner receipt. A failed or
 unsatisfied baseline waiter, a missing waiter subreceipt, or an incomplete
 scenario must never invoke this handoff scenario because it contains measured
 owner start actions. The handoff scenario is never a cleanup path. Stop only
 the baseline stress session with one
 ownership-guarded `stop` call, start no measured owner, and follow the lane's
 terminal failure rules.
+
+## Fast measured-loop contract
+
+The terminal `qualification-wait` receipt is the transition boundary. Its
+closed owner, zero active operation, exact PID/Build ID, and unresolved-mutation
+state are the complete safety decision for starting the next row. Do not add a
+post-wait operation read, status read, final snapshot, local evidence write,
+hash, report update, source search, or model pause before starting the next
+row. Do not invent another previous-transition safety gate.
+
+Invoke the direct scenario inside one orchestration cell. Extract its uniquely
+labeled `qualification-wait` result, `store()` that exact terminal receipt
+under a run-unique pass/lane/transition key, and return only a compact
+projection with `text()`. Keep only this projection in context:
+pass/lane/ordinal,
+transition and owner IDs, target, classification and reason, dispatch and
+terminal QPC/frame, presentation/cleanup/strict elapsed values, closed-owner
+state, final active-operation ID, unresolved-mutation state, and terminal
+failure flags. Do not expand, quote, Base64-decode, or return the full response
+to the model/chat during the measured loop. The stored exact terminal receipt
+is the only immediate per-row evidence action. A stable response-store handle
+is raw evidence until pass finalization; it is not a substitute in the
+completed evidence bundle.
+
+The orchestration cell is only a response-handling boundary. Every nested live
+call must still use the installed plugin's selected direct DevBench MCP tools;
+it does not authorize a controller, HTTP call, local runner, or fallback lane.
+
+Keep the complete measured pass in that one live orchestration cell; do not
+end the cell between rows. After storing and classifying a terminal receipt,
+emit the compact progress projection with `notify()` and immediately call the
+next synchronous scenario. The next scenario owns its initial five-second
+wait. Use `yield_control()` when a user update is due while the cell continues;
+never return to model reasoning, local commands, or evidence processing between
+safe rows. Stop the loop in the cell on an unsafe terminal receipt.
+
+Start the next row's one synchronous scenario immediately. Its first step is
+the sole server-owned `wait` of exactly 5,000 ms, followed by that row's
+preconstructed begin/dispatch/apply/wait sequence. Use the preceding terminal
+waiter's authoritative final public snapshot and `stateRevision` as the next
+apply boundary. A stale revision fails closed at the apply; it does not justify
+a separate pre-row snapshot. Transition 1 uses the terminal baseline snapshot
+in the same way. This makes the five-second server timer, not client evidence
+handling, own the inter-transition pace.
+
+If a local safety layer refuses to send a scenario before any direct MCP call
+is dispatched, correct that local refusal and issue the never-sent scenario
+once. This is not a replay. Never retry when DevBench may have accepted the
+scenario, when a new qualification owner exists, or when the response was
+lost; use the owner-correlated recovery rule in those cases.
+
+At pass finalization, use `load()` to materialize every retained terminal
+response losslessly without first printing it to chat,
+then make one cumulative evidence-read batch for operation/event history,
+render-scale status, preparation/provider traces, telemetry, profiler, stress,
+texture-lifetime, and load-presentation results. Correlate those cumulative
+records by the preserved transition IDs and QPC/frame bounds. Only then write
+the raw files, generate the receipt index, and calculate byte lengths and
+SHA-256 hashes in one local batch. Missing optional cumulative detail marks
+only that evidence facet `INCONCLUSIVE`; a preserved terminal receipt remains
+valid transition evidence.
+
+Finalization runs after a complete pass and after every interrupted pass while
+the direct control plane remains callable. Stop only task-owned sessions with
+their exact returned guards, disable the task-owned profiler state, and verify
+all owners inactive. A semantic row failure never skips cleanup. If transport
+is genuinely unavailable, preserve the guards, warn the user that sessions may
+remain active, and make no speculative cleanup call.
