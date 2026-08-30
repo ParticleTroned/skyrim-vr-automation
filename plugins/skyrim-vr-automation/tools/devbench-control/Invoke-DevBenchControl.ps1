@@ -19,7 +19,7 @@ param(
     [string]$WorkspaceManifestPath,
     [string]$ExpectedBuildId,
     [string]$ExpectedArtifactSha256,
-    [ValidateSet('noBlockingMenu', 'playerLoaded', 'toolAvailable', 'serviceReady')]
+    [ValidateSet('noBlockingMenu', 'playerLoaded', 'upscalingStable', 'toolAvailable', 'serviceReady')]
     [string]$Condition = 'noBlockingMenu',
     [ValidateRange(1, 600)]
     [int]$TimeoutSeconds = 30,
@@ -27,6 +27,8 @@ param(
     [int]$PollMilliseconds = 250,
     [ValidateRange(0, 10)]
     [int]$MaxTransientRetries = 4,
+    [ValidateRange(1, 3600)]
+    [int]$RequestTimeoutSeconds = 15,
     [ValidateRange(50, 5000)]
     [int]$MaxPollMilliseconds = 5000,
     [string[]]$AcceptedState = @('ready', 'idle', 'available', 'completed', 'success', 'ok'),
@@ -42,6 +44,12 @@ param(
     [switch]$AcceptAlreadyLoaded,
     [switch]$AllowUnsafeTfc1,
     [switch]$AllowUnprovenGameMutation,
+    [string]$ExpectedCell,
+    [string]$ExpectedProfileJson,
+    [ValidateRange(2, 20)]
+    [int]$StableSamples = 2,
+    [ValidateRange(1, 1000)]
+    [int]$MinimumStableFrameAdvance = 5,
     [switch]$NoExit,
     [switch]$Compact
 )
@@ -50,18 +58,20 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $argumentsJsonSupplied = $PSBoundParameters.ContainsKey('ArgumentsJson')
 $endpoint = $null
+$headers = $null
 $runtimeIdentity = $null
 $transportRetries = [Collections.Generic.List[object]]::new()
 $invocationEvidencePath = $null
 $invocationRecord = $null
 $operationDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 Import-Module (Join-Path $PSScriptRoot 'DevBenchControl.psm1') -Force
+$script:requestTimeoutSecondsForRpc = $RequestTimeoutSeconds
 
 function Get-RequestTimeoutSeconds {
-    if ($null -eq $script:operationDeadlineUtc) { return $TimeoutSeconds }
+    if ($null -eq $script:operationDeadlineUtc) { return $script:requestTimeoutSecondsForRpc }
     $remainingSeconds = ($script:operationDeadlineUtc - [DateTime]::UtcNow).TotalSeconds
     if ($remainingSeconds -lt 1) { throw [TimeoutException]::new('The DevBench operation deadline expired before another request could start.') }
-    return [int][Math]::Max(1, [Math]::Min(600, [Math]::Ceiling($remainingSeconds)))
+    return [int][Math]::Max(1, [Math]::Min($script:requestTimeoutSecondsForRpc, [Math]::Ceiling($remainingSeconds)))
 }
 
 function Start-OperationDelay([int]$RequestedMilliseconds) {
@@ -284,7 +294,7 @@ function Invoke-McpRequest {
             if ($Command -eq 'wait' -and $statusCode -eq 404 -and $Headers.ContainsKey('Mcp-Session-Id')) {
                 $transportRetries.Add([pscustomobject][ordered]@{
                     attempt = $attempt; statusCode = $statusCode; delayMilliseconds = 0
-                    recovery = 'full-runtime-rebind-required'; message = $_.Exception.Message; timestampUtc = [DateTime]::UtcNow.ToString('o')
+                    recovery = 'mcp-session-reinitialized-full-runtime-rebind-required'; message = $_.Exception.Message; timestampUtc = [DateTime]::UtcNow.ToString('o')
                 })
                 throw
             }
@@ -360,27 +370,71 @@ function Test-WaitRetryableException {
         $message -match '\[(404|429|502|503|504)\]|timed out|temporarily unavailable|connection.*closed|connection.*refused|actively refused|main-thread task did not run|main thread busy'
 }
 
-function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
-    $baseHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
-    $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
-        jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{
-            protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.4' }
+function Close-McpSession {
+    param([string]$Endpoint, [hashtable]$Headers)
+    $sessionId = if ($null -ne $Headers -and $Headers.ContainsKey('Mcp-Session-Id')) {
+        [string]$Headers['Mcp-Session-Id']
+    }
+    else { $null }
+    if ([string]::IsNullOrWhiteSpace($Endpoint) -or [string]::IsNullOrWhiteSpace($sessionId)) {
+        return [pscustomobject][ordered]@{
+            attempted = $false; ok = $true; state = 'not_opened'; sessionId = $sessionId
+            statusCode = $null; error = $null
         }
     }
-    $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
-    $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
-    if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
-    $sessionHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
-    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec (Get-RequestTimeoutSeconds) | Out-Null
-    $listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $sessionHeaders -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
-    if ($listRpc.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)" }
-    $sessionTools = @($listRpc.json.result.tools)
-    $identity = $null
-    if (-not $SkipRuntimeIdentityVerification) {
-        $identity = Get-RuntimeIdentity -Runtime $Runtime -Headers $sessionHeaders -Tools $sessionTools -AllowDeferredBuildIdentity:$AllowDeferredBuildIdentity
-        if ($identity.errors.Count -gt 0) { throw "DevBench runtime identity verification failed: $($identity.errors -join ' ')" }
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Method Delete -Uri $Endpoint -Headers $Headers -TimeoutSec 2
+        return [pscustomobject][ordered]@{
+            attempted = $true; ok = $true; state = 'closed'; sessionId = $sessionId
+            statusCode = [int]$response.StatusCode; error = $null
+        }
     }
-    return [pscustomobject][ordered]@{ headers = $sessionHeaders; tools = $sessionTools; runtimeIdentity = $identity; sessionId = $sessionId }
+    catch {
+        $statusCode = $null
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = $null }
+        if ($statusCode -eq 404) {
+            return [pscustomobject][ordered]@{
+                attempted = $true; ok = $true; state = 'already_absent'; sessionId = $sessionId
+                statusCode = $statusCode; error = $null
+            }
+        }
+        return [pscustomobject][ordered]@{
+            attempted = $true; ok = $false; state = 'cleanup_failed'; sessionId = $sessionId
+            statusCode = $statusCode; error = $_.Exception.Message
+        }
+    }
+}
+
+function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
+    $baseHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
+    $sessionHeaders = $null
+    try {
+        $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
+            jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{
+                protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.5' }
+            }
+        }
+        $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
+        $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
+        if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
+        $sessionHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
+        Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec (Get-RequestTimeoutSeconds) | Out-Null
+        $listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $sessionHeaders -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
+        if ($listRpc.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)" }
+        $sessionTools = @($listRpc.json.result.tools)
+        $identity = $null
+        if (-not $SkipRuntimeIdentityVerification) {
+            $identity = Get-RuntimeIdentity -Runtime $Runtime -Headers $sessionHeaders -Tools $sessionTools -AllowDeferredBuildIdentity:$AllowDeferredBuildIdentity
+            if ($identity.errors.Count -gt 0) { throw "DevBench runtime identity verification failed: $($identity.errors -join ' ')" }
+        }
+        return [pscustomobject][ordered]@{ headers = $sessionHeaders; tools = $sessionTools; runtimeIdentity = $identity; sessionId = $sessionId }
+    }
+    catch {
+        if ($null -ne $sessionHeaders) {
+            Close-McpSession -Endpoint $endpoint -Headers $sessionHeaders | Out-Null
+        }
+        throw
+    }
 }
 
 function Get-ListenerPid([int]$Port) {
@@ -551,6 +605,17 @@ try {
                 throw [string]$policyResult.error
             }
         }
+        if ($arguments.ContainsKey('timeoutMs') -and $null -ne $arguments.timeoutMs) {
+            $serverTimeoutMilliseconds = [double]$arguments.timeoutMs
+            if ($serverTimeoutMilliseconds -gt 0) {
+                # Transport must outlive the server wait so cleanup cannot destroy its evidence.
+                $serverTimeoutSeconds = [int][Math]::Ceiling($serverTimeoutMilliseconds / 1000.0)
+                $script:requestTimeoutSecondsForRpc = [Math]::Max(
+                    $RequestTimeoutSeconds,
+                    $serverTimeoutSeconds + 5
+                )
+            }
+        }
     }
     $headers = $null
     $tools = @()
@@ -652,7 +717,28 @@ try {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
         if ($DismissBlockingMenus.Count -gt 0 -and $Condition -ne 'noBlockingMenu') { throw '-DismissBlockingMenus is valid only with -Condition noBlockingMenu.' }
         if ($MinimumMenuStableSeconds -gt 0 -and $Condition -ne 'noBlockingMenu') { throw '-MinimumMenuStableSeconds is valid only with -Condition noBlockingMenu.' }
-        $requiredTool = if ($Condition -eq 'noBlockingMenu') { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
+        if ($Condition -eq 'upscalingStable' -and [string]::IsNullOrWhiteSpace($ExpectedCell)) { throw "Condition 'upscalingStable' requires -ExpectedCell so the prior scene cannot satisfy the barrier." }
+        if ($Condition -ne 'upscalingStable' -and -not [string]::IsNullOrWhiteSpace($ExpectedProfileJson)) { throw '-ExpectedProfileJson is valid only with Condition upscalingStable.' }
+        $expectedUpscalingProfile = $null
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedProfileJson)) {
+            try {
+                $expectedUpscalingProfile = $ExpectedProfileJson | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw "ExpectedProfileJson is invalid: $($_.Exception.Message)"
+            }
+            foreach ($name in @('method', 'qualityMode', 'renderScaleMode', 'dlssProfile', 'fsrRuntime')) {
+                if (-not $expectedUpscalingProfile.PSObject.Properties[$name]) {
+                    throw "ExpectedProfileJson requires '$name'."
+                }
+            }
+        }
+        $requiredTools = switch ($Condition) {
+            'noBlockingMenu' { @('menu') }
+            'playerLoaded' { @('inspect') }
+            'upscalingStable' { @('inspect', 'menu', 'communityshaders.upscaling_api', 'communityshaders.renderscale') }
+            default { @() }
+        }
         $waitArguments = @{}
         $waitArgumentsResolved = $Condition -ne 'serviceReady'
         $serviceProbe = $null
@@ -661,6 +747,7 @@ try {
         }
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         $script:operationDeadlineUtc = $deadline
+        $waitStartedUtc = [DateTime]::UtcNow
         $attempts = 0
         $observation = $null
         $currentDelay = $PollMilliseconds
@@ -672,6 +759,10 @@ try {
         $playerInitialState = $null
         $menuDismissals = [Collections.Generic.List[object]]::new()
         $menuStableSinceUtc = $null
+        $stableCandidateCount = 0
+        $stableFirstFrame = 0u
+        $stableLastFrame = 0u
+        $stableSignature = $null
         do {
             $attempts++
             if ($null -eq $headers) {
@@ -697,7 +788,8 @@ try {
                     continue
                 }
             }
-            if ($requiredTool -and @($tools | Where-Object name -eq $requiredTool).Count -ne 1) {
+            $missingRequiredTools = @($requiredTools | Where-Object { $requiredName = $_; @($tools | Where-Object name -eq $requiredName).Count -ne 1 })
+            if ($missingRequiredTools.Count -gt 0) {
                 try {
                     $currentList = Invoke-McpRequest -Endpoint $endpoint -Headers $headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
                     if ($currentList.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($currentList.json.error | ConvertTo-Json -Compress)" }
@@ -711,8 +803,9 @@ try {
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
                 }
-                if (@($tools | Where-Object name -eq $requiredTool).Count -ne 1) {
-                    $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; phase = 'tool-registration'; requiredTool = $requiredTool; authoritativeToolCount = $tools.Count }
+                $missingRequiredTools = @($requiredTools | Where-Object { $requiredName = $_; @($tools | Where-Object name -eq $requiredName).Count -ne 1 })
+                if ($missingRequiredTools.Count -gt 0) {
+                    $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; phase = 'tool-registration'; requiredTools = @($requiredTools); missingTools = @($missingRequiredTools); authoritativeToolCount = $tools.Count }
                     Start-OperationDelay -RequestedMilliseconds $currentDelay
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
@@ -777,6 +870,87 @@ try {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
                     $headers = $null
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; state = $null; retryable = $true; probeError = $_.Exception.Message }
+                }
+            }
+            elseif ($Condition -eq 'upscalingStable') {
+                try {
+                    $state = @(Invoke-ToolRpc -Name 'inspect' -Arguments @{ kind = 'state' } -Headers $headers).content | Select-Object -First 1
+                    $scene = @(Invoke-ToolRpc -Name 'inspect' -Arguments @{ kind = 'scene' } -Headers $headers).content | Select-Object -First 1
+                    $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
+                    $menuState = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                    $buildId = if ($runtimeIdentity -and $runtimeIdentity.build) { [string]$runtimeIdentity.build.buildId } else { $ExpectedBuildId }
+                    $upscalingArguments = @{
+                        contractMajor = 1
+                        clientId = 'devbench-control'
+                        commandId = "stable-$([guid]::NewGuid().ToString('N'))"
+                        action = 'snapshot'
+                    }
+                    $renderScaleArguments = @{ action = 'status' }
+                    if (-not [string]::IsNullOrWhiteSpace($buildId)) {
+                        $upscalingArguments['expectedBuildId'] = $buildId
+                        $renderScaleArguments['expectedBuildId'] = $buildId
+                    }
+                    $upscaling = @(Invoke-ToolRpc -Name 'communityshaders.upscaling_api' -Arguments $upscalingArguments -Headers $headers).content | Select-Object -First 1
+                    $renderScale = @(Invoke-ToolRpc -Name 'communityshaders.renderscale' -Arguments $renderScaleArguments -Headers $headers).content | Select-Object -First 1
+                    $stability = Test-DevBenchUpscalingStable -UpscalingSnapshot $upscaling -RenderScaleStatus $renderScale -ExpectedProfile $expectedUpscalingProfile
+                    $actualCell = if ($scene.cell -is [string]) {
+                        [string]$scene.cell
+                    }
+                    elseif ($scene.cell -and $scene.cell.PSObject.Properties['editorId']) {
+                        [string]$scene.cell.editorId
+                    }
+                    else { $null }
+                    $cellMatches = [string]::Equals($actualCell, $ExpectedCell, [StringComparison]::OrdinalIgnoreCase)
+                    $instantaneousStable = [bool]$state.playerLoaded -and $cellMatches -and $menuState.satisfied -and $stability.satisfied
+                    if ($instantaneousStable) {
+                        if ($stableSignature -eq $stability.signature -and [uint32]$stability.frame -gt $stableLastFrame) {
+                            $stableCandidateCount++
+                        }
+                        else {
+                            $stableCandidateCount = 1
+                            $stableFirstFrame = [uint32]$stability.frame
+                            $stableSignature = $stability.signature
+                        }
+                        $stableLastFrame = [uint32]$stability.frame
+                    }
+                    else {
+                        $stableCandidateCount = 0
+                        $stableFirstFrame = 0u
+                        $stableLastFrame = 0u
+                        $stableSignature = $null
+                    }
+                    $stableFrameAdvance = if ($stableFirstFrame -ne 0 -and $stableLastFrame -ge $stableFirstFrame) { $stableLastFrame - $stableFirstFrame } else { 0u }
+                    $observation = [pscustomobject][ordered]@{
+                        satisfied = $instantaneousStable -and $stableCandidateCount -ge $StableSamples -and $stableFrameAdvance -ge $MinimumStableFrameAdvance
+                        retryable = $false
+                        expectedCell = $ExpectedCell
+                        expectedProfile = $expectedUpscalingProfile
+                        actualCell = $actualCell
+                        cellMatches = $cellMatches
+                        playerLoaded = [bool]$state.playerLoaded
+                        menu = $menuState
+                        upscaling = $stability
+                        stableSamples = $stableCandidateCount
+                        requiredStableSamples = $StableSamples
+                        stableFirstFrame = $stableFirstFrame
+                        stableLastFrame = $stableLastFrame
+                        stableFrameAdvance = $stableFrameAdvance
+                        requiredFrameAdvance = $MinimumStableFrameAdvance
+                        probeError = $null
+                    }
+                }
+                catch {
+                    if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                    $stableCandidateCount = 0
+                    $stableFirstFrame = 0u
+                    $stableLastFrame = 0u
+                    $stableSignature = $null
+                    $observation = [pscustomobject][ordered]@{
+                        satisfied = $false
+                        retryable = $true
+                        expectedCell = $ExpectedCell
+                        probeError = $_.Exception.Message
+                    }
                 }
             }
             else {
@@ -859,7 +1033,21 @@ try {
             Start-OperationDelay -RequestedMilliseconds $currentDelay
             if ($Condition -in @('toolAvailable', 'serviceReady')) { $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2) }
         } while ([DateTime]::UtcNow -lt $deadline)
-        $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; minimumMenuStableSeconds = $MinimumMenuStableSeconds; menuDismissals = @($menuDismissals); observation = $observation }
+        $waitCompletedUtc = [DateTime]::UtcNow
+        $data = [pscustomobject][ordered]@{
+            condition = $Condition
+            satisfied = [bool]$observation.satisfied
+            attempts = $attempts
+            timeoutSeconds = $TimeoutSeconds
+            initialPollMilliseconds = $PollMilliseconds
+            maxPollMilliseconds = $MaxPollMilliseconds
+            minimumMenuStableSeconds = $MinimumMenuStableSeconds
+            menuDismissals = @($menuDismissals)
+            startedUtc = $waitStartedUtc.ToString('o')
+            completedUtc = $waitCompletedUtc.ToString('o')
+            elapsedMs = [Math]::Round(($waitCompletedUtc - $waitStartedUtc).TotalMilliseconds, 3)
+            observation = $observation
+        }
         if ($observation.satisfied -and -not $SkipRuntimeIdentityVerification) { $evidencePath = Write-RuntimeEvidence $runtimeIdentity }
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }
@@ -868,7 +1056,13 @@ try {
         $semantic.outcome = 'unverified'
         $semantic.reasons = @($semantic.reasons) + 'A verified semantic outcome was required, but the response did not provide one.'
     }
-    $semanticFailure = if ($Command -eq 'call') { -not $semantic.known -or -not $semantic.ok } elseif ($RequireSuccess) { -not $semantic.known -or -not $semantic.ok } else { $semantic.known -and -not $semantic.ok -and $Command -eq 'wait' }
+    $semanticFailure = if ($Command -eq 'call') {
+        -not $semantic.known -or -not $semantic.ok
+    }
+    elseif ($RequireSuccess -or $Command -eq 'wait') {
+        -not $semantic.known -or -not $semantic.ok
+    }
+    else { $false }
     $result = [pscustomobject][ordered]@{
         ok = -not $semanticFailure
         transportOk = $true
@@ -880,6 +1074,7 @@ try {
         invocationEvidencePath = $invocationEvidencePath
         semantic = $semantic
         transportRetries = @($transportRetries)
+        requestTimeoutSeconds = $script:requestTimeoutSecondsForRpc
         data = $data
         errors = $(if ($semanticFailure) { @($semantic.reasons) } else { @() })
     }
@@ -905,10 +1100,14 @@ catch {
         invocationEvidencePath = $invocationEvidencePath
         semantic = $null
         transportRetries = @($transportRetries)
+        requestTimeoutSeconds = $script:requestTimeoutSecondsForRpc
         data = $null
         errors = @($failureMessage)
     }
 }
+
+$sessionCleanup = Close-McpSession -Endpoint $endpoint -Headers $headers
+$result | Add-Member -NotePropertyName sessionCleanup -NotePropertyValue $sessionCleanup
 
 $parameters = @{ InputObject = $result; Depth = 50 }
 if ($Compact) { $parameters['Compress'] = $true }

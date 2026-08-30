@@ -18,6 +18,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$devBenchControlModule = Import-Module (Join-Path $PSScriptRoot '..\devbench-control\DevBenchControl.psm1') -Force -PassThru
+
+function Invoke-DevBenchNormalizer([string]$Name, $Response) {
+    $command = $devBenchControlModule.ExportedCommands[$Name]
+    if ($null -eq $command) { throw "DevBench normalizer '$Name' is not exported by the central controller module." }
+    return & $command -Response $Response
+}
 
 function Write-JsonAtomic([string]$Path, $Value) {
     $temporary = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
@@ -219,6 +226,50 @@ function Invoke-ProfilerAction([string]$Action, [switch]$ForRestore) {
     return [pscustomobject][ordered]@{ payload = $payload[0]; runtimeIdentity = $call.runtimeIdentity; stableRuntimeIdentity = $stableIdentity; runtimeIdentityFingerprint = $identityFingerprint; evidencePath = $call.invocationEvidencePath }
 }
 
+function Get-ResourcePublicationSnapshot([Parameter(Mandatory)][string]$Phase) {
+    $remainingSeconds = Get-RemainingProfilerSeconds
+    $call = & $control call -Tool 'communityshaders.renderscale' `
+        -ArgumentsJson '{"action":"status"}' -RuntimePath $RuntimePath `
+        -EvidenceDirectory $runDirectory -EvidenceLabel "renderscale-$Phase" `
+        -TimeoutSeconds $remainingSeconds -RequireSuccess `
+        -RequirePerformanceNeutral -NoExit -Compact | ConvertFrom-Json -Depth 80
+    if (-not $call.ok) {
+        return [pscustomobject][ordered]@{
+            phase = $Phase
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            telemetry = Invoke-DevBenchNormalizer 'Get-DevBenchResourcePublicationTelemetry' $null
+            preparation = Invoke-DevBenchNormalizer 'Get-DevBenchRenderScalePreparationTelemetry' $null
+            invocationEvidencePath = $call.invocationEvidencePath
+            error = $call.errors -join '; '
+        }
+    }
+
+    $stableIdentity = Get-StableRuntimeIdentity -Identity $call.runtimeIdentity
+    $identityFingerprint = Get-CanonicalHash $stableIdentity
+    if ($identityFingerprint -cne $script:expectedRuntimeIdentityFingerprint) {
+        throw "DevBench runtime identity changed during profiler capture; refusing render-scale telemetry from the replacement runtime. Expected $($script:expectedRuntimeIdentityFingerprint), observed $identityFingerprint."
+    }
+    $payload = @($call.data.content | Where-Object { $null -ne $_ } | Select-Object -First 1)
+    if ($payload.Count -ne 1) {
+        return [pscustomobject][ordered]@{
+            phase = $Phase
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            telemetry = Invoke-DevBenchNormalizer 'Get-DevBenchResourcePublicationTelemetry' $null
+            preparation = Invoke-DevBenchNormalizer 'Get-DevBenchRenderScalePreparationTelemetry' $null
+            invocationEvidencePath = $call.invocationEvidencePath
+            error = 'Render-scale status returned no structured content.'
+        }
+    }
+    return [pscustomobject][ordered]@{
+        phase = $Phase
+        timestampUtc = [DateTime]::UtcNow.ToString('o')
+        telemetry = Invoke-DevBenchNormalizer 'Get-DevBenchResourcePublicationTelemetry' $payload[0]
+        preparation = Invoke-DevBenchNormalizer 'Get-DevBenchRenderScalePreparationTelemetry' $payload[0]
+        invocationEvidencePath = $call.invocationEvidencePath
+        error = $null
+    }
+}
+
 function Get-ProfilerStatus($Envelope) {
     $payload = $Envelope.payload
     $status = if ($payload.PSObject.Properties['status']) { $payload.status } else { $payload }
@@ -289,6 +340,8 @@ function Resolve-PendingProfilerTransaction {
 $records = [Collections.Generic.List[object]]::new()
 $runtimeIdentity = $null
 $captureFailure = $null
+$resourcePublicationBefore = $null
+$resourcePublicationAfter = $null
 $startedUtc = [DateTime]::UtcNow
 $controlRoot = Get-ProfilerControlRoot -CanonicalRuntimePath $RuntimePath
 $authoritativeJournalPath = Join-Path $controlRoot 'transaction.journal.json'
@@ -340,6 +393,7 @@ try {
         $lastFrame = [Math]::Max($lastFrame, [long]$warmupStatus.frame_count)
         Start-ProfilerDelay -RequestedMilliseconds $IntervalMs
     }
+    $resourcePublicationBefore = Get-ResourcePublicationSnapshot -Phase 'before'
     for ($sampleIndex = 1; $sampleIndex -le $Samples; $sampleIndex++) {
         $candidateFreshDeadline = [DateTime]::UtcNow.AddSeconds($FreshFrameTimeoutSeconds)
         $freshDeadline = if ($candidateFreshDeadline -lt $captureDeadlineUtc) { $candidateFreshDeadline } else { $captureDeadlineUtc }
@@ -371,6 +425,7 @@ try {
         $lastFrame = $frame
         if ($sampleIndex -lt $Samples) { Start-ProfilerDelay -RequestedMilliseconds $IntervalMs }
     }
+    $resourcePublicationAfter = Get-ResourcePublicationSnapshot -Phase 'after'
 }
 catch {
     $captureFailure = $_.Exception.Message
@@ -443,6 +498,14 @@ $summary = [pscustomobject][ordered]@{
     context = $context; contextFingerprint = $receipt.contextFingerprint; treatmentFingerprint = $receipt.treatmentFingerprint
     priorProfilerEnabled = $receipt.priorEnabled; profilerStateRestored = $receipt.stateRestored; receiptPath = $receiptPath
     performanceObservations = @($receipt.performanceObservations)
+    resourcePublication = [pscustomobject][ordered]@{
+        before = $resourcePublicationBefore
+        after = $resourcePublicationAfter
+    }
+    preparation = [pscustomobject][ordered]@{
+        before = if ($null -eq $resourcePublicationBefore) { $null } else { $resourcePublicationBefore.preparation }
+        after = if ($null -eq $resourcePublicationAfter) { $null } else { $resourcePublicationAfter.preparation }
+    }
     resolvedTotalMs = Get-MetricSummary ([double[]]@($records.resolvedTotalMs)); resolvedCpuTotalMs = Get-MetricSummary ([double[]]@($records.resolvedCpuTotalMs))
     maxSlotRefusals = [int](($records | Measure-Object slotRefusals -Maximum).Maximum); timers = @($timerSummaries)
 }

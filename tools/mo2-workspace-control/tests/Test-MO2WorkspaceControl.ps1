@@ -7,6 +7,8 @@ $ErrorActionPreference = 'Stop'
 $entry = Join-Path (Split-Path -Parent $PSScriptRoot) 'Invoke-MO2WorkspaceControl.ps1'
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('mo2-workspace-control-' + [guid]::NewGuid().ToString('N'))
 $taskId = 'codex-test-task-001'
+$priorProfileControlRoot = $env:CSX_MO2_PROFILE_CONTROL_ROOT
+$env:CSX_MO2_PROFILE_CONTROL_ROOT = Join-Path $fixture 'profile-transactions'
 function Get-TestProfileFingerprint([string]$Path) {
     $records = @()
     foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Sort-Object FullName)) {
@@ -20,13 +22,17 @@ function Get-TestProfileFingerprint([string]$Path) {
 try {
     $mo2 = Join-Path $fixture 'MO2'; $profiles = Join-Path $mo2 'profiles'; $mods = Join-Path $mo2 'mods'
     $source = Join-Path $profiles 'Mad God Stable'; $loaderMod = Join-Path $mods 'Loader'; $sessions = Join-Path $fixture 'sessions'
-    foreach ($p in @($source, (Join-Path $source 'saves'), $loaderMod, (Join-Path $loaderMod 'SKSE\Plugins'), (Join-Path $mo2 'overwrite'), (Join-Path $mo2 'rb'), $sessions, (Join-Path $fixture 'archive'))) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
-    '+Loader' | Set-Content -LiteralPath (Join-Path $source 'modlist.txt') -Encoding utf8
+    $synthesisMod = Join-Path $mods 'Synthesis Patch (SFW)'
+    foreach ($p in @($source, (Join-Path $source 'saves'), $loaderMod, (Join-Path $loaderMod 'SKSE\Plugins'), (Join-Path $synthesisMod 'ShaderCache\Lighting'), (Join-Path $synthesisMod 'backup'), (Join-Path $mo2 'overwrite'), (Join-Path $mo2 'rb'), $sessions, (Join-Path $fixture 'archive'))) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+    @('+Loader', '+Synthesis Patch (SFW)') | Set-Content -LiteralPath (Join-Path $source 'modlist.txt') -Encoding utf8
     '*Skyrim.esm' | Set-Content -LiteralPath (Join-Path $source 'plugins.txt') -Encoding utf8
+    "[custom_overwrites]`r`nSynthesis=Synthesis Patch (SFW)`r`n" | Set-Content -LiteralPath (Join-Path $source 'settings.ini') -Encoding utf8 -NoNewline
     'ordinary-base-save' | Set-Content -LiteralPath (Join-Path $source 'saves\ordinary.ess') -Encoding utf8
     'known-good-save' | Set-Content -LiteralPath (Join-Path $source 'saves\Save2_KnownGood.ess') -Encoding utf8
     'known-good-cosave' | Set-Content -LiteralPath (Join-Path $source 'saves\Save2_KnownGood.skse') -Encoding utf8
     'existing-provider' | Set-Content -LiteralPath (Join-Path $loaderMod 'SKSE\Plugins\Example.dll') -Encoding utf8
+    'lower-provider-cache' | Set-Content -LiteralPath (Join-Path $synthesisMod 'ShaderCache\Lighting\later-area.pso') -Encoding utf8
+    '{}' | Set-Content -LiteralPath (Join-Path $synthesisMod 'backup\hashes') -Encoding utf8 -NoNewline
     foreach ($cachePath in @(
         (Join-Path $mo2 'overwrite\ShaderCache'),
         (Join-Path $mo2 'overwrite\ShaderCache.Previous'),
@@ -108,12 +114,22 @@ try {
     $iniBeforeCas = [IO.File]::ReadAllBytes($ini)
     $casRejected = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label cas-race -SavePolicy FreshGame -InternalTestFailurePoint selected-profile-before-cas -Confirm:$false -NoExit | ConvertFrom-Json
     $iniAfterCas = [IO.File]::ReadAllBytes($ini)
-    if ($casRejected.ok -or $casRejected.errors[0] -notmatch 'changed after planning and before replacement' -or [Convert]::ToBase64String($iniAfterCas) -ceq [Convert]::ToBase64String($iniBeforeCas) -or [Text.Encoding]::UTF8.GetString($iniAfterCas) -notmatch 'injected concurrent drift') { throw 'Selected-profile mutation did not reject immediate preimage drift while preserving the live external bytes.' }
+    if ($casRejected.ok -or $casRejected.errors[0] -notmatch 'changed after planning and before replacement' -or [Convert]::ToBase64String($iniAfterCas) -ceq [Convert]::ToBase64String($iniBeforeCas) -or [Text.Encoding]::UTF8.GetString($iniAfterCas) -notmatch 'injected concurrent drift') { throw "Selected-profile mutation did not reject immediate preimage drift while preserving the live external bytes: $($casRejected | ConvertTo-Json -Depth 12 -Compress)" }
     [IO.File]::WriteAllBytes($ini, $iniBeforeCas)
     $created = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label weather -SavePolicy FreshGame -Confirm:$false | ConvertFrom-Json
     if (-not $created.ok -or $created.state -ne 'workspace-ready') { throw "Workspace creation failed: $($created | ConvertTo-Json -Depth 12 -Compress)" }
     if ($created.data.ownerTaskId -ne $taskId -or (Get-Content -LiteralPath $ini -Raw) -notmatch ('selected_profile=@ByteArray\(' + [regex]::Escape([string]$created.data.profileName) + '\)')) { throw 'Creation did not bind and select the task-owned workspace.' }
     if ($created.data.profileName -ne $created.data.profile -or $created.data.profileDirectory -ne $created.data.profilePath -or $created.data.modListPath -ne (Join-Path $created.data.profilePath 'modlist.txt')) { throw 'Workspace profile identity fields are not explicit and canonical.' }
+    if (-not (Test-Path -LiteralPath $created.data.runtimeOutput.sentinelPath -PathType Leaf)) { throw 'Workspace did not create its owned ShaderCache sentinel.' }
+    $runtimeBackup = Join-Path ([string]$created.data.runtimeOutput.modPath) 'backup\hashes'
+    if (-not (Test-Path -LiteralPath $runtimeBackup -PathType Leaf) -or (Get-FileHash -LiteralPath $runtimeBackup -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath (Join-Path $synthesisMod 'backup\hashes') -Algorithm SHA256).Hash) { throw 'Workspace did not shadow the existing generated backup marker.' }
+    $taskSettings = Get-Content -LiteralPath (Join-Path $created.data.profilePath 'settings.ini') -Raw
+    if ($taskSettings -notmatch "(?m)^Test=$([regex]::Escape([string]$created.data.runtimeOutput.modName))\r?$" -or $taskSettings -notmatch '(?m)^Synthesis=Synthesis Patch \(SFW\)\r?$') { throw 'Workspace did not add its runtime-output mapping while preserving the existing Synthesis mapping.' }
+    if (@(Get-Content -LiteralPath $created.data.modListPath | Where-Object { $_ -ceq ('+' + [string]$created.data.runtimeOutput.modName) }).Count -ne 1) { throw 'Workspace runtime-output mod is not enabled exactly once.' }
+    $initialIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId
+    if (-not $initialIsolation.ok -or $initialIsolation.cachePlan.exists) { throw "Fresh workspace runtime-output isolation was not valid and unprepared: $($initialIsolation | ConvertTo-Json -Depth 12 -Compress)" }
+    $unpreparedSession = Invoke-MO2Prepare -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -Label fixture-unprepared -WhatIf
+    if ($unpreparedSession.ok -or @($unpreparedSession.errors | Where-Object { $_ -match 'shader-cache prepare plan' }).Count -ne 1) { throw 'MO2 prepare did not fail closed before the bound cache plan existed.' }
     $ordinaryCopied = Join-Path $created.data.profilePath 'saves\ordinary.ess'
     if (-not (Test-Path -LiteralPath $ordinaryCopied -PathType Leaf) -or (Get-FileHash -LiteralPath $ordinaryCopied -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath (Join-Path $source 'saves\ordinary.ess') -Algorithm SHA256).Hash) { throw 'Workspace did not copy the complete stable-source saves tree.' }
     if (-not $created.data.inheritedSaves -or $created.data.sourceSaveSnapshot.sha256 -ne $created.data.profileSaveSnapshot.sha256 -or $created.data.sourceSaveSnapshot.fileCount -ne 3) { throw 'Workspace did not report a verified inherited-save snapshot.' }
@@ -221,11 +237,19 @@ try {
     if (-not (Test-Path -LiteralPath $created.data.profilePath -PathType Container) -or -not (Test-Path -LiteralPath $newMod -PathType Container) -or $retireRecoveredJournal.phase -ne 'rolled-back' -or (Get-FileHash -LiteralPath $retireManifestPath -Algorithm SHA256).Hash -cne $retirePreimageHash) { throw 'Startup recovery did not restore an interrupted retirement profile, mod, and exact manifest preimage.' }
     $released = & $entry retire -ConfigPath $configPath -AccessId $nextAccessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -CleanupOwnedMods -Confirm:$false | ConvertFrom-Json
     if (-not $released.ok -or (Test-Path -LiteralPath $created.data.profilePath) -or (Test-Path -LiteralPath $newMod)) { throw "Workspace cleanup did not remove only its owned artifacts: $($released | ConvertTo-Json -Depth 12 -Compress)" }
+    if (Test-Path -LiteralPath $created.data.runtimeOutput.modPath -PathType Container) { throw 'Workspace retirement retained its task-owned runtime-output mod.' }
+    $preservedOutput = [string]$released.data.runtimeOutputPreservation.preservedPath
+    if (-not $released.data.runtimeOutputPreservation.preserved -or -not (Test-Path -LiteralPath $released.data.runtimeOutputPreservation.receiptPath -PathType Leaf)) { throw 'Workspace retirement did not retain a verified runtime-output preservation receipt.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $preservedOutput 'ShaderCache\.codex-vfs-sentinel.txt') -PathType Leaf)) { throw 'Workspace retirement did not preserve the ShaderCache output tree.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $preservedOutput 'backup\hashes') -PathType Leaf) -or (Get-FileHash -LiteralPath (Join-Path $preservedOutput 'backup\hashes') -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath (Join-Path $synthesisMod 'backup\hashes') -Algorithm SHA256).Hash) { throw 'Workspace retirement did not preserve the generated backup tree byte-identically.' }
     if ((Get-Content -LiteralPath $ini -Raw) -notmatch 'selected_profile=@ByteArray\(Mad God Stable\)') { throw 'Workspace release did not select the stable source before deleting the task profile.' }
     if (-not (Test-Path -LiteralPath $released.data.selectedProfileRelease.backupPath -PathType Leaf) -or -not (Test-Path -LiteralPath $released.data.selectedProfileRelease.receiptPath -PathType Leaf)) { throw 'Workspace release did not retain exact INI backup and receipt evidence.' }
     if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $loaderMod)) { throw 'Workspace cleanup damaged stable state.' }
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $nextAccessId
     if (-not $releasedAccess.ok) { throw 'Resumed access release failed.' }
-    [pscustomobject]@{ok=$true; assertions=61; workspaceId=$created.data.workspaceId} | ConvertTo-Json
+    [pscustomobject]@{ok=$true; assertions=71; workspaceId=$created.data.workspaceId} | ConvertTo-Json
 }
-finally { if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force } }
+finally {
+    $env:CSX_MO2_PROFILE_CONTROL_ROOT = $priorProfileControlRoot
+    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
+}

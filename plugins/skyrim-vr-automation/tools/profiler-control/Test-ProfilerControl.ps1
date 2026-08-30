@@ -210,6 +210,29 @@ if ($RequirePerformanceNeutral) {
     Assert-Test ($measureText -match '-RequirePerformanceNeutral:\(-not \$ForRestore\)') 'capture guards measurement calls while preserving the restoration path'
     Assert-Test ($measureText -match '\$expectedPerformanceEpoch') 'capture pins the performance ownership epoch across samples'
     Assert-Test ($measureText -match 'schemaVersion = 3') 'capture stores performance guard evidence under schema 3'
+    Assert-Test ($measureText.Contains(
+        'Get-DevBenchRenderScalePreparationTelemetry',
+        [StringComparison]::Ordinal
+    )) 'profiler capture retains render-scale preparation telemetry'
+    Assert-Test ($measureText.Contains(
+        'preparation = [pscustomobject][ordered]@{',
+        [StringComparison]::Ordinal
+    )) 'profiler summary exposes before and after preparation traces'
+
+    $profilerSkill = Get-Content -LiteralPath (Join-Path $PSScriptRoot `
+        '..\..\skills\profiler-control\SKILL.md') -Raw
+    Assert-Test ($profilerSkill.Contains(
+        '`set_enabled` with `enabled: true`',
+        [StringComparison]::Ordinal
+    )) 'profiler contract enables the versioned API before capture'
+    Assert-Test ($profilerSkill.Contains(
+        'Treat `disabled` from `start_capture` as a failed capture',
+        [StringComparison]::Ordinal
+    )) 'profiler contract fails closed on a disabled capture'
+    Assert-Test ($profilerSkill.Contains(
+        'Restore the initial enabled state',
+        [StringComparison]::Ordinal
+    )) 'profiler contract restores caller-owned state'
 }
 finally {
     Remove-Item Env:CSX_PROFILER_TEST_STATE -ErrorAction SilentlyContinue

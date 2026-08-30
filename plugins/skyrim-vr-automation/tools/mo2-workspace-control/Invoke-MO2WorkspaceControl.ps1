@@ -87,6 +87,57 @@ function Get-CollisionResistantSafeName([string]$Value) {
     return "$readable-$($digest.Substring(0, 8))"
 }
 
+function Test-WorkspaceSamePath([string]$Left, [string]$Right) {
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+    return [string]::Equals(
+        [IO.Path]::GetFullPath($Left).TrimEnd('\', '/'),
+        [IO.Path]::GetFullPath($Right).TrimEnd('\', '/'),
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Set-WorkspaceCustomOverwrite([string]$SettingsPath, [string]$Executable, [string]$ModName) {
+    if ($Executable -match '[\r\n=]' -or $ModName -match '[\r\n]') {
+        throw 'Executable and runtime-output mod names must be safe INI key/value text.'
+    }
+    $text = if (Test-Path -LiteralPath $SettingsPath -PathType Leaf) {
+        [IO.File]::ReadAllText($SettingsPath, [Text.Encoding]::UTF8)
+    }
+    else { '' }
+    $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($line in @([regex]::Split($text, '\r\n|\n|\r'))) { $lines.Add($line) }
+    while ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Length -eq 0) { $lines.RemoveAt($lines.Count - 1) }
+
+    $sectionIndexes = @()
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index].Trim() -ieq '[custom_overwrites]') { $sectionIndexes += $index }
+    }
+    if ($sectionIndexes.Count -gt 1) { throw 'Task profile settings contain duplicate [custom_overwrites] sections.' }
+    $sectionStart = if ($sectionIndexes.Count -eq 1) { [int]$sectionIndexes[0] } else { -1 }
+    $sectionEnd = $lines.Count
+    if ($sectionStart -ge 0) {
+        for ($index = $sectionStart + 1; $index -lt $lines.Count; $index++) {
+            if ($lines[$index].Trim() -match '^\[.+\]$') { $sectionEnd = $index; break }
+        }
+    }
+    if ($sectionStart -lt 0) {
+        if ($lines.Count -gt 0) { $lines.Add('') }
+        $lines.Add('[custom_overwrites]')
+        $lines.Add($Executable + '=' + $ModName)
+    }
+    else {
+        for ($index = $sectionEnd - 1; $index -gt $sectionStart; $index--) {
+            $separator = $lines[$index].IndexOf('=')
+            if ($separator -gt 0 -and $lines[$index].Substring(0, $separator).Trim() -ceq $Executable) {
+                $lines.RemoveAt($index)
+                $sectionEnd--
+            }
+        }
+        $lines.Insert($sectionEnd, $Executable + '=' + $ModName)
+    }
+    Write-WorkspaceBytesAtomic -Path $SettingsPath -Bytes ([Text.UTF8Encoding]::new($false).GetBytes(($lines -join $newline) + $newline))
+}
+
 function Assert-NoWorkspaceReparsePoint([string]$Path, [string]$Purpose) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     while ($null -ne $item) {
@@ -142,6 +193,101 @@ function Get-BoundedTreeInventory([string]$Path, [string]$Purpose) {
         fileCount = $files.Count; directoryCount = $directories.Count; bytes = $bytes
         limits = [pscustomobject][ordered]@{ maxFiles = $MaxProfileFiles; maxDirectories = $MaxProfileDirectories; maxDepth = $MaxProfileDepth; maxBytes = $MaxProfileBytes; timeoutSeconds = $TreeOperationTimeoutSeconds }
     }
+}
+
+function Get-WorkspaceOutputInventory([string]$Path, [string]$Purpose) {
+    $inventory = Get-BoundedTreeInventory -Path $Path -Purpose $Purpose
+    $entries = foreach ($file in @($inventory.files)) {
+        Assert-TreeOperationBudget -Purpose "$Purpose hashing"
+        [pscustomobject][ordered]@{
+            relativePath = [string]$file.path
+            bytes = [long]$file.bytes
+            sha256 = (Get-FileHash -LiteralPath ([string]$file.fullPath) -Algorithm SHA256).Hash
+        }
+    }
+    $canonical = @($entries) | ConvertTo-Json -Depth 4 -Compress
+    return [pscustomobject][ordered]@{
+        path = [string]$inventory.root
+        files = @($entries).Count
+        bytes = [long]$inventory.bytes
+        treeSha256 = Get-WorkspaceBytesSha256 -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($canonical))
+        entries = @($entries)
+        limits = $inventory.limits
+    }
+}
+
+function Preserve-WorkspaceRuntimeOutput(
+    [string]$Source,
+    [string]$EvidenceRoot,
+    [string]$WorkspaceId,
+    [switch]$WhatIf
+) {
+    $inventory = Get-WorkspaceOutputInventory -Path $Source -Purpose 'Task runtime-output preservation source'
+    $target = Join-Path $EvidenceRoot 'runtime-output'
+    $receiptPath = Join-Path $EvidenceRoot 'runtime-output-preservation.receipt.json'
+    if ($WhatIf) {
+        return [pscustomobject][ordered]@{
+            source = $Source; preservedPath = $target; receiptPath = $receiptPath
+            inventory = $inventory; preserved = $false
+        }
+    }
+    if (Test-Path -LiteralPath $target) { throw "Refusing to overwrite retained runtime-output evidence: $target" }
+    New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $target -Recurse -ErrorAction Stop
+    $preserved = Get-WorkspaceOutputInventory -Path $target -Purpose 'Preserved task runtime-output evidence'
+    if ([string]$preserved.treeSha256 -cne [string]$inventory.treeSha256 -or
+        [int]$preserved.files -ne [int]$inventory.files -or
+        [long]$preserved.bytes -ne [long]$inventory.bytes) {
+        throw 'Retained runtime-output evidence differs from the exact task-owned source.'
+    }
+    $receipt = [pscustomobject][ordered]@{
+        contractVersion = '1.0.0'; operation = 'preserve-task-runtime-output'
+        workspaceId = $WorkspaceId; source = $Source; preservedPath = $target
+        inventory = $inventory; preservedUtc = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-WorkspaceJsonAtomic -Path $receiptPath -Value $receipt
+    return [pscustomobject][ordered]@{
+        source = $Source; preservedPath = $target; receiptPath = $receiptPath
+        inventory = $inventory; preserved = $true
+    }
+}
+
+function Assert-WorkspaceRuntimeOutputReadyForRetirement($Config, $Workspace, [string]$AccessId) {
+    if (-not $Workspace.data.PSObject.Properties['runtimeOutput'] -or $null -eq $Workspace.data.runtimeOutput) {
+        return $null
+    }
+    $output = $Workspace.data.runtimeOutput
+    $isolation = Get-MO2TaskWorkspaceIsolation -Config $Config -Profile ([string]$Workspace.data.profile) -Executable ([string]$output.executable) -AccessId $AccessId
+    if (-not $isolation.ok) {
+        throw "Task runtime-output isolation is no longer valid; refusing retirement: $($isolation.errors -join '; ')"
+    }
+    $planPath = [string]$output.cachePlanPath
+    $completionPath = [string]$output.cacheCompletionPath
+    if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+        if (-not (Test-Path -LiteralPath $completionPath -PathType Leaf)) {
+            throw "The task shader-cache transaction is still open. Complete it after game/MO2 shutdown before retiring the workspace: $planPath"
+        }
+        $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 40
+        $completionBinding = if ($completion.PSObject.Properties['cacheBinding']) { $completion.cacheBinding } else { $null }
+        $materializedFiles = if ($completion.PSObject.Properties['workingTree'] -and $completion.workingTree.PSObject.Properties['materializedFiles']) { [int]$completion.workingTree.materializedFiles } else { 0 }
+        if ([string]$completion.state -cne 'complete' -or
+            -not (Test-WorkspaceSamePath ([string]$completion.planPath) $planPath) -or
+            $null -eq $completionBinding -or
+            [string]$completionBinding.modName -cne [string]$output.modName -or
+            -not (Test-WorkspaceSamePath ([string]$completionBinding.cachePath) ([string]$output.cachePath)) -or
+            $materializedFiles -lt 1) {
+            throw "Shader-cache completion does not close the exact task plan: $completionPath"
+        }
+    }
+    else {
+        $unprepared = Get-WorkspaceOutputInventory -Path ([string]$output.modPath) -Purpose 'Unprepared task runtime-output classification'
+        $allowed = @('.codex-workspace-owner.json', 'ShaderCache\.codex-vfs-sentinel.txt', 'backup\hashes')
+        $unclassified = @($unprepared.entries | Where-Object { [string]$_.relativePath -notin $allowed })
+        if ($unclassified.Count -gt 0) {
+            throw 'The task runtime-output mod contains generated files without a shader-cache prepare/completion transaction. The workspace and complete output are retained for classification.'
+        }
+    }
+    return $isolation
 }
 
 function Get-WorkspaceControlRoot($Config) {
@@ -373,11 +519,14 @@ function Resolve-PendingWorkspaceJournal($Config, [string]$JournalPath) {
     } else { $null }
 
     if ($operation -eq 'create') {
+        $runtimeOutputPath = if ($journal.ContainsKey('runtimeOutputPath') -and -not [string]::IsNullOrWhiteSpace([string]$journal['runtimeOutputPath'])) {
+            Assert-WorkspaceRecoveryPath -Path ([string]$journal['runtimeOutputPath']) -Root ([string]$Config.mo2.modsDirectory) -Purpose 'Workspace runtime-output recovery target'
+        } else { $null }
         $committable = $false
         if ((Test-Path -LiteralPath $manifestPath -PathType Leaf) -and (Test-Path -LiteralPath $profilePath -PathType Container)) {
             try {
                 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-                $committable = [string]$manifest.workspaceId -ceq [string]$journal['workspaceId'] -and [string]$manifest.ownershipId -ceq [string]$journal['ownershipId'] -and [string]$manifest.status -ceq 'ready' -and [IO.Path]::GetFullPath([string]$manifest.profilePath) -ceq $profilePath
+                $committable = [string]$manifest.workspaceId -ceq [string]$journal['workspaceId'] -and [string]$manifest.ownershipId -ceq [string]$journal['ownershipId'] -and [string]$manifest.status -ceq 'ready' -and [IO.Path]::GetFullPath([string]$manifest.profilePath) -ceq $profilePath -and $null -ne $runtimeOutputPath -and (Test-Path -LiteralPath $runtimeOutputPath -PathType Container)
             }
             catch { $committable = $false }
         }
@@ -388,6 +537,7 @@ function Resolve-PendingWorkspaceJournal($Config, [string]$JournalPath) {
         }
         $null = Restore-ParentSelectedProfileTransaction -JournalPath $selectedJournalPath
         if (Test-Path -LiteralPath $profilePath -PathType Container) { Assert-NoWorkspaceReparsePoint -Path $profilePath -Purpose 'Interrupted workspace profile'; Remove-Item -LiteralPath $profilePath -Recurse -Force }
+        if ($null -ne $runtimeOutputPath -and (Test-Path -LiteralPath $runtimeOutputPath -PathType Container)) { Assert-NoWorkspaceReparsePoint -Path $runtimeOutputPath -Purpose 'Interrupted workspace runtime-output mod'; Remove-Item -LiteralPath $runtimeOutputPath -Recurse -Force }
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { Remove-Item -LiteralPath $manifestPath -Force }
         $journal['phase'] = 'rolled-back'; $journal['recoveredUtc'] = [DateTime]::UtcNow.ToString('o')
         Write-WorkspaceJsonAtomic -Path $JournalPath -Value $journal
@@ -942,6 +1092,15 @@ try {
         $sourceSnapshot = Get-ProfileSnapshot -Path $sourcePath
         $sourceSaveSnapshot = Get-SaveTreeSnapshot -ProfilePath $sourcePath
         $initialMods = @(Get-ChildItem -LiteralPath $modsRoot -Directory -Force | Select-Object -ExpandProperty Name | Sort-Object)
+        $runtimeOutputName = 'Codex Runtime Output - ' + $workspaceId
+        $runtimeOutputPath = Join-Path $modsRoot $runtimeOutputName
+        $runtimeCachePath = Join-Path $runtimeOutputPath 'ShaderCache'
+        $runtimeSentinelPath = Join-Path $runtimeCachePath '.codex-vfs-sentinel.txt'
+        $cacheEvidenceDirectory = Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-shader-cache')
+        $runtimeExecutable = [string]$config.defaults.executable
+        if ([string]::IsNullOrWhiteSpace($runtimeExecutable)) { throw 'defaults.executable is required for task runtime-output isolation.' }
+        if (Test-Path -LiteralPath $runtimeOutputPath) { throw "Generated runtime-output mod already exists: $runtimeOutputPath" }
+        if ($initialMods -ccontains $runtimeOutputName) { throw "Generated runtime-output mod was present in the initial mod snapshot: $runtimeOutputName" }
         try {
             # Every fresh clone must inherit one known-good route into the game
             # world. SavePolicy controls later test authorization, not whether
@@ -962,7 +1121,7 @@ try {
             }
         }
         $manifest = [pscustomobject][ordered]@{
-            contractVersion = '2.1.0'; workspaceId = $workspaceId; ownershipId = $ownershipId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
+            contractVersion = '2.2.0'; workspaceId = $workspaceId; ownershipId = $ownershipId; ownerTaskId = $resolvedTaskId; accessId = $AccessId; status = 'creating'; acquisitionDisposition = 'fresh-clone'
             leaseHistory = @([pscustomobject][ordered]@{ accessId = $AccessId; acquiredForWorkspaceUtc = [DateTime]::UtcNow.ToString('o'); disposition = 'created' })
             label = $Label; createdUtc = [DateTime]::UtcNow.ToString('o'); sourceProfile = $sourceName
             sourceProfileName = $sourceName; sourceProfilePath = $sourcePath; sourceProfileDirectory = $sourcePath; sourceSnapshot = $sourceSnapshot
@@ -976,6 +1135,21 @@ try {
             }
             saveFixture = $fixture; sourceSaveSnapshot = $sourceSaveSnapshot; initialModNames = $initialMods; protectedSharedModNames = $initialMods; createdMods = @(); registeredMods = @(); inheritedSaves = $true
             creationJournalPath = $creationJournalPath
+            runtimeOutput = [pscustomobject][ordered]@{
+                state = 'planned'; executable = $runtimeExecutable; modName = $runtimeOutputName
+                modPath = $runtimeOutputPath; cachePath = $runtimeCachePath; sentinelPath = $runtimeSentinelPath
+                cacheEvidenceDirectory = $cacheEvidenceDirectory
+                cachePlanPath = (Join-Path $cacheEvidenceDirectory 'shader-cache-task.plan.json')
+                cacheCompletionPath = (Join-Path $cacheEvidenceDirectory 'shader-cache-task.completion.json')
+                cachePrepareArguments = [pscustomobject][ordered]@{
+                    ProfilePath = (Join-Path $profilePath 'modlist.txt'); ModsPath = $modsRoot
+                    CacheModName = $runtimeOutputName; EvidenceDirectory = $cacheEvidenceDirectory
+                    RequireMaterializedOutput = $true
+                }
+                shadowedLoosePaths = @('backup\hashes'); shadowReceipt = $null
+                registrationEvidenceDirectory = (Join-Path (Split-Path -Parent $manifestPath) ($workspaceId + '-register-runtime-output'))
+                registrationReceiptPath = $null
+            }
             saveGuidance = 'Every fresh clone requires and copies an integrity-verified default world-entry fixture plus the complete source saves tree. Static integrity does not assert a successful live load. MainMenuOnly and FreshGame still describe test authorization; use VerifiedFixture for an exact declared load target. Resumed profiles are preserved without save reverification. See docs/BREEZEHOME-SAVE.md.'
             ownershipRule = 'The workspace may change only its cloned profile and mods it created and registered. Existing shared mod directories are immutable; profile-local enable/disable markers are allowed.'
         }
@@ -989,11 +1163,11 @@ try {
                 $journal = [pscustomobject][ordered]@{
                     contractVersion = '2.0.0'; operation = 'create'; phase = 'prepared'; workspaceId = $workspaceId; ownershipId = $ownershipId
                     ownerTaskId = $resolvedTaskId; sourceProfile = $sourceName; sourceProfilePath = $sourcePath; sourceSnapshotSha256 = [string]$sourceSnapshot.sha256
-                    profileName = $profileName; profilePath = $profilePath; manifestPath = $manifestPath; preparedUtc = [DateTime]::UtcNow.ToString('o')
+                    profileName = $profileName; profilePath = $profilePath; manifestPath = $manifestPath; runtimeOutputPath = $runtimeOutputPath; preparedUtc = [DateTime]::UtcNow.ToString('o')
                     selectedProfileJournalPath = $selectedProfileJournalPath; selectedProfileTransaction = $null; rollback = $null; committedUtc = $null
                 }
                 Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
-                $profileCreated = $false; $selection = $null
+                $profileCreated = $false; $runtimeOutputCreated = $false; $selection = $null
                 try {
                     New-Item -ItemType Directory -Path $profilePath -ErrorAction Stop | Out-Null
                     $profileCreated = $true
@@ -1028,6 +1202,76 @@ try {
                     }
                     $manifest | Add-Member -NotePropertyName copiedWorldEntrySave -NotePropertyValue $true -Force
                     if ($fixture) { $manifest | Add-Member -NotePropertyName copiedVerifiedSaves -NotePropertyValue $true -Force }
+
+                    New-Item -ItemType Directory -Path $runtimeOutputPath -ErrorAction Stop | Out-Null
+                    $runtimeOutputCreated = $true
+                    $runtimeMarkerPath = Get-WorkspaceOwnerMarkerPath -ModPath $runtimeOutputPath
+                    $runtimeMarker = [pscustomobject][ordered]@{
+                        contractVersion = '1.0.0'; workspaceId = $workspaceId; ownershipId = $ownershipId
+                        ownerTaskId = $resolvedTaskId; modName = $runtimeOutputName; modPath = $runtimeOutputPath
+                        createdUtc = [DateTime]::UtcNow.ToString('o')
+                    }
+                    Write-WorkspaceJsonAtomic -Path $runtimeMarkerPath -Value $runtimeMarker
+                    $runtimeMarkerHash = (Get-FileHash -LiteralPath $runtimeMarkerPath -Algorithm SHA256).Hash
+                    New-Item -ItemType Directory -Path $runtimeCachePath -Force | Out-Null
+                    [IO.File]::WriteAllText($runtimeSentinelPath, $workspaceId + "`r`n", [Text.UTF8Encoding]::new($false))
+                    Set-WorkspaceCustomOverwrite -SettingsPath (Join-Path $profilePath 'settings.ini') -Executable $runtimeExecutable -ModName $runtimeOutputName
+
+                    $transactionTool = Join-Path $toolRoot 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'
+                    $backupProviders = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'backup\hashes' -DeepInventory -NoExit -Confirm:$false | ConvertFrom-Json
+                    if (-not $backupProviders.ok) { throw "Could not inspect the task profile's backup\\hashes provider: $($backupProviders.errors -join '; ')" }
+                    $backupWinner = $backupProviders.data.effectiveWinnerAmongEnabledMods
+                    $shadowReceipt = [pscustomobject][ordered]@{ relativePath = 'backup\hashes'; state = 'not-present'; source = $null; destination = (Join-Path $runtimeOutputPath 'backup\hashes'); bytes = 0; sha256 = $null }
+                    if ($null -ne $backupWinner) {
+                        if ([string]$backupWinner.providerType -cne 'file') { throw 'The effective backup\hashes provider is not a regular file.' }
+                        $backupSource = [IO.Path]::GetFullPath([string]$backupWinner.providerPath)
+                        $backupTarget = [IO.Path]::GetFullPath((Join-Path $runtimeOutputPath 'backup\hashes'))
+                        New-Item -ItemType Directory -Path (Split-Path -Parent $backupTarget) -Force | Out-Null
+                        Copy-Item -LiteralPath $backupSource -Destination $backupTarget
+                        $sourceHash = (Get-FileHash -LiteralPath $backupSource -Algorithm SHA256).Hash
+                        $targetHash = (Get-FileHash -LiteralPath $backupTarget -Algorithm SHA256).Hash
+                        if ($sourceHash -cne $targetHash) { throw 'The task runtime-output backup\hashes shadow differs from its effective source.' }
+                        $shadowReceipt = [pscustomobject][ordered]@{
+                            relativePath = 'backup\hashes'; state = 'materialized'; sourceModName = [string]$backupWinner.modName
+                            source = $backupSource; destination = $backupTarget; bytes = [long](Get-Item -LiteralPath $backupTarget).Length; sha256 = $targetHash
+                        }
+                    }
+
+                    $providersBefore = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -NoExit -Confirm:$false | ConvertFrom-Json
+                    if (-not $providersBefore.ok) { throw "Could not inspect the task profile's initial ShaderCache providers: $($providersBefore.errors -join '; ')" }
+                    $winnerBefore = $providersBefore.data.effectiveWinnerAmongEnabledMods
+                    $placement = if ($null -ne $winnerBefore) { 'Before' } else { 'End' }
+                    $relativeTo = if ($null -ne $winnerBefore) { [string]$winnerBefore.modName } else { $null }
+                    $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
+                    $registrationArguments = @{
+                        Command = 'register'; ProfilePath = (Join-Path $profilePath 'modlist.txt')
+                        ModName = $runtimeOutputName; ModDirectory = $runtimeOutputPath; Placement = $placement
+                        RegisterEnabled = $true; EvidenceDirectory = [string]$manifest.runtimeOutput.registrationEvidenceDirectory
+                        BlockingProcessNames = @('MO2WorkspaceImpossibleFixtureProcess'); Confirm = $false
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($relativeTo)) { $registrationArguments['RelativeToMod'] = $relativeTo }
+                    $registration = & $profileTool @registrationArguments | ConvertFrom-Json
+                    if (-not $registration.ok -or -not [bool]$registration.enabled) { throw 'Task runtime-output mod registration failed.' }
+                    $providersAfter = & $transactionTool providers -ProfilePath (Join-Path $profilePath 'modlist.txt') -ModsPath $modsRoot -RelativeCachePath 'ShaderCache' -NoExit -Confirm:$false | ConvertFrom-Json
+                    $winnerAfter = $providersAfter.data.effectiveWinnerAmongEnabledMods
+                    if (-not $providersAfter.ok -or $null -eq $winnerAfter -or [string]$winnerAfter.modName -cne $runtimeOutputName -or [string]$winnerAfter.providerType -cne 'directory') {
+                        $observed = if ($null -eq $winnerAfter) { '<none>' } else { [string]$winnerAfter.modName }
+                        throw "Task runtime-output mod is not the effective enabled ShaderCache provider; observed '$observed'."
+                    }
+                    $manifest.createdMods = @([pscustomobject][ordered]@{
+                        name = $runtimeOutputName; path = $runtimeOutputPath; markerPath = $runtimeMarkerPath
+                        markerSha256 = $runtimeMarkerHash; createdUtc = [string]$runtimeMarker.createdUtc
+                        registered = $true; registrationReceiptPath = [string]$registration.receiptPath
+                    })
+                    $manifest.registeredMods = @([pscustomobject][ordered]@{
+                        name = $runtimeOutputName; path = $runtimeOutputPath; ownershipMarkerPath = $runtimeMarkerPath
+                        ownershipMarkerSha256 = $runtimeMarkerHash; registeredUtc = [DateTime]::UtcNow.ToString('o')
+                        enabled = $true; placement = $placement; relativeToMod = $relativeTo; winningPaths = @('ShaderCache')
+                        evidenceDirectory = [string]$manifest.runtimeOutput.registrationEvidenceDirectory
+                    })
+                    $manifest.runtimeOutput.state = 'ready'
+                    $manifest.runtimeOutput.shadowReceipt = $shadowReceipt
+                    $manifest.runtimeOutput.registrationReceiptPath = [string]$registration.receiptPath
                     $manifest | Add-Member -NotePropertyName profileSnapshot -NotePropertyValue (Get-ProfileSnapshot -Path $profilePath) -Force
                     $selection = Set-MO2SelectedProfile -Config $config -TargetProfile $profileName -Operation 'select-created-task-workspace' -EvidenceRoot $selectionEvidence
                     $journal.phase = 'selection-applied-uncommitted'; $journal.selectedProfileTransaction = $selection; Write-WorkspaceJsonAtomic -Path $creationJournalPath -Value $journal
@@ -1045,6 +1289,9 @@ try {
                     }
                     if ($profileCreated -and (Test-Path -LiteralPath $profilePath -PathType Container)) {
                         try { Assert-NoWorkspaceReparsePoint -Path $profilePath -Purpose 'Failed task profile'; Remove-Item -LiteralPath $profilePath -Recurse -Force } catch { $rollbackErrors += "profile: $($_.Exception.Message)" }
+                    }
+                    if ($runtimeOutputCreated -and (Test-Path -LiteralPath $runtimeOutputPath -PathType Container)) {
+                        try { Assert-NoWorkspaceReparsePoint -Path $runtimeOutputPath -Purpose 'Failed runtime-output mod'; Remove-Item -LiteralPath $runtimeOutputPath -Recurse -Force } catch { $rollbackErrors += "runtime-output: $($_.Exception.Message)" }
                     }
                     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { try { Remove-Item -LiteralPath $manifestPath -Force } catch { $rollbackErrors += "manifest: $($_.Exception.Message)" } }
                     $journal.phase = if ($rollbackErrors.Count -eq 0) { 'rolled-back' } else { 'recovery-required' }
@@ -1274,6 +1521,8 @@ try {
             Assert-NoWorkspaceReparsePoint -Path $modPath -Purpose 'Task-owned mod cleanup target'
             $cleanupMods += $modPath
         }
+        $runtimeIsolation = Assert-WorkspaceRuntimeOutputReadyForRetirement -Config $config -Workspace $owned -AccessId $AccessId
+        $runtimeOutputPreservation = $null
         $releaseApproved = $PSCmdlet.ShouldProcess($profilePath, "select stable profile '$($owned.data.sourceProfile)' and remove exact task-owned profile")
         if ($releaseApproved) {
             $retirement = Invoke-WithWorkspaceTransactionLock -Config $config -Action {
@@ -1281,6 +1530,7 @@ try {
                 $currentProfilePath = [IO.Path]::GetFullPath([string]$current.data.profilePath)
                 if ($currentProfilePath -cne $profilePath) { throw 'Workspace profile identity changed before retirement.' }
                 Assert-NoWorkspaceReparsePoint -Path $currentProfilePath -Purpose 'Task profile retirement target'
+                $currentRuntimeIsolation = Assert-WorkspaceRuntimeOutputReadyForRetirement -Config $config -Workspace $current -AccessId $AccessId
                 $currentCleanupMods = @()
                 if ($CleanupOwnedMods) {
                     foreach ($mod in @($current.data.createdMods)) {
@@ -1311,11 +1561,17 @@ try {
                     manifestPreimagePath = $manifestPreimagePath; manifestPreimageSha256 = $manifestPreimageSha256
                     profilePath = $currentProfilePath; profileQuarantine = $profileQuarantine; modMoves = $modMoves
                     cleanupOwnedMods = [bool]$CleanupOwnedMods; preparedUtc = [DateTime]::UtcNow.ToString('o')
-                    selectedProfileJournalPath = $selectedProfileJournalPath; selectedProfileTransaction = $null; rollback = $null; committedUtc = $null; cleanupPending = @()
+                    selectedProfileJournalPath = $selectedProfileJournalPath; selectedProfileTransaction = $null
+                    runtimeOutputPreservation = $null; rollback = $null; committedUtc = $null; cleanupPending = @()
                 }
                 Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                 $profileSelection = $null; $profileMoved = $false
                 try {
+                    if ($null -ne $currentRuntimeIsolation) {
+                        $runtimeOutputPreservation = Preserve-WorkspaceRuntimeOutput -Source ([string]$current.data.runtimeOutput.modPath) -EvidenceRoot $releaseEvidence -WorkspaceId $WorkspaceId
+                        $journal.runtimeOutputPreservation = $runtimeOutputPreservation
+                        Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
+                    }
                     $profileSelection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$current.data.sourceProfile) -Operation 'select-stable-before-workspace-retirement' -EvidenceRoot $releaseEvidence
                     $journal.phase = 'selection-applied-uncommitted'; $journal.selectedProfileTransaction = $profileSelection
                     Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
@@ -1335,6 +1591,9 @@ try {
                     $current.data | Add-Member -NotePropertyName ownedModsRemoved -NotePropertyValue ([bool]$CleanupOwnedMods) -Force
                     $current.data | Add-Member -NotePropertyName selectedProfileRelease -NotePropertyValue $profileSelection -Force
                     $current.data | Add-Member -NotePropertyName retirementJournalPath -NotePropertyValue $journalPath -Force
+                    if ($null -ne $runtimeOutputPreservation) {
+                        $current.data | Add-Member -NotePropertyName runtimeOutputPreservation -NotePropertyValue $runtimeOutputPreservation -Force
+                    }
                     $journal.phase = 'manifest-write-uncommitted'
                     Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                     Write-WorkspaceJsonAtomic -Path $current.path -Value $current.data
@@ -1368,18 +1627,24 @@ try {
                     $journal.cleanupPending = $cleanupPending
                     Write-WorkspaceJsonAtomic -Path $journalPath -Value $journal
                 }
-                return [pscustomobject]@{ workspace = $current; selection = $profileSelection; journalPath = $journalPath; cleanupPending = $cleanupPending }
+                return [pscustomobject]@{ workspace = $current; selection = $profileSelection; journalPath = $journalPath; cleanupPending = $cleanupPending; runtimeOutputPreservation = $runtimeOutputPreservation }
             }
             $owned = $retirement.workspace
             $profileSelection = $retirement.selection
+            $runtimeOutputPreservation = $retirement.runtimeOutputPreservation
         }
         else {
-            $profileSelection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$owned.data.sourceProfile) -Operation 'select-stable-before-workspace-retirement' -EvidenceRoot (Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-retire-dry-run')) -WhatIf
+            $dryRunEvidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-retire-dry-run')
+            if ($null -ne $runtimeIsolation) {
+                $runtimeOutputPreservation = Preserve-WorkspaceRuntimeOutput -Source ([string]$owned.data.runtimeOutput.modPath) -EvidenceRoot $dryRunEvidence -WorkspaceId $WorkspaceId -WhatIf
+            }
+            $profileSelection = Set-MO2SelectedProfile -Config $config -TargetProfile ([string]$owned.data.sourceProfile) -Operation 'select-stable-before-workspace-retirement' -EvidenceRoot $dryRunEvidence -WhatIf
         }
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; state = $(if ($WhatIfPreference) { 'dry-run' } else { 'workspace-retired' }); data = @{
             workspaceId = $WorkspaceId; profile = [string]$owned.data.profile; profilePath = $profilePath
             profileName = [string]$owned.data.profile; profileDirectory = $profilePath; modListPath = (Join-Path $profilePath 'modlist.txt')
             selectedProfileRelease = $profileSelection; wouldOrDidRemoveOwnedMods = [bool]$CleanupOwnedMods
+            runtimeOutputPreservation = $runtimeOutputPreservation
             releaseAccessRequired = $true; manifestPath = $owned.path
             deprecatedCommand = $null
         } }

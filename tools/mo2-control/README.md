@@ -58,6 +58,14 @@ as stale. Validation blocks launch whenever any such tree remains, regardless
 of ordinary file-count thresholds; use workspace `prepare-source` to move the
 complete trees into an enabled stable-profile mod first.
 
+A `Codex Task - ...` profile has an additional launch gate. The controller
+requires the workspace-owned runtime-output mod to be enabled once, mapped from
+the exact executable without losing existing mappings, and proven as the
+winning loose `ShaderCache` provider. A launchable cache plan must be bound to
+that exact profile and mod with `RequireMaterializedOutput`; the catalog prepare
+step fills lower-provider-only paths so later shader compiles cannot write back
+into a lower mod such as a Synthesis patch.
+
 ## Quick start
 
 Read `APPROVALS.md` before submitting an elevated command. Controllers report
