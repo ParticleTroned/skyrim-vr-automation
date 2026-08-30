@@ -42,9 +42,9 @@ controller's applied/stable resource records are separate physical evidence.
 At native resolution they remain inactive with backend `none`, but retain the
 exact logical method and never replace a public profile.
 
-The live skill loads packaged `matrix.v1.json` in its sole post-position model
-handoff, then executes it unchanged in the next orchestration cell.
-Do not reopen, revalidate, or summarize the matrix while reading this protocol.
+The live skill passes packaged `matrix.v1.json` unchanged to the deterministic
+runner in the positioning orchestration cell. Do not reopen, revalidate, or
+summarize the matrix while reading this protocol.
 
 ## 2. Establish the NVIDIA baseline
 

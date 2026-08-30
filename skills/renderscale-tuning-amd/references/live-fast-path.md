@@ -1,9 +1,8 @@
 # AMD live fast path
 
-This prose is the executable instruction contract. It intentionally has no
-code block or local runner; absence of either is never a blocker. Compile each
-lane's baseline, handoff, and full pass into the next `functions.exec` cell
-before making its first live call.
+`tools/renderscale-tuning-live/runner.js` executes this path in the positioning
+cell. This file is its post-run audit contract; it is not read or translated
+during live measurement.
 
 Select runnable lanes from the decoded positioning capabilities and use the
 decoded positioning snapshot as the first baseline boundary. For each runnable

@@ -38,11 +38,13 @@ create an evidence directory, decode Base64, hash files, recursively search
 the response, or read this contract first. A failed scenario or required field
 stops without replaying the COC.
 
-After positioning, the live skill performs one bounded model handoff: read only
-its small live-path reference and matrix, then compile the next orchestration
-cell. The reference is actionable prose and intentionally has no code block or
-local runner. Do not load Simple COC/CSM, enumerate tools, inspect schemas, or
-run another admission/reset scenario. Vendor protocol and this detailed
+After positioning, the same orchestration cell loads the packaged deterministic
+runner and matrix in parallel and starts the baseline without another model
+handoff. Pass the initial boundary already decoded during positioning; the
+runner reads only each strict waiter's documented qualification snapshot after
+that. It does not search, normalize, or revalidate positioning. Do not load
+Simple COC/CSM, enumerate tools, inspect schemas, or run another
+admission/reset scenario. Vendor live-path, protocol, and this detailed
 contract are finalization-only reads.
 
 The vendor `SKILL.md` stores the exact `prepare_coc` and positioning responses
@@ -214,9 +216,10 @@ is the only immediate per-row evidence action. A stable response-store handle
 is raw evidence until pass finalization; it is not a substitute in the
 completed evidence bundle.
 
-The orchestration cell is only a response-handling boundary. Every nested live
-call must still use the installed plugin's selected direct DevBench MCP tools;
-it does not authorize a controller, HTTP call, local runner, or fallback lane.
+The orchestration cell and packaged runner are only a response-handling
+boundary. Every nested live call must still use the installed plugin's selected
+direct DevBench MCP tools; this does not authorize an external controller,
+HTTP call, alternate local transport, or fallback lane.
 
 Keep the complete measured pass in that one live orchestration cell; do not
 end the cell between rows. After storing and classifying a terminal receipt,

@@ -59,13 +59,41 @@ label/result; cell/snapshot/adapter at `position-scene.result.cell.editorId`,
 `position-snapshot.result.snapshot`,
 `position-renderscale.result.status.adapter`. Emit compact `notify()`.
 
-## Post-position handoff
+## Uninterrupted measurement
 
-After positioning, read the [NVIDIA live path](references/live-fast-path.md)
-and [matrix](references/matrix.v1.json) together. This sole post-COC model
-handoff interprets actionable prose; never expect a code block or local runner.
-Compile the next `functions.exec` to own baseline and uninterrupted measurement.
-Read the detailed contract and NVIDIA protocol only at pass finalization.
+Do not end the positioning `functions.exec` after its compact `notify()`. In
+that same cell, load `tools/renderscale-tuning-live/runner.js` and
+`skills/renderscale-tuning-nvidia/references/matrix.v1.json` from the current
+plugin root with one parallel local read. Evaluate the runner source as
+`runRenderScaleTuningLive` and await it with the initial boundary and
+capabilities already extracted while admitting positioning, `variant:
+"nvidia"`, the bound Build ID, the parsed matrix, a short run-unique ID, and
+the cell's `tools`, `store`, and `notify` functions. Do not validate them again.
+Use this loader shape, substituting only the current plugin root and the local
+positioning/build variables:
+
+```javascript
+const support = await Promise.all([
+  tools.exec_command({cmd:"Get-Content -Raw -LiteralPath 'tools\\renderscale-tuning-live\\runner.js'",workdir:"<plugin-root>",shell:"powershell",login:false}),
+  tools.exec_command({cmd:"Get-Content -Raw -LiteralPath 'skills\\renderscale-tuning-nvidia\\references\\matrix.v1.json'",workdir:"<plugin-root>",shell:"powershell",login:false})
+]);
+const runLive = new Function(`${support[0].output}\nreturn runRenderScaleTuningLive;`)();
+const positioningResults = new Map(positioningRoot.results.filter(entry => entry.label).map(entry => [entry.label, entry.result]));
+const initialSnapshot = positioningResults.get("position-snapshot").snapshot;
+const initialProfile = initialSnapshot.profiles.effective;
+const initialBoundary = {revision:initialSnapshot.stateRevision,profile:{method:initialProfile.method.name,qualityMode:initialProfile.qualityMode.name,renderScaleMode:initialProfile.renderScaleMode,dlssProfile:initialProfile.dlssProfile.name,fsrRuntime:initialProfile.fsrRuntime.name}};
+const capabilities = positioningResults.get("position-capabilities").capabilities;
+const liveResult = await runLive({tools,store,notify,variant:"nvidia",runId:`nvidia-${Date.now().toString(36)}`,buildId,initialBoundary,capabilities,matrix:JSON.parse(support[1].output)});
+text(JSON.stringify(liveResult));
+```
+
+The runner is the executable live contract. Do not translate the matrix or
+live-path prose into another cell, normalize receipt shapes, or add client
+checks. It accepts the already-decoded positioning boundary and reads each
+later boundary only at `qualification-wait.upscalingSnapshot`. DevBench owns
+admission, timing, strict qualification, and fail-closed scenario execution. Read the
+[live-path audit](references/live-fast-path.md), detailed contract, and NVIDIA
+protocol only after the runner returns for evidence finalization.
 
 Scope is one positioning COC, two runtime-only baselines, and exactly 66
 measured runtime-only `communityshaders.upscaling_api` applies. Never load/run

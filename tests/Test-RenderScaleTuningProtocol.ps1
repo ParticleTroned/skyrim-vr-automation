@@ -48,8 +48,38 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
+$runnerRelative = 'tools\renderscale-tuning-live\runner.js'
+$runnerSource = Join-Path $repositoryRoot $runnerRelative
+$runnerPlugin = Join-Path $repositoryRoot "plugins\skyrim-vr-automation\$runnerRelative"
+Assert-True (Test-Path -LiteralPath $runnerSource -PathType Leaf) 'Missing deterministic tuning runner.'
+Assert-True (Test-Path -LiteralPath $runnerPlugin -PathType Leaf) 'Missing packaged deterministic tuning runner.'
+Assert-True ((Get-FileHash -LiteralPath $runnerSource -Algorithm SHA256).Hash -eq
+    (Get-FileHash -LiteralPath $runnerPlugin -Algorithm SHA256).Hash) 'Deterministic tuning runner source/package parity failed.'
+$runner = Get-Content -LiteralPath $runnerSource -Raw
 foreach ($token in @(
-    'detailed contract', '`live-fast-path.md` reference own the live',
+    'async function runRenderScaleTuningLive',
+    'mcp__devbench_vr__scenario',
+    'mcp__devbench_vr__communityshaders_renderscale',
+    'initialBoundary', 'capabilities',
+    'waiter.upscalingSnapshot', 'snapshot.effective',
+    'matrix.pacingMilliseconds', 'matrix.completionTimeoutMilliseconds',
+    'startPerformanceTelemetry: firstRow',
+    'store(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`',
+    'facts.physicalMutationClear === true', 'facts.terminalClear === true',
+    'for (const row of matrix.transitions)', 'notify({'
+)) {
+    Assert-Contains $runner $token 'Deterministic tuning runner'
+}
+foreach ($forbidden in @(
+    'Get-ChildItem', 'Invoke-RestMethod', '127.0.0.1',
+    'mcp__devbench_vr__communityshaders_upscaling_api',
+    'sourceDescribe', 'artifactSha256', 'positionBoundary',
+    'position-snapshot'
+)) {
+    Assert-True (-not $runner.Contains($forbidden, [StringComparison]::Ordinal)) "Deterministic tuning runner adds an unnecessary live gate: $forbidden"
+}
+foreach ($token in @(
+    'detailed contract', 'packaged deterministic runner and matrix',
     'only after a pass has', 'finalization-only', 'synchronous',
     '`stepsRun: 8`', '`position-health`', '`position-state`',
     '`position-scene`', '`position-capabilities`', '`position-snapshot`',
@@ -57,7 +87,7 @@ foreach ($token in @(
     '`0x1002`/4098', 'reports positioning as soon as it returns',
     'create an evidence directory', 'decode Base64',
     '`content[0].text`', 'recursively search',
-    'small live-path reference and matrix',
+    'without another model handoff',
     'run-unique startup keys', '`raw/startup`',
     '`startup_evidence_incomplete`',
     'forbid the comparison-ledger append',
@@ -239,16 +269,17 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'No other `before` or `after`' $variant.Name
     Assert-Contains $skill 'do not infer aliases' $variant.Name
     Assert-Contains $skill 'compact `notify()`' $variant.Name
-    Assert-Contains $skill 'sole post-COC model' $variant.Name
-    Assert-Contains $skill 'actionable prose' $variant.Name
-    Assert-Contains $skill 'never expect a code block or local runner' $variant.Name
-    Assert-Contains $skill 'only at pass finalization' $variant.Name
-    Assert-Contains $live 'executable instruction contract' $variant.Name
-    Assert-Contains $live 'absence of either is never a blocker' $variant.Name
-    Assert-Contains $live 'next `functions.exec` cell' $variant.Name
+    Assert-Contains $skill 'Do not end the positioning `functions.exec`' $variant.Name
+    Assert-Contains $skill 'tools/renderscale-tuning-live/runner.js' $variant.Name
+    Assert-Contains $skill 'The runner is the executable live contract' $variant.Name
+    Assert-Contains $skill 'Do not translate the matrix' $variant.Name
+    Assert-Contains $skill 'initialBoundary' $variant.Name
+    Assert-Contains $skill 'capabilities' $variant.Name
+    Assert-Contains $skill 'qualification-wait.upscalingSnapshot' $variant.Name
+    Assert-Contains $live '`tools/renderscale-tuning-live/runner.js` executes this path' $variant.Name
+    Assert-Contains $live 'not read or translated during live measurement' $variant.Name
     Assert-Contains $live 'Do not pause for model reasoning' $variant.Name
     Assert-Contains $live 'Only after a pass completes or is interrupted' $variant.Name
-    Assert-True ($skill.Length -le 4700) "$($variant.Name) pre-COC entrypoint exceeds the known-fast size boundary."
     $firstLiveLine = ($skill.Substring(0, $skill.IndexOf('After the required skill announcement', [StringComparison]::Ordinal)) -split "`n").Count
     Assert-True ($firstLiveLine -le 20) "$($variant.Name) delays its first live instruction."
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
@@ -264,7 +295,7 @@ foreach ($variant in $variants) {
         'Do not enumerate', 'audit schemas', '`plugin_direct_unavailable`',
         'no fallback transport',
         'measured live loop before this file is read',
-        'sole post-position model', 'next orchestration cell',
+        'deterministic runner in the positioning orchestration cell',
         'Do not reopen, revalidate, or summarize the matrix',
         'reset then start the short', 'six baseline scenario steps',
         'one synchronous fail-closed handoff scenario',
