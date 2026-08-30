@@ -1,5 +1,10 @@
 # AMD live fast path
 
+This prose is the executable instruction contract. It intentionally has no
+code block or local runner; absence of either is never a blocker. Compile each
+lane's baseline, handoff, and full pass into the next `functions.exec` cell
+before making its first live call.
+
 Select runnable lanes from the decoded positioning capabilities and use the
 decoded positioning snapshot as the first baseline boundary. For each runnable
 lane, build the runtime-only FSR Hoshipa target from the effective profile

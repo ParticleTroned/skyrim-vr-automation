@@ -185,16 +185,16 @@ foreach ($variant in $variants) {
     Assert-Contains $skill "name: $($variant.Name)" $variant.Name
     Assert-Contains $skill $variant.Trigger $variant.Name
     Assert-Contains $skill "exactly $($variant.MeasuredApplyCount) measured" $variant.Name
-    Assert-Contains $skill 'Do not execute or alter Simple CSM''s 25-step matrix.' $variant.Name
+    Assert-Contains $skill 'alter Simple CSM''s 25-step matrix.' $variant.Name
     Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
     Assert-Contains $skill 'does not authorize' $variant.Name
-    Assert-Contains $skill 'VR FPS Stabilizer settings remain' $variant.Name
+    Assert-Contains $skill 'VR FPS Stabilizer stays' $variant.Name
     Assert-Contains $skill 'Direct `mcp__devbench_vr__*` tools are the only' $variant.Name
     Assert-Contains $skill 'Do not enumerate tools or inspect fallbacks' $variant.Name
     Assert-Contains $skill 'if a named tool is not callable' $variant.Name
     Assert-Contains $skill 'never use the bundled controller' $variant.Name
     Assert-Contains $live '../../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
-    Assert-Contains $skill 'The first live call is `mcp__devbench_vr__communityshaders_menu`' $variant.Name
+    Assert-Contains $skill 'first `mcp__devbench_vr__communityshaders_menu`' $variant.Name
     Assert-Contains $skill '`{"action":"prepare_coc"}`' $variant.Name
     Assert-Contains $skill '"async":false' $variant.Name
     Assert-Contains $skill '"command":"coc WhiterunDragonsreach"' $variant.Name
@@ -202,8 +202,11 @@ foreach ($variant in $variants) {
     Assert-Contains $skill '"kind":"health"' $variant.Name
     Assert-Contains $skill '"kind":"state"' $variant.Name
     Assert-Contains $skill '"kind":"scene"' $variant.Name
-    Assert-Contains $skill 'without commentary or local' $variant.Name
-    Assert-Contains $skill 'one orchestration cell' $variant.Name
+    Assert-Contains $skill 'After the required skill announcement' $variant.Name
+    Assert-Contains $skill 'Apart from reading this SKILL' $variant.Name
+    Assert-Contains $skill 'one `functions.exec` with nested' $variant.Name
+    Assert-Contains $skill 'Never call Scenario first' $variant.Name
+    Assert-Contains $skill 'standalone tool' $variant.Name
     Assert-Contains $skill '`startup-prepare`' $variant.Name
     Assert-Contains $skill '`startup-positioning`' $variant.Name
     Assert-Contains $skill '`load()`, compare object identity' $variant.Name
@@ -231,12 +234,17 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'No other `before` or `after`' $variant.Name
     Assert-Contains $skill 'do not infer aliases' $variant.Name
     Assert-Contains $skill 'compact `notify()`' $variant.Name
-    Assert-Contains $skill 'one nested local read inside' $variant.Name
-    Assert-Contains $skill 'Do not read the shared detailed contract' $variant.Name
+    Assert-Contains $skill 'sole post-COC model' $variant.Name
+    Assert-Contains $skill 'actionable prose' $variant.Name
+    Assert-Contains $skill 'never expect a code block or local runner' $variant.Name
+    Assert-Contains $skill 'only at pass finalization' $variant.Name
+    Assert-Contains $live 'executable instruction contract' $variant.Name
+    Assert-Contains $live 'absence of either is never a blocker' $variant.Name
+    Assert-Contains $live 'next `functions.exec` cell' $variant.Name
     Assert-Contains $live 'Do not pause for model reasoning' $variant.Name
     Assert-Contains $live 'Only after a pass completes or is interrupted' $variant.Name
     Assert-True ($skill.Length -le 4700) "$($variant.Name) pre-COC entrypoint exceeds the known-fast size boundary."
-    $firstLiveLine = ($skill.Substring(0, $skill.IndexOf('The first live call', [StringComparison]::Ordinal)) -split "`n").Count
+    $firstLiveLine = ($skill.Substring(0, $skill.IndexOf('After the required skill announcement', [StringComparison]::Ordinal)) -split "`n").Count
     Assert-True ($firstLiveLine -le 20) "$($variant.Name) delays its first live instruction."
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
     Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
@@ -251,7 +259,7 @@ foreach ($variant in $variants) {
         'Do not enumerate', 'audit schemas', '`plugin_direct_unavailable`',
         'no fallback transport',
         'measured live loop before this file is read',
-        'inside its still-running orchestration cell',
+        'sole post-position model', 'next orchestration cell',
         'Do not reopen, revalidate, or summarize the matrix',
         'reset then start the short', 'exact six',
         'one synchronous fail-closed handoff scenario',

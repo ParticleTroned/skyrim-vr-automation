@@ -1,5 +1,10 @@
 # NVIDIA live fast path
 
+This prose is the executable instruction contract. It intentionally has no
+code block or local runner; absence of either is never a blocker. Compile the
+baseline, handoff, and full pass into the next `functions.exec` cell before
+making its first live call.
+
 Use the decoded positioning snapshot as the baseline boundary. Build the
 runtime-only DLSS Hoshipa target from its effective profile names, preserving
 `dlssProfile`, and set dormant `fsrRuntime: fsr3`. Run one fail-closed scenario

@@ -38,11 +38,12 @@ create an evidence directory, decode Base64, hash files, recursively search
 the response, or read this contract first. A failed scenario or required field
 stops without replaying the COC.
 
-The live skill loads only its small live-fast-path reference and matrix inside
-the still-running orchestration cell and does not emit them. Do not load Simple
-COC or Simple CSM instructions, enumerate tools, inspect schemas, or run another
-admission/reset scenario. The vendor protocol and this detailed contract are
-finalization-only reads.
+After positioning, the live skill performs one bounded model handoff: read only
+its small live-path reference and matrix, then compile the next orchestration
+cell. The reference is actionable prose and intentionally has no code block or
+local runner. Do not load Simple COC/CSM, enumerate tools, inspect schemas, or
+run another admission/reset scenario. Vendor protocol and this detailed
+contract are finalization-only reads.
 
 The vendor `SKILL.md` stores the exact `prepare_coc` and positioning responses
 under run-unique startup keys before this contract is read. They are startup
@@ -71,12 +72,11 @@ Every later mutation and ownership scenario remains synchronous with
 Reuse the post-position public snapshot and its exact `stateRevision` when it
 is complete, has no active operation, and still matches the bound Build ID.
 
-From this point until transition 1 has been dispatched, do not run a local
-command, create an evidence directory, locate a ledger, hash or serialize a
-receipt, search documentation or source, inspect a tool schema, or prepare a
-report. The only permitted work is to materialize the values already returned,
-run the baseline scenario, run the handoff scenario, and begin transition 1's
-prescribed 5,000 ms settle. The ledger path is the repository-relative
+After that one prescribed live-path/matrix read and until transition 1 has
+been dispatched, do not run another local command, create evidence, locate a
+ledger, hash/serialize a receipt, search source, inspect a schema, or prepare a
+report. Only compile and run the baseline, handoff, and transition 1's 5,000 ms
+settle. The ledger path is the repository-relative
 `docs/development/vr-render-scale-comparison-ledger.csv`; never search for it.
 
 Use these typed substitutions without discovery. `transitionId` is the only

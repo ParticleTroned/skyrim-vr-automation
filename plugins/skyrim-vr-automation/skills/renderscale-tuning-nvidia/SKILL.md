@@ -10,13 +10,14 @@ Use only for exact command `renderscale-tuning nvidia` or
 
 ## Immediate positioning
 
-Use only the named direct `mcp__devbench_vr__*` tools. Do not read a reference,
-run a local command, create evidence, enumerate tools, or inspect a fallback
-before positioning.
+Apart from reading this SKILL, use named direct `mcp__devbench_vr__*`
+tools. Before positioning, do not read references, run other local commands,
+create evidence, enumerate tools, or inspect fallbacks.
 
-The first live call is `mcp__devbench_vr__communityshaders_menu` with exactly
-`{"action":"prepare_coc"}`. Make it immediately, without commentary or local
-work, and keep it with `mcp__devbench_vr__scenario` in one orchestration cell.
+After the required skill announcement, use one `functions.exec` with nested
+direct tools: first `mcp__devbench_vr__communityshaders_menu` with exactly
+`{"action":"prepare_coc"}`, then `mcp__devbench_vr__scenario`. Never call
+Scenario first or issue either as a standalone tool.
 Store the exact envelopes under run-unique `startup-prepare` and
 `startup-positioning` keys, but control from the local responses. Do not call
 `load()`, compare object identity, stringify, or create evidence during startup;
@@ -60,19 +61,18 @@ Do not replay a failed or lost positioning scenario. Require decoded root
 
 ## Post-position handoff
 
-Only after positioning, load [the NVIDIA live fast path](references/live-fast-path.md)
-and [matrix](references/matrix.v1.json) together in one nested local read inside
-the still-running orchestration cell. Do not emit them. Follow the live path
-immediately without a model pause. Do not read the shared detailed contract or
-NVIDIA protocol during startup or between measured rows.
+After positioning, read the [NVIDIA live path](references/live-fast-path.md)
+and [matrix](references/matrix.v1.json) together. This sole post-COC model
+handoff interprets actionable prose; never expect a code block or local runner.
+Compile the next `functions.exec` to own baseline and uninterrupted measurement.
+Read the detailed contract and NVIDIA protocol only at pass finalization.
 
-Do not load Simple COC or Simple CSM instructions. Do not execute or alter
-Simple CSM's 25-step matrix. This trigger authorizes
-one positioning COC, two runtime-only baselines, and exactly 66 measured
-runtime-only `communityshaders.upscaling_api` applies. It does not authorize a
+Scope is one positioning COC, two runtime-only baselines, and exactly 66
+measured runtime-only `communityshaders.upscaling_api` applies. Never load/run
+Simple COC/CSM or alter Simple CSM's 25-step matrix. It does not authorize a
 build, deployment, MO2/Stabilizer/INI edit, persistence, restart, fault
-injection, another protocol, or render-scale mutation. VR FPS Stabilizer
-settings remain outside this assay.
+injection, another protocol, or render-scale mutation. VR FPS Stabilizer stays
+outside this assay.
 
 Require the structured positioning receipt's bound adapter to be NVIDIA;
 missing core fields are `BLOCKED`, while missing optional native-generation
