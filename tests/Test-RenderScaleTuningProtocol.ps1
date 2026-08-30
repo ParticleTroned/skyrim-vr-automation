@@ -269,6 +269,9 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'No other `before` or `after`' $variant.Name
     Assert-Contains $skill 'do not infer aliases' $variant.Name
     Assert-Contains $skill 'compact `notify()`' $variant.Name
+    Assert-Contains $skill 'do not decode or gate on its adapter subshape' $variant.Name
+    Assert-Contains $skill 'not by another client-side adapter-shape admission gate' $variant.Name
+    Assert-True (-not $skill.Contains("Require the structured positioning receipt's bound adapter", [StringComparison]::Ordinal)) "$($variant.Name) still blocks startup on an adapter receipt shape."
     Assert-Contains $skill 'Do not end the positioning `functions.exec`' $variant.Name
     Assert-Contains $skill 'tools/renderscale-tuning-live/runner.js' $variant.Name
     Assert-Contains $skill 'The runner is the executable live contract' $variant.Name

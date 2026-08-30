@@ -55,9 +55,11 @@ another call, or local work between the fixture and this request.
 
 Require `ok:true`,`aborted:false`,`stepsRun:8`; 7 tool entries have
 label/`.result`; wait `results[1]` has `kind:"wait"`/`ms:10000` and no
-label/result; cell/snapshot/adapter at `position-scene.result.cell.editorId`,
-`position-snapshot.result.snapshot`,
-`position-renderscale.result.status.adapter`. Emit compact `notify()`.
+label/result; cell and snapshot are at
+`position-scene.result.cell.editorId` and
+`position-snapshot.result.snapshot`. Preserve the complete
+`position-renderscale.result` as evidence, but do not decode or gate on its
+adapter subshape during startup. Emit compact `notify()`.
 
 ## Uninterrupted measurement
 
@@ -102,8 +104,9 @@ authorize a build, deployment, MO2/Stabilizer/INI
 edit, persistence, restart, unsafe pressure/fault injection, another protocol,
 or render-scale mutation. VR FPS Stabilizer settings remain outside this assay.
 
-Require the structured positioning receipt's bound adapter to be AMD; missing
-core fields are `BLOCKED`. Never fabricate FSR4 support or unavailability.
-Direct `mcp__devbench_vr__*` tools are the only permitted transport. Do not
-enumerate tools or inspect fallbacks; if a named tool is not callable, stop and
-never use the bundled controller.
+The explicit AMD command selects this lane. Vendor execution and backend
+correctness are qualified by the lane baselines and measured waiters, not by
+another client-side adapter-shape admission gate. Never fabricate FSR4 support
+or unavailability. Direct `mcp__devbench_vr__*` tools are the only permitted
+transport. Do not enumerate tools or inspect fallbacks; if a named tool is not
+callable, stop and never use the bundled controller.
