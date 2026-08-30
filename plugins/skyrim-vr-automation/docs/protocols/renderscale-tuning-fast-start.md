@@ -1,7 +1,8 @@
 # Render-scale tuning detailed contract
 
-The vendor `SKILL.md` owns the complete live fast path from runtime fixture
-through the current pass. Do not read this detailed contract during startup,
+The vendor `SKILL.md` and its small `live-fast-path.md` reference own the live
+path from runtime fixture through the current pass. Do not read this detailed
+contract during startup,
 after positioning, or between measured rows. Read it only after a pass has
 completed or been interrupted, when cumulative evidence and guarded
 finalization begin. Its detailed live rules remain the normative audit
@@ -37,11 +38,11 @@ create an evidence directory, decode Base64, hash files, recursively search
 the response, or read this contract first. A failed scenario or required field
 stops without replaying the COC.
 
-The live skill loads only its small matrix inside the still-running
-orchestration cell and does not emit it. Do not load Simple COC or Simple CSM
-instructions, enumerate tools, inspect schemas, or run another admission/reset
-scenario. The vendor protocol and this detailed contract are finalization-only
-reads.
+The live skill loads only its small live-fast-path reference and matrix inside
+the still-running orchestration cell and does not emit them. Do not load Simple
+COC or Simple CSM instructions, enumerate tools, inspect schemas, or run another
+admission/reset scenario. The vendor protocol and this detailed contract are
+finalization-only reads.
 
 The vendor `SKILL.md` stores the exact `prepare_coc` and positioning responses
 under run-unique startup keys before this contract is read. They are startup

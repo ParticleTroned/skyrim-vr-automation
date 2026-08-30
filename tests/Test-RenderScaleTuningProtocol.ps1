@@ -44,15 +44,16 @@ Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
 foreach ($token in @(
-    'detailed contract', 'complete live fast path',
+    'detailed contract', '`live-fast-path.md` reference own the live',
     'only after a pass has', 'finalization-only', 'synchronous',
     '`stepsRun: 8`', '`position-health`', '`position-state`',
     '`position-scene`', '`position-capabilities`', '`position-snapshot`',
     '`position-renderscale`', '`WhiterunDragonsreach`', '`0x10DE`/4318',
     '`0x1002`/4098', 'reports positioning as soon as it returns',
     'create an evidence directory', 'decode Base64',
-    '`content[0].text`', 'recursively search', 'small matrix',
-    'still-running', 'does not emit it',
+    '`content[0].text`', 'recursively search',
+    'small live-fast-path reference and matrix',
+    'still-running', 'does not emit them',
     'run-unique startup keys', '`raw/startup`',
     '`startup_evidence_incomplete`',
     'forbid the comparison-ledger append',
@@ -162,7 +163,10 @@ $variants = @(
 foreach ($variant in $variants) {
     $sourceRoot = Join-Path $repositoryRoot "skills\$($variant.Name)"
     $pluginRoot = Join-Path $repositoryRoot "plugins\skyrim-vr-automation\skills\$($variant.Name)"
-    foreach ($relative in @('SKILL.md', 'references\protocol.md', 'references\matrix.v1.json')) {
+    foreach ($relative in @(
+        'SKILL.md', 'references\live-fast-path.md',
+        'references\protocol.md', 'references\matrix.v1.json'
+    )) {
         $source = Join-Path $sourceRoot $relative
         $plugin = Join-Path $pluginRoot $relative
         Assert-True (Test-Path -LiteralPath $source -PathType Leaf) "Missing source file: $source"
@@ -173,8 +177,9 @@ foreach ($variant in $variants) {
     }
 
     $skill = Get-Content -LiteralPath (Join-Path $sourceRoot 'SKILL.md') -Raw
+    $live = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\live-fast-path.md') -Raw
     $protocol = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\protocol.md') -Raw
-    $protocolContract = "$skill`n$fastStart`n$protocol"
+    $protocolContract = "$skill`n$live`n$fastStart`n$protocol"
     $matrix = Get-Content -LiteralPath (Join-Path $sourceRoot 'references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
 
     Assert-Contains $skill "name: $($variant.Name)" $variant.Name
@@ -184,39 +189,40 @@ foreach ($variant in $variants) {
     Assert-Contains $skill 'communityshaders.upscaling_api' $variant.Name
     Assert-Contains $skill 'does not authorize' $variant.Name
     Assert-Contains $skill 'VR FPS Stabilizer settings remain' $variant.Name
-    Assert-Contains $skill 'direct `mcp__devbench_vr__*` tools are the only permitted' $variant.Name
-    Assert-Contains $skill 'Do not enumerate the tool catalog' $variant.Name
-    Assert-Contains $skill 'If a named direct tool is not callable' $variant.Name
-    Assert-Contains $skill 'Never use the bundled' $variant.Name
-    Assert-Contains $skill 'Validate required output fields only' $variant.Name
-    Assert-Contains $skill 'structured producer receipt that owns them' $variant.Name
-    Assert-Contains $skill '../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
-    Assert-Contains $skill 'The first live call is `communityshaders.menu`' $variant.Name
+    Assert-Contains $skill 'Direct `mcp__devbench_vr__*` tools are the only' $variant.Name
+    Assert-Contains $skill 'Do not enumerate tools or inspect fallbacks' $variant.Name
+    Assert-Contains $skill 'if a named tool is not callable' $variant.Name
+    Assert-Contains $skill 'never use the bundled controller' $variant.Name
+    Assert-Contains $live '../../../docs/protocols/renderscale-tuning-fast-start.md' $variant.Name
+    Assert-Contains $skill 'The first live call is `mcp__devbench_vr__communityshaders_menu`' $variant.Name
     Assert-Contains $skill '`{"action":"prepare_coc"}`' $variant.Name
-    Assert-Contains $skill '"async": false' $variant.Name
-    Assert-Contains $skill '"command": "coc WhiterunDragonsreach"' $variant.Name
-    Assert-Contains $skill '"label": "position-renderscale"' $variant.Name
-    Assert-Contains $skill '"kind": "health"' $variant.Name
-    Assert-Contains $skill '"kind": "state"' $variant.Name
-    Assert-Contains $skill '"kind": "scene"' $variant.Name
-    Assert-Contains $skill 'Do not insert commentary' $variant.Name
+    Assert-Contains $skill '"async":false' $variant.Name
+    Assert-Contains $skill '"command":"coc WhiterunDragonsreach"' $variant.Name
+    Assert-Contains $skill '"label":"position-renderscale"' $variant.Name
+    Assert-Contains $skill '"kind":"health"' $variant.Name
+    Assert-Contains $skill '"kind":"state"' $variant.Name
+    Assert-Contains $skill '"kind":"scene"' $variant.Name
+    Assert-Contains $skill 'without commentary or local' $variant.Name
     Assert-Contains $skill 'one orchestration cell' $variant.Name
     Assert-Contains $skill '`startup-prepare`' $variant.Name
     Assert-Contains $skill '`startup-positioning`' $variant.Name
-    Assert-Contains $skill 'do not call `load()`, compare' $variant.Name
-    Assert-Contains $skill 'Never correct and restart the' $variant.Name
+    Assert-Contains $skill '`load()`, compare object identity' $variant.Name
+    Assert-Contains $skill 'never correct and restart or replay' $variant.Name
     Assert-True (-not $skill.Contains('verify both keys with `load()`', [StringComparison]::Ordinal)) "$($variant.Name) still gates startup on stored-object verification."
     Assert-Contains $skill 'finalization materializes both stored responses' $variant.Name
     Assert-Contains $skill '`content[0].type: "text"`' $variant.Name
     Assert-Contains $skill '`JSON.parse`' $variant.Name
     Assert-Contains $skill '`content[0].text`' $variant.Name
     Assert-Contains $skill '`after.foveation`' $variant.Name
-    Assert-Contains $skill 'never validate the fixture from `before`' $variant.Name
-    Assert-Contains $skill '`notify()`; do not end the orchestration cell' $variant.Name
-    Assert-Contains $skill 'one nested local read inside the still-running orchestration cell' $variant.Name
+    Assert-Contains $skill 'Never validate the fixture from `before`' $variant.Name
+    Assert-Contains $skill 'compact `notify()`' $variant.Name
+    Assert-Contains $skill 'one nested local read inside' $variant.Name
     Assert-Contains $skill 'Do not read the shared detailed contract' $variant.Name
-    Assert-Contains $skill 'Do not pause for model reasoning' $variant.Name
-    Assert-Contains $skill 'Only after a pass completes or is interrupted' $variant.Name
+    Assert-Contains $live 'Do not pause for model reasoning' $variant.Name
+    Assert-Contains $live 'Only after a pass completes or is interrupted' $variant.Name
+    Assert-True ($skill.Length -le 4700) "$($variant.Name) pre-COC entrypoint exceeds the known-fast size boundary."
+    $firstLiveLine = ($skill.Substring(0, $skill.IndexOf('The first live call', [StringComparison]::Ordinal)) -split "`n").Count
+    Assert-True ($firstLiveLine -le 20) "$($variant.Name) delays its first live instruction."
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
     Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
     Assert-True (-not $skill.Contains('"args": { "action": "health" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect health."
