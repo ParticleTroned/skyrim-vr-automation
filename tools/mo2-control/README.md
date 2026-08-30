@@ -3,6 +3,9 @@
 MO2 Control is the shared, machine-readable entry point for Codex tasks that
 inspect or validate the Skyrim VR Mod Organizer 2 installation.
 
+`validate-closed` is the explicit closed-state spelling of `validate
+-RequireClosed`; both commands are read-only and return the same proof.
+
 Version `0.8.0` retains cooperative access arbitration and adds a durable,
 session-scoped controller bundle, explicit profile identity fields, retained
 failed-to-run dialog cleanup, bounded launch

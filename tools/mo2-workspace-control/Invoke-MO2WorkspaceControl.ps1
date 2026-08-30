@@ -22,6 +22,7 @@ param(
     [string]$Placement = 'End',
     [string]$RelativeToMod,
     [string[]]$WinningPaths,
+    [string]$WinningPathsFile,
     [switch]$RegisterEnabled,
     [switch]$CleanupOwnedMods,
     [ValidateRange(100, 60000)]
@@ -47,6 +48,27 @@ $ErrorActionPreference = 'Stop'
 $toolRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $toolRoot 'mo2-control\ConfigResolution.psm1') -Force
 Import-Module (Join-Path $toolRoot 'mo2-control\MO2Control.psm1') -Force
+
+function Resolve-WorkspaceWinningPaths([string[]]$Inline, [string]$File) {
+    $values = [Collections.Generic.List[string]]::new()
+    foreach ($value in @($Inline)) { if (-not [string]::IsNullOrWhiteSpace($value)) { $values.Add($value.Trim()) } }
+    if (-not [string]::IsNullOrWhiteSpace($File)) {
+        $resolved = [IO.Path]::GetFullPath($File)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "WinningPathsFile does not exist: $resolved" }
+        $raw = Get-Content -LiteralPath $resolved -Raw
+        $parsed = $null
+        $jsonArray = $raw.TrimStart().StartsWith('[')
+        try { $parsed = $raw | ConvertFrom-Json -Depth 5 -ErrorAction Stop } catch { if ($jsonArray) { throw 'WinningPathsFile begins as JSON but is not a valid JSON string array.' } }
+        $entries = if ($jsonArray) { @($parsed) } else { @($raw -split '\r?\n' | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }) }
+        foreach ($entry in $entries) {
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) { throw 'WinningPathsFile must contain a JSON string array or one relative path per line.' }
+            $values.Add($entry.Trim())
+        }
+    }
+    return @($values | Select-Object -Unique)
+}
+
+$resolvedWinningPaths = @(Resolve-WorkspaceWinningPaths -Inline $WinningPaths -File $WinningPathsFile)
 
 function New-WorkspaceApprovalMetadata([string]$Subcommand) {
     $hostExecutable = [string][Environment]::ProcessPath
@@ -826,6 +848,7 @@ function Move-OverwriteShaderCachesToStableMod($Config, [string]$SourceName, [st
     }
 }
 
+$resolvedConfig = $null
 try {
     $script:TreeOperationDeadlineUtc = if ($InternalTestFailurePoint -eq 'tree-operation-deadline') { [DateTime]::UtcNow.AddMilliseconds(-1) } else { [DateTime]::UtcNow.AddSeconds($TreeOperationTimeoutSeconds) }
     $resolvedConfig = Resolve-MO2ControlConfigPath -ConfigPath $ConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control')
@@ -1202,7 +1225,7 @@ try {
         Assert-NoWorkspaceReparsePoint -Path $resolvedMod -Purpose 'Task-owned mod directory'
         $evidence = Join-Path (Split-Path -Parent $owned.path) ($WorkspaceId + '-register-' + (Get-CollisionResistantSafeName $ModName))
         $profileTool = Join-Path $toolRoot 'mo2-profile-control\Invoke-MO2ProfileControl.ps1'
-        $winning = @($WinningPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $winning = @($resolvedWinningPaths)
         $arguments = @{
             Command = $(if ($winning.Count -gt 0) { 'register-winning' } else { 'register' }); ProfilePath = (Join-Path ([string]$owned.data.profilePath) 'modlist.txt')
             ModName = $ModName; ModDirectory = $resolvedMod; Placement = $Placement
@@ -1242,7 +1265,7 @@ try {
         if ([string]::IsNullOrWhiteSpace($ModName)) { throw 'ensure-mod-wins requires ModName.' }
         $matches = @($owned.data.registeredMods | Where-Object { [string]$_.name -ceq $ModName })
         if ($matches.Count -ne 1) { throw "ensure-mod-wins requires exactly one task-owned registered mod named '$ModName'; found $($matches.Count)." }
-        $winning = @($WinningPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $winning = @($resolvedWinningPaths)
         if ($winning.Count -eq 0) { throw 'ensure-mod-wins requires at least one WinningPaths entry.' }
         $registered = $matches[0]
         $null = Assert-WorkspaceOwnerMarker -Workspace $owned -ModName $ModName -ModPath ([string]$registered.path)
@@ -1390,6 +1413,14 @@ catch {
 }
 
 $result.data | Add-Member -NotePropertyName approval -NotePropertyValue (New-WorkspaceApprovalMetadata -Subcommand $Command) -Force
+if ($null -ne $resolvedConfig) {
+    $result.data | Add-Member -NotePropertyName configuration -NotePropertyValue ([pscustomobject][ordered]@{
+        path = [string]$resolvedConfig.path
+        source = [string]$resolvedConfig.source
+        exists = [bool]$resolvedConfig.exists
+        candidates = @($resolvedConfig.candidates)
+    }) -Force
+}
 $jsonParameters = @{ InputObject = $result; Depth = 18 }
 if ($Compact) { $jsonParameters['Compress'] = $true }
 ConvertTo-Json @jsonParameters

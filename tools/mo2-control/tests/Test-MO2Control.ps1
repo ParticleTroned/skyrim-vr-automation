@@ -226,6 +226,8 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($unownedAccess.state -eq 'access-busy' -and -not $unownedAccess.data.owned -and (($unownedAccess | ConvertTo-Json -Depth 12) -notmatch 'access-wrong-credential')) 'status rejects a wrong credential without echoing it'
     $ownedValidation = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate -ConfigPath $configPath -AccessId $accessId -RequireClosed -NoExit | ConvertFrom-Json)
     Assert-MO2Test ($ownedValidation.ok -and @($ownedValidation.checks | Where-Object { $_.name -eq 'session-lock' -and $_.status -eq 'pass' }).Count -eq 1) 'validation accepts the exact owned access lease'
+    $closedAlias = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate-closed -ConfigPath $configPath -AccessId $accessId -NoExit | ConvertFrom-Json)
+    Assert-MO2Test ($closedAlias.ok -and $closedAlias.command -eq 'validate-closed') 'validate-closed is a working explicit alias for the closed-state precondition'
     $validationApproval = $ownedValidation.data.approval
     Assert-MO2Test ($validationApproval.reusableApprovalEligible -and -not $validationApproval.escalationUsuallyRequired -and @($validationApproval.reusablePrefix).Count -eq 6) 'validation exposes an exact reusable approval prefix'
     Assert-MO2Test ($validationApproval.reusablePrefix[1] -eq '-NoProfile' -and $validationApproval.reusablePrefix[2] -eq '-NonInteractive' -and $validationApproval.reusablePrefix[3] -eq '-File' -and $validationApproval.reusablePrefix[4] -eq [IO.Path]::GetFullPath((Join-Path $packageRoot 'Invoke-MO2Control.ps1')) -and $validationApproval.reusablePrefix[5] -eq 'validate') 'approval prefix keeps the literal host, entry point, and subcommand visible'
