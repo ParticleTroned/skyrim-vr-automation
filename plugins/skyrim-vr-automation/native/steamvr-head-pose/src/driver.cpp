@@ -3,23 +3,29 @@
 #include <openvr_driver.h>
 
 #include <Windows.h>
+#include <bcrypt.h>
+#include <sddl.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+
+#pragma comment(lib, "Bcrypt.lib")
+#pragma comment(lib, "Advapi32.lib")
 
 namespace {
 
 constexpr char kSettingsSection[] = "driver_codex_head_pose";
 constexpr char kDefaultSerial[] = "CSX-NULL-HMD-POSE-1";
 constexpr char kDefaultModel[] = "CSX Synthetic Head Pose";
-constexpr wchar_t kPoseMapName[] = L"Local\\CSXVRHeadPose-v1";
+constexpr wchar_t kPoseMapName[] = L"Local\\CSXVRHeadPose-v2";
 constexpr std::uint32_t kPoseMagic = 0x48505343;  // "CSPH" in little endian.
-constexpr std::uint16_t kPoseVersion = 1;
+constexpr std::uint16_t kPoseVersion = 2;
 constexpr std::uint32_t kPoseEnabled = 1U << 0U;
 constexpr std::uint32_t kPoseStatusWaiting = 0;
 constexpr std::uint32_t kPoseStatusApplied = 1;
@@ -30,9 +36,9 @@ struct alignas(8) SharedPoseState {
     std::uint32_t magic;
     std::uint16_t version;
     std::uint16_t size;
-    volatile std::uint64_t requestedSequence;
-    volatile std::uint64_t appliedSequence;
-    volatile std::uint32_t status;
+    volatile LONG64 requestedSequence;
+    volatile LONG64 appliedSequence;
+    volatile LONG status;
     std::uint32_t flags;
     double positionX;
     double positionY;
@@ -41,9 +47,53 @@ struct alignas(8) SharedPoseState {
     double quaternionX;
     double quaternionY;
     double quaternionZ;
+    std::uint64_t writerNonce;
+    std::uint64_t acknowledgedWriterNonce;
+    std::uint64_t driverInstanceNonce;
+    std::uint32_t driverCreatorPid;
+    std::uint32_t reserved;
+    std::uint64_t driverStartedFileTimeUtc;
 };
 
-static_assert(sizeof(SharedPoseState) == 88);
+static_assert(sizeof(SharedPoseState) == 128);
+static_assert(offsetof(SharedPoseState, requestedSequence) == 8);
+static_assert(offsetof(SharedPoseState, appliedSequence) == 16);
+
+std::uint64_t AtomicRead(const volatile LONG64& value)
+{
+    return static_cast<std::uint64_t>(InterlockedCompareExchange64(
+        const_cast<volatile LONG64*>(&value), 0, 0));
+}
+
+void AtomicWrite(volatile LONG64& target, std::uint64_t value)
+{
+    InterlockedExchange64(&target, static_cast<LONG64>(value));
+}
+
+std::uint64_t NewNonce()
+{
+    std::uint64_t value = 0;
+    while (value == 0) {
+        if (BCryptGenRandom(
+                nullptr,
+                reinterpret_cast<PUCHAR>(&value),
+                static_cast<ULONG>(sizeof(value)),
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+            return 0;
+        }
+    }
+    return value;
+}
+
+std::uint64_t CurrentFileTimeUtc()
+{
+    FILETIME time{};
+    GetSystemTimeAsFileTime(&time);
+    ULARGE_INTEGER value{};
+    value.LowPart = time.dwLowDateTime;
+    value.HighPart = time.dwHighDateTime;
+    return value.QuadPart;
+}
 
 struct PoseValue {
     std::array<double, 3> position{0.0, 1.68, 0.0};
@@ -149,18 +199,37 @@ public:
 
     bool Initialize(const PoseValue& initialPose)
     {
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:P(A;;GA;;;OW)", SDDL_REVISION_1, &descriptor, nullptr)) {
+            Log("owner-only security descriptor creation failed with Win32 error " +
+                std::to_string(GetLastError()));
+            return false;
+        }
+        SECURITY_ATTRIBUTES security{};
+        security.nLength = sizeof(security);
+        security.lpSecurityDescriptor = descriptor;
+        security.bInheritHandle = FALSE;
         mapping_ = CreateFileMappingW(
             INVALID_HANDLE_VALUE,
-            nullptr,
+            &security,
             PAGE_READWRITE,
             0,
             static_cast<DWORD>(sizeof(SharedPoseState)),
             kPoseMapName);
+        const auto createError = GetLastError();
+        LocalFree(descriptor);
         if (!mapping_) {
             Log("CreateFileMappingW failed with Win32 error " + std::to_string(GetLastError()));
             return false;
         }
-        const auto existed = GetLastError() == ERROR_ALREADY_EXISTS;
+        const auto existed = createError == ERROR_ALREADY_EXISTS;
+        if (existed) {
+            Log("refusing a pre-existing shared pose mapping without a current driver ownership handshake");
+            CloseHandle(mapping_);
+            mapping_ = nullptr;
+            return false;
+        }
         state_ = static_cast<SharedPoseState*>(
             MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedPoseState)));
         if (!state_) {
@@ -168,19 +237,26 @@ public:
             return false;
         }
 
-        if (!existed || state_->magic != kPoseMagic || state_->version != kPoseVersion ||
-            state_->size != sizeof(SharedPoseState)) {
-            std::memset(state_, 0, sizeof(SharedPoseState));
-            state_->magic = kPoseMagic;
-            state_->version = kPoseVersion;
-            state_->size = sizeof(SharedPoseState);
-            state_->requestedSequence = 1;
-            MemoryBarrier();
-            WritePose(initialPose);
-            state_->status = kPoseStatusWaiting;
-            MemoryBarrier();
-            state_->requestedSequence = 2;
+        const auto instanceNonce = NewNonce();
+        const auto initialWriterNonce = NewNonce();
+        if (instanceNonce == 0 || initialWriterNonce == 0) {
+            Log("cryptographic nonce generation failed");
+            return false;
         }
+        std::memset(state_, 0, sizeof(SharedPoseState));
+        state_->magic = kPoseMagic;
+        state_->version = kPoseVersion;
+        state_->size = sizeof(SharedPoseState);
+        state_->driverInstanceNonce = instanceNonce;
+        state_->driverCreatorPid = GetCurrentProcessId();
+        state_->driverStartedFileTimeUtc = CurrentFileTimeUtc();
+        AtomicWrite(state_->requestedSequence, 1);
+        WritePose(initialPose);
+        state_->writerNonce = initialWriterNonce;
+        state_->acknowledgedWriterNonce = initialWriterNonce;
+        InterlockedExchange(&state_->status, kPoseStatusApplied);
+        AtomicWrite(state_->appliedSequence, 2);
+        AtomicWrite(state_->requestedSequence, 2);
         return true;
     }
 
@@ -189,9 +265,8 @@ public:
         if (!state_) {
             return false;
         }
-        const auto first = state_->requestedSequence;
-        MemoryBarrier();
-        if (first == 0 || (first & 1U) != 0 || first == state_->appliedSequence) {
+        const auto first = AtomicRead(state_->requestedSequence);
+        if (first == 0 || (first & 1U) != 0 || first == AtomicRead(state_->appliedSequence)) {
             return false;
         }
 
@@ -203,12 +278,14 @@ public:
             state_->quaternionY,
             state_->quaternionZ,
         };
+        const auto writerNonce = state_->writerNonce;
         MemoryBarrier();
-        const auto second = state_->requestedSequence;
-        if (first != second || (second & 1U) != 0) {
+        const auto second = AtomicRead(state_->requestedSequence);
+        if (first != second || (second & 1U) != 0 || writerNonce == 0) {
             return false;
         }
         sequence = second;
+        writerNonce_ = writerNonce;
         return true;
     }
 
@@ -217,9 +294,9 @@ public:
         if (!state_) {
             return;
         }
-        state_->status = accepted ? kPoseStatusApplied : kPoseStatusRejected;
-        MemoryBarrier();
-        state_->appliedSequence = sequence;
+        state_->acknowledgedWriterNonce = writerNonce_;
+        InterlockedExchange(&state_->status, accepted ? kPoseStatusApplied : kPoseStatusRejected);
+        AtomicWrite(state_->appliedSequence, sequence);
     }
 
 private:
@@ -237,6 +314,7 @@ private:
 
     HANDLE mapping_{nullptr};
     SharedPoseState* state_{nullptr};
+    std::uint64_t writerNonce_{0};
 };
 
 class HeadPoseDevice final : public vr::ITrackedDeviceServerDriver {
@@ -260,7 +338,7 @@ public:
         if (!channel_.Initialize(pose_)) {
             return vr::VRInitError_Driver_Failed;
         }
-        Log("activated device " + serial_ + " with shared-memory contract Local\\CSXVRHeadPose-v1");
+        Log("activated device " + serial_ + " with owner-only shared-memory contract Local\\CSXVRHeadPose-v2");
         return vr::VRInitError_None;
     }
 

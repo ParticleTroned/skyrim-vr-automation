@@ -26,10 +26,12 @@ game cycling and explicit safe-gated termination remain available.
 
 `open` and `launch` accept `-StartOnly`: they write their exact session receipt,
 start only the intended process, return immediately with the session/evidence
-path, and direct the caller to poll `status`. A missing session ID is a
-structured `missing-session-id` precondition instead of a PowerShell binding
-failure. Launch classifies the exact `Failed to write settings` dialog and
-cooperative close acknowledges only its exact `OK` button.
+path, and direct the caller to poll `status`. When `status` proves the one exact
+adopted MO2 process and its visible `MainWindow`, it advances an `opening`
+session to durable `mo2-open` so a later game launch is valid. A missing session
+ID is a structured `missing-session-id` precondition instead of a PowerShell
+binding failure. Launch classifies the exact `Failed to write settings` dialog
+and cooperative close acknowledges only its exact `OK` button.
 
 `status` first retains a new launch in bounded `launch-pending`. After that
 grace it identifies a closed or headless owner with active RootBuilder
@@ -69,7 +71,7 @@ literal paths before execution):
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> help -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> inspect -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label upscaling-api-tests -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label upscaling-api-tests -TaskId <stable-task-id> -EstimatedMinutes 20 -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -RequireSKSE -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label upscaling-api-run -RequireSKSE -Compact
 ```
@@ -126,14 +128,20 @@ RootBuilder failures.
 ## Cooperative access lifecycle
 
 `request-access` atomically acquires the one shared MO2 lock and returns an
-`accessId`. If another task owns it, the command returns `access-busy`, the
-current owner label/state, and any advisory release estimate. `-WaitSeconds`
-can perform a bounded retry, but no task is queued indefinitely.
+`accessId` bearer credential plus a distinct public `leaseId`. Retain the
+`accessId` privately. `-TaskId` (alias `-ReporterTaskId`) records an optional
+stable task identity; when omitted it resolves `CODEX_THREAD_ID` or
+`CODEX_TASK_ID` if available. If another task owns the lock, `access-busy`
+reports only the public lease identity, owner label/state, and advisory release
+estimate; it never discloses or echoes an access credential. `-WaitSeconds` can
+perform a bounded retry, but no task is queued indefinitely.
 
 `-EstimatedMinutes` is useful coordination metadata, not a deadline. The tool
 never expires, steals, or transfers a lease because its estimate elapsed.
 `renew-access` refreshes the recorded activity time and can replace the
 estimate. `access-status` reports availability and exact ownership.
+Session owner liveness is bound to both process ID and process start time, so a
+reused PID cannot make an abandoned session appear live.
 
 Every task must call `release-access` as soon as it no longer needs MO2. This
 includes compilation, source editing, result analysis, report writing, and any
@@ -151,7 +159,7 @@ The normal explicit flow uses these separate direct calls. Read each JSON
 result, then substitute its literal returned identity into the next command:
 
 ```text
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label weather-api-tests -EstimatedMinutes 20 -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> request-access -Label weather-api-tests -TaskId <stable-task-id> -EstimatedMinutes 20 -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> validate -AccessId <literal-access-id> -RequireClosed -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label weather-api-run -Compact
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <literal-controllerPath> release -SessionId <literal-session-id> -Compact
@@ -185,12 +193,14 @@ Immediately after process creation it writes `mo2-open-started.json` and marks
 the owned session `opening`. If the caller's outer timeout expires before UIA
 readiness, a later `status`, `close`, or `recover-close` still has durable PID,
 path, argument, and timestamp evidence for exact-process adoption.
-`status` is bounded and non-mutating. `stop-game` requests normal closure of the
-owned game/loader while preserving the exact owner MO2 PID, allowing controlled
-relaunches. After the game exits it acknowledges only a structurally classified
-retained `Failed to run` dialog; an unknown modal returns
-`game-stopped-needs-attention` without touching it. It then observes the exact
-session-owned MO2 PID for a bounded stability window. If MO2 exits immediately
+`status` is bounded and mutates only the durable `opening` to `mo2-open`
+transition after exact process and visible-main-window proof. `stop-game`
+requests normal closure of the owned game/loader while preserving the exact
+owner MO2 PID, allowing controlled relaunches. After the game exits it first
+observes the exact session-owned MO2 PID for a bounded stability window,
+allowing a delayed post-stop dialog to arrive. It then acknowledges only a
+structurally classified retained `Failed to run` dialog; an unknown modal returns
+`game-stopped-needs-attention` without touching it. If MO2 exits immediately
 after the game, `stop-game` returns `mo2-exited-after-game-stop`, sets
 `releaseRequired`, and refuses to represent the session as relaunchable. `close`
 refuses while a game/loader exists and cooperatively resolves

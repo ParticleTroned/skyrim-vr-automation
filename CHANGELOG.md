@@ -6,12 +6,54 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 - Add bounded whole-runtime Skyrim quiet-window capture and informational
   comparison reports alongside the existing CSX timer profiler.
+- Let MO2 access requests retain an explicit stable task identity, complete
+  asynchronous `-StartOnly` opens from proven main-window state, retry transient
+  UI Automation enumeration once, and clean late failure dialogs after the
+  retained-process stability window.
+- Preserve the invoking command context through shader-cache completion so
+  promoted working caches retain functional `ShouldProcess` authorization.
+- Serialize every SteamVR/OpenVR command with a bounded lock derived from the
+  canonical live targets, move recovery authority to a deterministic per-user
+  journal independent of caller evidence directories, and replace repeated
+  whole-log reads with deadline-charged incremental bounded-byte tails.
+- Serialize head-pose driver installs/upgrades by canonical install and OpenVR
+  targets, persist authoritative registration preimages, and recover interrupted
+  replacement/registration phases before admitting another installer.
+- Serialize shader-cache swaps by canonical live target, recover interrupted
+  operations from a target-owned journal, and use one deadline-, depth-, byte-,
+  file-, and reparse-bounded inventory primitive across transactions and catalogs.
+- Give MO2 profile mutations a deterministic target-owned lock and recovery
+  journal, and recover interrupted workspace create, resume, and retire
+  transactions from durable manifest and selected-profile preimages before any
+  later command reads or changes workspace state.
+- Serialize profiler captures per runtime, enforce one total deadline with a
+  reserved restoration budget, and bind every accepted DevBench response and
+  sample to the same complete, verified process/build/artifact identity. Recover
+  nonterminal captures from a deterministic runtime-owned journal without ever
+  mutating a replacement process.
+
+- Require every fresh MO2 task clone to inherit a hash- and
+  profile-fingerprint-verified default world-entry save, make the doctor fail
+  invalid setup, keep static integrity distinct from runtime qualification, and
+  preserve resumed task profiles without making a post-edit save warranty.
+  Bound all related traversal, hashing, copy, and verification work with one
+  total deadline plus file, byte, depth, directory, and reparse-point limits.
+- Make deprecated workspace `release` fail closed, add collision-resistant
+  registration evidence names, let blocking DevBench calls consume their
+  declared bounded timeout, and require recognized positive contract evidence
+  for `serviceReady`.
+- Separate MO2's public lease identity from its bearer credential in status
+  results, bind live session ownership to PID plus process start time, and make
+  feedback amendments and maintainer transitions carry explicit actor roles.
+- Redact local paths recursively from feedback operation, resolution, and
+  resolution-link fields in default exports.
 - Add a native, fixed-standing SteamVR head-pose provider for Valve null-HMD,
   a versioned shared-memory control/acknowledgement contract, independent
   application-facing OpenVR qualification, transactional installation, and
   null-runtime readiness enforcement. Controllers remain unavailable.
-- Synthesize schema-valid, non-mutating registry envelopes when a versioned
-  DevBench `serviceReady` wait omits arguments; preserve explicit arguments.
+- Synthesize schema-valid, non-mutating registry envelopes for versioned
+  DevBench `serviceReady` waits, reject arbitrary explicit probe arguments, and
+  keep unknown non-empty responses unready.
 - Disable SteamVR dashboard input in the null-HMD transaction, report the
   deliberately unavailable controller/controlled-pose contract, retain a
   surviving dashboard process as telemetry, and reject Windows PowerShell with
@@ -25,9 +67,13 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Add opt-in, receipt-bound isolation of exact OpenVR display redirectors;
   refuse registration or manifest drift and restore the byte-identical
   pre-test registration file before returning to normal VR operation.
-- Record canonical OpenVR registration fingerprints so SteamVR-owned JSON
-  formatting rewrites no longer strand an isolation transaction, while changed
-  registration values and suppressed-driver manifests remain fail-closed.
+- Accept formatting-only OpenVR registration drift through ordinal canonical
+  JSON comparison while deriving the isolated expectation from the exact
+  backup; reject duplicate targets and receipt/backup disagreement.
+- Restore SteamVR settings safely after runtime serialization by rebuilding the
+  receipt-bound null contract, accepting only formatting plus allowlisted
+  `GpuSpeed`/`LastKnown` runtime fields, and retaining exact live bytes for
+  rollback while rejecting controlled or unclassified drift.
 - Revalidate the exact MO2 owner through a bounded post-game stability window,
   returning an explicit release-required state if MO2 exits, and add compact
   JSON output to profile control.

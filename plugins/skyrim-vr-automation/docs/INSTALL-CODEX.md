@@ -27,6 +27,33 @@ An explicit `-ConfigPath` takes precedence, followed by
 `SKYRIM_VR_AUTOMATION_CONFIG`, the stable per-user path, and the legacy ignored
 checkout-local path. The doctor reports which source won.
 
+## Qualify the maintained MO2 source
+
+Before handing fresh MO2 profiles to tasks, configure
+`defaults.testProfileSource` as the maintained prime profile and keep one
+known-good world-entry save in its `saves` tree. Live-load that save once with
+the intended base mod list, then copy and adapt
+`tools/mo2-workspace-control/save-fixtures.example.json` outside the checkout.
+Set `defaults.newGameFixtureManifest` to that file and record the exact source
+profile fingerprint and save/co-save hashes.
+
+Verify the contract before installation is considered ready:
+
+```powershell
+.\tools\mo2-workspace-control\Invoke-MO2WorkspaceControl.ps1 fixture-status -Compact
+.\tools\doctor\Invoke-SkyrimVRAutomationDoctor.ps1 inspect
+```
+
+The first command must return `fixture-valid`; the doctor check
+`prime-profile-world-entry-integrity` must pass. A missing, stale, or mismatched fixture
+blocks fresh workspace creation. Only one save is required because guarded
+`coc`/`cow` transitions can reach other locations after world entry.
+
+Every fresh task profile receives the complete prime-profile save tree and a
+verified copy of that baseline. This is exact static integrity, not proof of a
+successful runtime load. A resumed task profile is intentionally left untouched
+and is not reverified after the task changes its own mod or save state.
+
 ## Upgrade
 
 ```text

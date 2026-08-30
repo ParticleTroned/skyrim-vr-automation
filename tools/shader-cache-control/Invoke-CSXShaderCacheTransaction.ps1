@@ -24,10 +24,28 @@ param(
 
     [string]$RelativeCachePath = 'ShaderCache',
 
+    [ValidateRange(1, 1000000)]
+    [int]$MaxInventoryFiles = 20000,
+
+    [ValidateRange(1, [long]::MaxValue)]
+    [long]$MaxInventoryBytes = 21474836480,
+
+    [ValidateRange(1, 128)]
+    [int]$MaxInventoryDepth = 24,
+
+    [ValidateRange(1, 3600)]
+    [int]$InventoryTimeoutSeconds = 120,
+
+    [ValidateRange(1, 600000)]
+    [int]$TransactionLockTimeoutMilliseconds = 10000,
+
     [ValidateNotNullOrEmpty()]
     [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
 
     [switch]$DeepInventory,
+
+    [ValidateSet('', 'seed-before-displace', 'seed-after-activate', 'restore-before-displace', 'restore-after-activate')]
+    [string]$InternalTestFailurePoint = '',
 
     [switch]$NoExit,
 
@@ -36,6 +54,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ShaderCacheInventory.ps1')
 
 function Get-LiveProcesses([string[]]$Names) {
     $records = @()
@@ -68,32 +87,12 @@ function Assert-SafeSourcePath([string]$Path) {
     return $resolved
 }
 
+function Assert-NoCacheReparsePoint([string]$Path, [string]$Purpose) {
+    Assert-CSXNoCacheReparsePoint -Path $Path -Purpose $Purpose
+}
+
 function Get-TreeInventory([string]$Root) {
-    $resolved = [IO.Path]::GetFullPath($Root)
-    if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
-        throw "Shader-cache root is not a directory: $resolved"
-    }
-    $files = @(
-        Get-ChildItem -LiteralPath $resolved -Recurse -File |
-            ForEach-Object {
-                [pscustomobject][ordered]@{
-                    relativePath = [IO.Path]::GetRelativePath($resolved, $_.FullName).Replace('/', '\')
-                    bytes = [long]$_.Length
-                    sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-                }
-            } |
-            Sort-Object relativePath
-    )
-    $canonical = ($files | ForEach-Object { '{0}|{1}|{2}' -f $_.relativePath, $_.bytes, $_.sha256 }) -join "`n"
-    $treeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical)))
-    $totalBytes = if ($files.Count -gt 0) { [long](($files | Measure-Object bytes -Sum).Sum) } else { [long]0 }
-    return [pscustomobject][ordered]@{
-        root = $resolved
-        files = $files.Count
-        bytes = $totalBytes
-        treeSha256 = $treeHash
-        entries = $files
-    }
+    return Get-CSXShaderCacheTreeInventory -Root $Root -MaxFiles $MaxInventoryFiles -MaxBytes $MaxInventoryBytes -MaxDepth $MaxInventoryDepth -TimeoutSeconds $InventoryTimeoutSeconds
 }
 
 function Get-FileInventory([string]$Path) {
@@ -114,7 +113,159 @@ function Get-FileInventory([string]$Path) {
 }
 
 function Write-JsonFile([string]$Path, $Value) {
-    $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding utf8
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($Path) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
+    finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force } }
+}
+
+function Test-PathWithin([string]$Path, [string]$Parent) {
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $root = [IO.Path]::GetFullPath($Parent).TrimEnd('\')
+    return $candidate.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-CacheTransactionControl([string]$LivePath) {
+    $canonical = [IO.Path]::GetFullPath($LivePath).TrimEnd('\')
+    $identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical.ToUpperInvariant())))
+    $override = [Environment]::GetEnvironmentVariable('CSX_SHADER_CACHE_CONTROL_ROOT')
+    if ([string]::IsNullOrWhiteSpace($override)) {
+        $base = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'CSX-VR-Automation\ShaderCache\transactions'
+    }
+    else {
+        $base = [IO.Path]::GetFullPath($override)
+        $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+        if (-not (Test-PathWithin -Path $canonical -Parent $temporary) -or -not (Test-PathWithin -Path $base -Parent $temporary)) {
+            throw 'CSX_SHADER_CACHE_CONTROL_ROOT is fixture-only and requires both the cache and control root beneath the OS temporary directory.'
+        }
+    }
+    $root = Join-Path $base $identity
+    return [pscustomobject][ordered]@{
+        identity = $identity
+        root = $root
+        lock = Join-Path $root 'target.lock'
+        journal = Join-Path $root 'transaction.journal.json'
+    }
+}
+
+function Enter-CacheTransactionLock($Control) {
+    New-Item -ItemType Directory -Path $Control.root -Force | Out-Null
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        try {
+            return [IO.File]::Open($Control.lock, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        }
+        catch [IO.IOException] {
+            if ($timer.ElapsedMilliseconds -ge $TransactionLockTimeoutMilliseconds) {
+                throw "Timed out acquiring shader-cache target lock after $TransactionLockTimeoutMilliseconds ms: $($Control.lock)"
+            }
+            Start-Sleep -Milliseconds ([Math]::Min(100, [Math]::Max(10, $TransactionLockTimeoutMilliseconds - [int]$timer.ElapsedMilliseconds)))
+        }
+    } while ($true)
+}
+
+function Write-CacheJournal($Control, $Journal) {
+    Write-JsonFile $Control.journal $Journal
+    if ($Journal.PSObject.Properties['evidenceJournalPath'] -and -not [string]::IsNullOrWhiteSpace([string]$Journal.evidenceJournalPath)) {
+        Write-JsonFile ([string]$Journal.evidenceJournalPath) $Journal
+    }
+}
+
+function Assert-CacheJournalContract($Control, $Journal, [string]$LivePath) {
+    if ([string]$Journal.contractVersion -cne '2.0.0') { throw 'Authoritative shader-cache journal has an unsupported contract version.' }
+    if ([IO.Path]::GetFullPath([string]$Journal.cachePath) -cne [IO.Path]::GetFullPath($LivePath)) { throw 'Authoritative shader-cache journal targets a different live cache.' }
+    $parent = [IO.Path]::GetFullPath((Split-Path -Parent $LivePath))
+    $leaf = [IO.Path]::GetFileName($LivePath)
+    foreach ($property in @('stagingPath', 'displacedPath')) {
+        $path = [IO.Path]::GetFullPath([string]$Journal.$property)
+        if (-not (Test-PathWithin -Path $path -Parent $parent) -or -not [IO.Path]::GetFileName($path).StartsWith('.' + $leaf + '.', [StringComparison]::Ordinal)) {
+            throw "Authoritative shader-cache journal contains an unsafe $property."
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Journal.originalTreeSha256) -or [string]::IsNullOrWhiteSpace([string]$Journal.requestedTreeSha256)) {
+        throw 'Authoritative shader-cache journal lacks exact original/replacement tree identities.'
+    }
+}
+
+function Move-ToRecoveryQuarantine([string]$Path, [string]$LivePath, [string]$OperationId, [string]$Role) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $null }
+    Assert-NoCacheReparsePoint -Path $Path -Purpose "Shader-cache $Role recovery tree"
+    $parent = Split-Path -Parent $LivePath
+    $leaf = Split-Path -Leaf $LivePath
+    $destination = Join-Path $parent ('.' + $leaf + '.recovered-' + $Role + '.' + $OperationId + '.' + [guid]::NewGuid().ToString('N'))
+    Move-Item -LiteralPath $Path -Destination $destination -ErrorAction Stop
+    return $destination
+}
+
+function Recover-PendingCacheTransaction($Control, [string]$LivePath) {
+    if (-not (Test-Path -LiteralPath $Control.journal -PathType Leaf)) { return $null }
+    $journal = Get-Content -LiteralPath $Control.journal -Raw | ConvertFrom-Json -Depth 30
+    if ([string]$journal.phase -in @('committed', 'rolled-back', 'recovered')) { return $journal }
+    Assert-CacheJournalContract -Control $Control -Journal $journal -LivePath $LivePath
+
+    $originalHash = [string]$journal.originalTreeSha256
+    $requestedHash = [string]$journal.requestedTreeSha256
+    $displaced = [string]$journal.displacedPath
+    $staging = [string]$journal.stagingPath
+    $liveHash = if (Test-Path -LiteralPath $LivePath -PathType Container) { [string](Get-TreeInventory $LivePath).treeSha256 } else { $null }
+    $displacedHash = if (Test-Path -LiteralPath $displaced -PathType Container) { [string](Get-TreeInventory $displaced).treeSha256 } else { $null }
+    $quarantined = @()
+
+    if ($liveHash -ceq $originalHash) {
+        if ($null -ne $displacedHash) {
+            if ($displacedHash -cne $originalHash) { throw 'Recovery refused: both live and displaced trees exist, and the displaced tree is not the exact original.' }
+            $quarantined += Move-ToRecoveryQuarantine -Path $displaced -LivePath $LivePath -OperationId ([string]$journal.operationId) -Role 'duplicate-original'
+        }
+    }
+    elseif ($null -eq $liveHash -or $liveHash -ceq $requestedHash) {
+        if ($displacedHash -cne $originalHash) { throw 'Recovery refused: the exact displaced original cache is unavailable.' }
+        if ($null -ne $liveHash) { $quarantined += Move-ToRecoveryQuarantine -Path $LivePath -LivePath $LivePath -OperationId ([string]$journal.operationId) -Role 'replacement' }
+        Move-Item -LiteralPath $displaced -Destination $LivePath -ErrorAction Stop
+    }
+    else {
+        throw "Recovery refused: live shader-cache drift is neither the exact original nor requested replacement ($liveHash)."
+    }
+
+    if (Test-Path -LiteralPath $staging -PathType Container) {
+        $quarantined += Move-ToRecoveryQuarantine -Path $staging -LivePath $LivePath -OperationId ([string]$journal.operationId) -Role 'staging'
+    }
+    $restored = Get-TreeInventory $LivePath
+    if ([string]$restored.treeSha256 -cne $originalHash) { throw 'Recovery failed exact original tree verification.' }
+    $journal.phase = 'recovered'
+    $journal | Add-Member -NotePropertyName recovery -NotePropertyValue ([pscustomobject][ordered]@{ verified = $true; restoredTreeSha256 = $restored.treeSha256; quarantinedPaths = @($quarantined); completedUtc = [DateTime]::UtcNow.ToString('o') }) -Force
+    Write-CacheJournal -Control $Control -Journal $journal
+    return $journal
+}
+
+function Invoke-CacheSwapRollback([string]$LivePath, [string]$DisplacedPath, [string]$ExpectedOriginalHash, $Control, $Journal, [string]$FailureMessage) {
+    $rollbackErrors = @()
+    $failedReplacement = Join-Path (Split-Path -Parent $LivePath) ('.' + (Split-Path -Leaf $LivePath) + '.failed.' + [guid]::NewGuid().ToString('N'))
+    try {
+        $liveHash = if (Test-Path -LiteralPath $LivePath -PathType Container) { [string](Get-TreeInventory $LivePath).treeSha256 } else { $null }
+        $displacedHash = if (Test-Path -LiteralPath $DisplacedPath -PathType Container) { [string](Get-TreeInventory $DisplacedPath).treeSha256 } else { $null }
+        if ($liveHash -ceq $ExpectedOriginalHash) {
+            if ($null -ne $displacedHash -and $displacedHash -cne $ExpectedOriginalHash) { throw 'The live original is intact, but the sibling displaced tree has an unknown identity.' }
+        }
+        elseif (($null -eq $liveHash -or $liveHash -ceq [string]$Journal.requestedTreeSha256) -and $displacedHash -ceq $ExpectedOriginalHash) {
+            if ($null -ne $liveHash) { Move-Item -LiteralPath $LivePath -Destination $failedReplacement -ErrorAction Stop }
+            Move-Item -LiteralPath $DisplacedPath -Destination $LivePath -ErrorAction Stop
+        }
+        else {
+            throw 'Rollback refused target drift that was neither the exact original nor requested replacement.'
+        }
+        $restored = Get-TreeInventory $LivePath
+        if ([string]$restored.treeSha256 -cne $ExpectedOriginalHash) { throw "Restored tree hash differs: $($restored.treeSha256)" }
+    }
+    catch { $rollbackErrors += "original-restore: $($_.Exception.Message)" }
+    $Journal.phase = if ($rollbackErrors.Count -eq 0) { 'rolled-back' } else { 'recovery-required' }
+    $Journal | Add-Member -NotePropertyName rollback -NotePropertyValue ([pscustomobject]@{ verified = $rollbackErrors.Count -eq 0; errors = $rollbackErrors; quarantinedReplacementPath = $(if (Test-Path -LiteralPath $failedReplacement -PathType Container) { $failedReplacement } else { $null }); completedUtc = [DateTime]::UtcNow.ToString('o') }) -Force
+    try { Write-CacheJournal -Control $Control -Journal $Journal } catch { $rollbackErrors += "journal: $($_.Exception.Message)" }
+    if ($rollbackErrors.Count -gt 0) { throw "$FailureMessage Rollback requires recovery: $($rollbackErrors -join '; ')" }
+    throw "$FailureMessage The exact original cache was restored and verified."
 }
 
 function Set-IniValue {
@@ -254,6 +405,8 @@ function Get-ReceiptPaths {
 }
 
 $result = $null
+$cacheControl = $null
+$cacheLock = $null
 try {
     if ($Command -eq 'providers') {
         $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; data = Get-Providers; errors = @() }
@@ -266,11 +419,20 @@ try {
         else {
             Assert-SafeCachePath $CachePath
         }
+        if ($Command -notin @('snapshot', 'seed', 'restore') -or $WhatIfPreference) {
+            Assert-NoCacheReparsePoint -Path $resolvedCache -Purpose 'Shader-cache target'
+        }
         if ($Command -eq 'inspect') {
             $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; data = Get-TreeInventory $resolvedCache; errors = @() }
         }
         else {
             $paths = Get-ReceiptPaths
+            if ($Command -in @('snapshot', 'seed', 'restore') -and -not $WhatIfPreference) {
+                $cacheControl = Get-CacheTransactionControl $resolvedCache
+                $cacheLock = Enter-CacheTransactionLock $cacheControl
+                Recover-PendingCacheTransaction -Control $cacheControl -LivePath $resolvedCache | Out-Null
+                Assert-NoCacheReparsePoint -Path $resolvedCache -Purpose 'Shader-cache target'
+            }
             if ($Command -eq 'snapshot') {
                 Assert-Closed
                 if (Test-Path -LiteralPath $paths.receipt -PathType Leaf) { throw "Refusing to overwrite an existing transaction receipt: $($paths.receipt)" }
@@ -283,8 +445,12 @@ try {
                     if ($backup.treeSha256 -ne $before.treeSha256) { throw 'Backup verification failed: copied cache tree differs from source.' }
                     Write-JsonFile $paths.beforeInventory $before
                     $receipt = [pscustomobject][ordered]@{
-                        contractVersion = '1.0.0'
+                        contractVersion = '2.0.0'
+                        operation = 'snapshot'
+                        transactionId = [guid]::NewGuid().ToString('N')
                         cachePath = $resolvedCache
+                        cacheParentPath = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedCache))
+                        cacheLeaf = [IO.Path]::GetFileName($resolvedCache)
                         evidenceDirectory = $paths.evidence
                         backupPath = $paths.before
                         beforeTreeSha256 = $before.treeSha256
@@ -299,7 +465,10 @@ try {
             else {
                 if (-not (Test-Path -LiteralPath $paths.receipt -PathType Leaf)) { throw "Transaction receipt does not exist: $($paths.receipt)" }
                 $receipt = Get-Content -LiteralPath $paths.receipt -Raw | ConvertFrom-Json
-                if ([string]$receipt.cachePath -ne $resolvedCache -or [string]$receipt.backupPath -ne $paths.before) { throw 'Transaction receipt ownership does not match this cache and evidence directory.' }
+                if ([string]$receipt.operation -cne 'snapshot' -or [string]::IsNullOrWhiteSpace([string]$receipt.transactionId)) { throw 'Transaction receipt lacks exact snapshot operation ownership.' }
+                if ([IO.Path]::GetFullPath([string]$receipt.cachePath) -cne $resolvedCache -or [IO.Path]::GetFullPath([string]$receipt.backupPath) -cne [IO.Path]::GetFullPath($paths.before)) { throw 'Transaction receipt ownership does not match this cache and evidence directory.' }
+                if ([IO.Path]::GetFullPath([string]$receipt.cacheParentPath) -cne [IO.Path]::GetFullPath((Split-Path -Parent $resolvedCache)) -or [string]$receipt.cacheLeaf -cne [IO.Path]::GetFileName($resolvedCache)) { throw 'Transaction receipt does not bind the exact cache parent and leaf.' }
+                Assert-NoCacheReparsePoint -Path $paths.before -Purpose 'Preserved shader-cache baseline'
                 $backup = Get-TreeInventory $paths.before
                 if ($backup.treeSha256 -ne [string]$receipt.beforeTreeSha256) { throw 'Preserved backup no longer matches its transaction receipt.' }
                 if ($Command -eq 'verify') {
@@ -312,6 +481,7 @@ try {
                     if ([string]::IsNullOrWhiteSpace($SourceCachePath)) { throw 'seed requires -SourceCachePath.' }
                     if ([string]::IsNullOrWhiteSpace($ExpectedSourceTreeSha256)) { throw 'seed requires -ExpectedSourceTreeSha256.' }
                     $resolvedSource = Assert-SafeSourcePath $SourceCachePath
+                    Assert-NoCacheReparsePoint -Path $resolvedSource -Purpose 'Shader-cache seed source'
                     if ($resolvedSource -eq $resolvedCache) { throw 'Seed source and live cache must be different directories.' }
                     $source = Get-TreeInventory $resolvedSource
                     if ($source.treeSha256 -ne $ExpectedSourceTreeSha256) {
@@ -329,7 +499,21 @@ try {
                     $current = Get-TreeInventory $resolvedCache
                     $abiBefore = $null
                     $staged = $null
+                    $journalPath = $null
+                    $seedReceiptPath = $null
                     if ($PSCmdlet.ShouldProcess($resolvedCache, 'Seed verified shader-cache tree and retain displaced contents')) {
+                        $operationId = [guid]::NewGuid().ToString('N')
+                        $journalPath = $cacheControl.journal
+                        $evidenceJournalPath = Join-Path $paths.evidence ("shader-cache-seed.$operationId.journal.json")
+                        $seedReceiptPath = Join-Path $paths.evidence ("shader-cache-seed.$operationId.receipt.json")
+                        $journal = [pscustomobject][ordered]@{
+                            contractVersion = '2.0.0'; operation = 'seed'; phase = 'prepared'; operationId = $operationId
+                            snapshotTransactionId = [string]$receipt.transactionId; cachePath = $resolvedCache; sourceCachePath = $resolvedSource
+                            originalTreeSha256 = [string]$current.treeSha256; requestedTreeSha256 = [string]$source.treeSha256
+                            stagingPath = $staging; displacedPath = $displaced; evidenceJournalPath = $evidenceJournalPath
+                            preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+                        }
+                        Write-CacheJournal -Control $cacheControl -Journal $journal
                         Copy-Item -LiteralPath $resolvedSource -Destination $staging -Recurse
                         $copied = Get-TreeInventory $staging
                         if ($copied.treeSha256 -ne $source.treeSha256) { throw 'Staged seed tree differs from its verified source.' }
@@ -339,38 +523,46 @@ try {
                             $abiBefore = Set-IniValue -Path $infoPath -Section 'Cache' -Key 'ShaderCacheABI' -Value $ShaderCacheAbiOverride
                         }
                         $staged = Get-TreeInventory $staging
+                        $journal.requestedTreeSha256 = [string]$staged.treeSha256
+                        Write-CacheJournal -Control $cacheControl -Journal $journal
                         try {
+                            if ($InternalTestFailurePoint -eq 'seed-before-displace') { throw 'Injected seed failure before original displacement.' }
+                            $journal.phase = 'original-displace-command-uncommitted'; Write-CacheJournal -Control $cacheControl -Journal $journal
                             Move-Item -LiteralPath $resolvedCache -Destination $displaced
+                            $journal.phase = 'original-displaced'; Write-CacheJournal -Control $cacheControl -Journal $journal
+                            $journal.phase = 'replacement-activate-command-uncommitted'; Write-CacheJournal -Control $cacheControl -Journal $journal
                             Move-Item -LiteralPath $staging -Destination $resolvedCache
+                            $journal.phase = 'replacement-active-uncommitted'; Write-CacheJournal -Control $cacheControl -Journal $journal
+                            if ($InternalTestFailurePoint -eq 'seed-after-activate') { throw 'Injected seed failure after replacement activation.' }
                             $seeded = Get-TreeInventory $resolvedCache
                             if ($seeded.treeSha256 -ne $staged.treeSha256) { throw 'Seeded cache tree failed postcondition verification.' }
                             Copy-Item -LiteralPath $displaced -Destination $preservedDisplaced -Recurse
                             $preserved = Get-TreeInventory $preservedDisplaced
                             if ($preserved.treeSha256 -ne $current.treeSha256) { throw 'Displaced cache preservation failed verification.' }
-                            Remove-Item -LiteralPath $displaced -Recurse -Force
+                            $seedReceipt = [pscustomobject][ordered]@{
+                                contractVersion = '2.0.0'; operation = 'seed'; transactionId = $operationId
+                                snapshotTransactionId = [string]$receipt.transactionId
+                                cachePath = $resolvedCache
+                                sourceCachePath = $resolvedSource
+                                sourceTreeSha256 = $source.treeSha256
+                                seededTreeSha256 = $staged.treeSha256
+                                displacedTreeSha256 = $current.treeSha256
+                                displacedPath = $preservedDisplaced
+                                shaderCacheAbiBefore = $abiBefore
+                                shaderCacheAbiOverride = $(if ([string]::IsNullOrWhiteSpace($ShaderCacheAbiOverride)) { $null } else { $ShaderCacheAbiOverride })
+                                compatibilityReason = $(if ([string]::IsNullOrWhiteSpace($CompatibilityReason)) { $null } else { $CompatibilityReason })
+                                seededUtc = [DateTime]::UtcNow.ToString('o')
+                            }
+                            Write-JsonFile $seedReceiptPath $seedReceipt
+                            $journal.phase = 'committed'; $journal | Add-Member -NotePropertyName committedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force; $journal | Add-Member -NotePropertyName receiptPath -NotePropertyValue $seedReceiptPath -Force
+                            Write-CacheJournal -Control $cacheControl -Journal $journal
                         }
                         catch {
-                            if (-not (Test-Path -LiteralPath $resolvedCache) -and (Test-Path -LiteralPath $displaced)) {
-                                Move-Item -LiteralPath $displaced -Destination $resolvedCache
-                            }
-                            throw
+                            Invoke-CacheSwapRollback -LivePath $resolvedCache -DisplacedPath $displaced -ExpectedOriginalHash ([string]$current.treeSha256) -Control $cacheControl -Journal $journal -FailureMessage "Shader-cache seed failed: $($_.Exception.Message)"
                         }
-                        $seedReceipt = [pscustomobject][ordered]@{
-                            contractVersion = '1.0.0'
-                            cachePath = $resolvedCache
-                            sourceCachePath = $resolvedSource
-                            sourceTreeSha256 = $source.treeSha256
-                            seededTreeSha256 = $staged.treeSha256
-                            displacedTreeSha256 = $current.treeSha256
-                            displacedPath = $preservedDisplaced
-                            shaderCacheAbiBefore = $abiBefore
-                            shaderCacheAbiOverride = $(if ([string]::IsNullOrWhiteSpace($ShaderCacheAbiOverride)) { $null } else { $ShaderCacheAbiOverride })
-                            compatibilityReason = $(if ([string]::IsNullOrWhiteSpace($CompatibilityReason)) { $null } else { $CompatibilityReason })
-                            seededUtc = [DateTime]::UtcNow.ToString('o')
-                        }
-                        Write-JsonFile (Join-Path $paths.evidence 'shader-cache-seed.receipt.json') $seedReceipt
+                        if (Test-Path -LiteralPath $displaced -PathType Container) { Remove-Item -LiteralPath $displaced -Recurse -Force }
                     }
-                    $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; whatIf = [bool]$WhatIfPreference; data = @{ cachePath = $resolvedCache; source = $source; seeded = $staged; displacedPath = $preservedDisplaced; receiptPath = $paths.receipt; seedReceiptPath = (Join-Path $paths.evidence 'shader-cache-seed.receipt.json') }; errors = @() }
+                    $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; whatIf = [bool]$WhatIfPreference; data = @{ cachePath = $resolvedCache; source = $source; seeded = $staged; displacedPath = $preservedDisplaced; receiptPath = $paths.receipt; seedReceiptPath = $seedReceiptPath; journalPath = $journalPath }; errors = @() }
                 }
                 else {
                     Assert-Closed
@@ -380,38 +572,57 @@ try {
                     $displaced = Join-Path $parent ('.' + $leaf + '.displaced.' + [guid]::NewGuid().ToString('N'))
                     $preservedDisplaced = Join-Path $paths.evidence ('cache.displaced.' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.' + [guid]::NewGuid().ToString('N'))
                     $current = Get-TreeInventory $resolvedCache
+                    $journalPath = $null
+                    $restoreReceiptPath = $null
                     if ($PSCmdlet.ShouldProcess($resolvedCache, 'Restore exact preserved shader-cache tree and retain displaced contents')) {
+                        $operationId = [guid]::NewGuid().ToString('N')
+                        $journalPath = $cacheControl.journal
+                        $evidenceJournalPath = Join-Path $paths.evidence ("shader-cache-restore.$operationId.journal.json")
+                        $restoreReceiptPath = Join-Path $paths.evidence ("shader-cache-restore.$operationId.receipt.json")
+                        $journal = [pscustomobject][ordered]@{
+                            contractVersion = '2.0.0'; operation = 'restore'; phase = 'prepared'; operationId = $operationId
+                            snapshotTransactionId = [string]$receipt.transactionId; cachePath = $resolvedCache
+                            originalTreeSha256 = [string]$current.treeSha256; requestedTreeSha256 = [string]$receipt.beforeTreeSha256
+                            stagingPath = $staging; displacedPath = $displaced; evidenceJournalPath = $evidenceJournalPath
+                            preparedUtc = [DateTime]::UtcNow.ToString('o'); rollback = $null
+                        }
+                        Write-CacheJournal -Control $cacheControl -Journal $journal
                         Write-JsonFile (Join-Path $paths.evidence 'cache.current-before-restore.inventory.json') $current
                         Copy-Item -LiteralPath $paths.before -Destination $staging -Recurse
                         $staged = Get-TreeInventory $staging
                         if ($staged.treeSha256 -ne [string]$receipt.beforeTreeSha256) { throw 'Staged restore tree failed verification.' }
                         try {
+                            if ($InternalTestFailurePoint -eq 'restore-before-displace') { throw 'Injected restore failure before original displacement.' }
+                            $journal.phase = 'original-displace-command-uncommitted'; Write-CacheJournal -Control $cacheControl -Journal $journal
                             Move-Item -LiteralPath $resolvedCache -Destination $displaced
+                            $journal.phase = 'original-displaced'; Write-CacheJournal -Control $cacheControl -Journal $journal
+                            $journal.phase = 'replacement-activate-command-uncommitted'; Write-CacheJournal -Control $cacheControl -Journal $journal
                             Move-Item -LiteralPath $staging -Destination $resolvedCache
+                            $journal.phase = 'replacement-active-uncommitted'; Write-CacheJournal -Control $cacheControl -Journal $journal
+                            if ($InternalTestFailurePoint -eq 'restore-after-activate') { throw 'Injected restore failure after replacement activation.' }
                             $restored = Get-TreeInventory $resolvedCache
                             if ($restored.treeSha256 -ne [string]$receipt.beforeTreeSha256) { throw 'Restored cache tree failed postcondition verification.' }
                             Copy-Item -LiteralPath $displaced -Destination $preservedDisplaced -Recurse
                             $preserved = Get-TreeInventory $preservedDisplaced
                             if ($preserved.treeSha256 -ne $current.treeSha256) { throw 'Displaced cache preservation failed verification.' }
-                            Remove-Item -LiteralPath $displaced -Recurse -Force
+                            $restoreReceipt = [pscustomobject][ordered]@{
+                                contractVersion = '2.0.0'; operation = 'restore'; transactionId = $operationId
+                                snapshotTransactionId = [string]$receipt.transactionId; cachePath = $resolvedCache
+                                restoredTreeSha256 = [string]$receipt.beforeTreeSha256
+                                displacedTreeSha256 = $current.treeSha256
+                                displacedPath = $preservedDisplaced
+                                restoredUtc = [DateTime]::UtcNow.ToString('o')
+                            }
+                            Write-JsonFile $restoreReceiptPath $restoreReceipt
+                            $journal.phase = 'committed'; $journal | Add-Member -NotePropertyName committedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force; $journal | Add-Member -NotePropertyName receiptPath -NotePropertyValue $restoreReceiptPath -Force
+                            Write-CacheJournal -Control $cacheControl -Journal $journal
                         }
                         catch {
-                            if (-not (Test-Path -LiteralPath $resolvedCache) -and (Test-Path -LiteralPath $displaced)) {
-                                Move-Item -LiteralPath $displaced -Destination $resolvedCache
-                            }
-                            throw
+                            Invoke-CacheSwapRollback -LivePath $resolvedCache -DisplacedPath $displaced -ExpectedOriginalHash ([string]$current.treeSha256) -Control $cacheControl -Journal $journal -FailureMessage "Shader-cache restore failed: $($_.Exception.Message)"
                         }
-                        $restoreReceipt = [pscustomobject][ordered]@{
-                            contractVersion = '1.0.0'
-                            cachePath = $resolvedCache
-                            restoredTreeSha256 = [string]$receipt.beforeTreeSha256
-                            displacedTreeSha256 = $current.treeSha256
-                            displacedPath = $preservedDisplaced
-                            restoredUtc = [DateTime]::UtcNow.ToString('o')
-                        }
-                        Write-JsonFile (Join-Path $paths.evidence 'shader-cache-restore.receipt.json') $restoreReceipt
+                        if (Test-Path -LiteralPath $displaced -PathType Container) { Remove-Item -LiteralPath $displaced -Recurse -Force }
                     }
-                    $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; whatIf = [bool]$WhatIfPreference; data = @{ cachePath = $resolvedCache; baseline = $backup; displacedPath = $preservedDisplaced; receiptPath = $paths.receipt }; errors = @() }
+                    $result = [pscustomobject][ordered]@{ ok = $true; command = $Command; whatIf = [bool]$WhatIfPreference; data = @{ cachePath = $resolvedCache; baseline = $backup; displacedPath = $preservedDisplaced; receiptPath = $paths.receipt; restoreReceiptPath = $restoreReceiptPath; journalPath = $journalPath }; errors = @() }
                 }
             }
         }
@@ -419,6 +630,9 @@ try {
 }
 catch {
     $result = [pscustomobject][ordered]@{ ok = $false; command = $Command; data = $null; errors = @($_.Exception.Message) }
+}
+finally {
+    if ($null -ne $cacheLock) { $cacheLock.Dispose() }
 }
 
 $json = $result | ConvertTo-Json -Depth 30 -Compress:$Compact

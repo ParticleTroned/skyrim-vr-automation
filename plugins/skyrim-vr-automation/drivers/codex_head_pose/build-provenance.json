@@ -1,13 +1,19 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "driverName": "codex_head_pose",
   "sourceDirectory": "native/steamvr-head-pose",
   "configuration": "Release",
   "openVrRepository": "https://github.com/ValveSoftware/openvr.git",
   "openVrCommit": "0924064316de3effbcd1acf1e309182a2deb1c05",
+  "sharedMemoryProtocolVersion": 2,
+  "sourceSha256": {
+    "native/steamvr-head-pose/src/driver.cpp": "C30E680AD4E2936724D81DF3EB2B1A0D1BCE5140A87E8A06B3B9DD9BCC34F16C",
+    "native/steamvr-head-pose/src/probe.cpp": "E7C185398D41BFFAA4820921DCF4F81BFA4CD12258259D941B2E7E7BC7DFDA87",
+    "native/steamvr-head-pose/CMakeLists.txt": "D905F210DDB9646A4D3EB76D7A88DFEAC8AA73E8FE2031605BA77175AFA42466"
+  },
   "artifacts": {
-    "bin/win64/driver_codex_head_pose.dll": "F7F4D70AAA8C99A9F188DD61308203C2832797EA99728417875E886DFF279224",
-    "tools/csx_openvr_pose_probe.exe": "CD5A95FD213904B1C9B3EE88CAD4C75FF61C0FA2A4ACF545083D3F2A29171288",
+    "bin/win64/driver_codex_head_pose.dll": "4A361E9956169E4FAF4BFC2DC5D2282A97CF366CC1D1B3950A0F8463429A42D7",
+    "tools/csx_openvr_pose_probe.exe": "02250F18A526F479AF4C4D750FA575BFB03D3F1259C0004696712BDE1D612B88",
     "tools/openvr_api.dll": "BAB8AC6EF64E68A9CA53315B0014D131088584B2EFDFA6DB511D67EC03CFCB4A"
   },
   "licenses": [
