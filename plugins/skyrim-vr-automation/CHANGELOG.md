@@ -4,6 +4,8 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Add bounded whole-runtime Skyrim quiet-window capture and informational
+  comparison reports alongside the existing CSX timer profiler.
 - Let MO2 access requests retain an explicit stable task identity, complete
   asynchronous `-StartOnly` opens from proven main-window state, retry transient
   UI Automation enumeration once, and clean late failure dialogs after the
