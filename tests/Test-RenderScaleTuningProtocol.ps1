@@ -441,7 +441,16 @@ foreach ($protocol in @(
         'finalize immediately',
         'Do not demand a second snapshot or status receipt',
         'Keep chat output compact',
-        'rather than JSON null'
+        'rather than JSON null',
+        'Expose recovered stretch explicitly in every output',
+        '`presentationStretchSelected`',
+        '`presentationStretchConsecutiveFrames`',
+        '`presentationStretchRecovered`',
+        '`presentationStretchRecoveryFrame`',
+        '`presentationStretchRecoveryElapsedMs`',
+        '`presentationStretchAnomalies`',
+        'never hardcode an expected number',
+        'anomaly rather than a failure'
     )) {
         Assert-Contains $protocol.Text $required "$($protocol.Name) fast measured-loop guard"
     }

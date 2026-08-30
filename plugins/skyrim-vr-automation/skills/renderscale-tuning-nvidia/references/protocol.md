@@ -399,6 +399,30 @@ consecutive frames/recovery as anomalies even when the row passes. Likewise,
 report absent duplicate-constants or evaluation-failure counters as
 `not_exposed`, never as zero.
 
+Expose recovered stretch explicitly in every output. Add these per-row fields
+to `summary.json` and `transitions.csv` and show them in the rendered transition
+tables:
+
+- `presentationStretchSelected`: true when
+  `firstPhysicalMutation.selectedPresentationDisposition` is
+  `PresentationStretch`;
+- `presentationStretchConsecutiveFrames`: the producer's maximum consecutive
+  stretch-frame count for that transition, or `not_exposed`;
+- `presentationStretchRecovered`: true only when stretch was selected and the
+  terminal receipt proves coherent target presentation, zero terminal stretch
+  debt, and a row `PASS`;
+- `presentationStretchRecoveryFrame` and
+  `presentationStretchRecoveryElapsedMs`: the terminal `milestoneTimings`
+  presentation first-observation frame and elapsed value after stretch was
+  selected, or `not_exposed`.
+
+Add a `presentationStretchAnomalies` summary containing selected, recovered-
+PASS, and unrecovered counts plus the pass/ordinal/from/to list. Render that
+list even when every affected row ultimately passes. Derive the count from the
+receipts; never hardcode an expected number. A recovered stretch remains an
+anomaly rather than a failure unless its duration, failure mask, ownership, or
+fidelity violates this protocol.
+
 For each DLSS or DLAA transition, reset/start exactly one owned bounded DLSS
 trace after the row's five-second wait and stop it after the terminal waiter in
 the same scenario. Materialize its retained receipt only at pass finalization.

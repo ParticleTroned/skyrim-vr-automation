@@ -415,6 +415,30 @@ frames/recovery as anomalies even when the row passes. Likewise, report absent
 duplicate-constants or evaluation-failure counters as `not_exposed`, never as
 zero.
 
+Expose recovered stretch explicitly in every output. Add these per-row fields
+to `summary.json` and `transitions.csv` and show them in the rendered transition
+tables:
+
+- `presentationStretchSelected`: true when
+  `firstPhysicalMutation.selectedPresentationDisposition` is
+  `PresentationStretch`;
+- `presentationStretchConsecutiveFrames`: the producer's maximum consecutive
+  stretch-frame count for that transition, or `not_exposed`;
+- `presentationStretchRecovered`: true only when stretch was selected and the
+  terminal receipt proves coherent target presentation, zero terminal stretch
+  debt, and a row `PASS`;
+- `presentationStretchRecoveryFrame` and
+  `presentationStretchRecoveryElapsedMs`: the terminal `milestoneTimings`
+  presentation first-observation frame and elapsed value after stretch was
+  selected, or `not_exposed`.
+
+Add a `presentationStretchAnomalies` summary containing selected, recovered-
+PASS, and unrecovered counts plus the lane/pass/ordinal/from/to list. Render
+that list even when every affected row ultimately passes. Derive the count from
+the receipts; never hardcode an expected number. A recovered stretch remains
+an anomaly rather than a failure unless its duration, failure mask, ownership,
+or fidelity violates this protocol.
+
 Perform one bounded DLSS trace capability lifecycle before the first AMD lane:
 status, reset, start, stop, and read. Require zero DLSS dispatch records. A
 missing trace action is `unsupported`; an exposed action that fails is a
