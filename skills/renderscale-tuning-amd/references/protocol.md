@@ -208,8 +208,10 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    fixed-resolution FSR evaluation. Its public requested/effective/stable
    profiles must all equal the exact target. Its render-scale controller
    resource key remains inactive with backend `none`; that resource key is
-   never FSR-execution evidence. The waiter must instead return
-   `nativeVendorExecution.required: true` and
+   never FSR-execution evidence. Read native-vendor proof from top-level
+   `nativeVendorExecution`; for an older producer that has not projected that
+   field, read the identical `observation.nativeVendorExecution` object
+   instead. The selected object must report `required: true` and
    `sameFrameBothEyesValid: true`, with each eye's `presentationFrame` equal to
    its `dispatchFrame` and one shared nonzero `dispatchSerial` for the
    combined-stereo FSR dispatch. Both eyes and `actualBackend` must identify
@@ -328,11 +330,14 @@ generation and resource ownership; and strict completion. For `vendor_native`
 FSR Native AA, require exact public requested/effective/stable profiles and
 fixed-resolution FSR execution at native dimensions. The render-scale
 controller resource key is inactive with backend `none`; its logical method
-must still be FSR, and `qualification_wait.nativeVendorExecution` is
-authoritative for same-frame, both-eye FSR execution. Take `actualBackend`,
-the per-eye dispatch frames and shared serial, and
-`actualRuntimeFallbackObserved` directly from that receipt. Never substitute
-the render-scale resource backend. Apply the active lane's provider rules:
+must still be FSR, and top-level
+`qualification_wait.nativeVendorExecution` is authoritative for same-frame,
+both-eye FSR execution. If that projection is absent, use the identical
+`qualification_wait.observation.nativeVendorExecution` object from older
+producers. Take `actualBackend`, the per-eye dispatch frames and shared serial,
+and `actualRuntimeFallbackObserved` directly from the selected object. Never
+substitute the render-scale resource backend. Apply the active lane's provider
+rules:
 `fsr4_runtime` for explicit FSR4, `fsr_host`/`fsr_runtime` for explicit FSR3,
 and `fsr_host`/`fsr_runtime` plus observed runtime fallback for the fallback
 lane. A missing or mismatched native FSR receipt is a failure. Record first

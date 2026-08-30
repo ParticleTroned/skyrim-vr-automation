@@ -182,8 +182,11 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    evaluation. Its public requested/effective/stable profiles must all equal
    the exact target. Its render-scale controller resource key remains inactive
    with backend `none`; that resource key is never vendor-execution evidence.
-   The waiter must instead return `nativeVendorExecution.required: true` and
-   `sameFrameBothEyesValid: true`, with each eye's `presentationFrame` equal to
+   Read native-vendor proof from top-level `nativeVendorExecution`; for an
+   older producer that has not projected that field, read the identical
+   `observation.nativeVendorExecution` object instead. The selected object
+   must report `required: true` and `sameFrameBothEyesValid: true`, with each
+   eye's `presentationFrame` equal to
    its `dispatchFrame`. Both eyes must report the same non-`none`
    `actualBackend`: exactly `dlss` for DLAA, or `fsr_host`/`fsr_runtime` for
    FSR Native AA. FSR Native AA must additionally report one shared nonzero
@@ -301,9 +304,12 @@ provider generation and resource ownership; and strict completion. For
 requested/effective/stable profiles plus fixed-resolution vendor execution at
 native dimensions. The render-scale controller resource key is inactive with
 backend `none`; its logical method must still be exact, and
-`qualification_wait.nativeVendorExecution` is authoritative for same-frame,
-both-eye vendor execution. Take `actualBackend`, the per-eye dispatch frames
-and serials, and `actualRuntimeFallbackObserved` directly from that receipt.
+top-level `qualification_wait.nativeVendorExecution` is authoritative for
+same-frame, both-eye vendor execution. If that projection is absent, use the
+identical `qualification_wait.observation.nativeVendorExecution` object from
+older producers. Take `actualBackend`, the per-eye dispatch frames and
+serials, and `actualRuntimeFallbackObserved` directly from the selected
+object.
 Never substitute the render-scale resource backend. DLAA requires `dlss`; FSR
 Native AA requires `fsr_host` or `fsr_runtime` and one shared nonzero dispatch
 serial. For scaled vendor state, also require lifecycle and render-scale

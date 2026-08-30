@@ -233,6 +233,7 @@ foreach ($variant in $variants) {
         'recorded transition `FAIL` or `INCONCLUSIVE`',
         'qualification owner is closed', 'Otherwise stop future mutations',
         'vendor_native', 'same-frame', 'nativeVendorExecution',
+        'observation.nativeVendorExecution', 'older producer',
         '`sameFrameBothEyesValid`', '`actualBackend`',
         '`actualRuntimeFallbackObserved`', '`dispatchSerial`',
         'resource key remains inactive with backend `none`',
