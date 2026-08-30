@@ -33,7 +33,7 @@ The preserved null-HMD profile is `profiles/steamvr-null.profile.json`.
 
 ## Codex plugin
 
-The repository publishes a Codex marketplace plugin. Its five skills connect a
+The repository publishes a Codex marketplace plugin. Its six skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$mo2-control` routes MO2 inspection, exact-profile lifecycle management,
@@ -43,6 +43,8 @@ new task to the bundled implementations and their operational contracts:
 - `$devbench-control` discovers and calls the exact loopback DevBench MCP API.
 - `$profiler-control` captures bounded GPU/CPU timer evidence and compares runs.
 - `$shader-cache-control` compares preserved compiled-cache trees by SHA-256.
+- `$perftune-upscaling` runs the server-owned NVIDIA or AMD Upscaling cost
+  sweep, including raw cooldown telemetry and None-relative results.
 
 Install from the public Git marketplace:
 
