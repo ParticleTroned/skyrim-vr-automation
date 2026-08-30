@@ -161,8 +161,11 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    exactly `queued`. `rejected`, `applied_synchronously`, `no_change`, a
    stale revision, producer mismatch, embedded error, restart requirement, or
    non-retryable admission failure is a control failure: cancel the owner only
-   if needed, preserve receipts, and stop further mutations. Never retry,
-   recover, or substitute a matrix row.
+   if needed, preserve receipts, and stop further mutations. The only exception
+   is the shared `tooling_false_positive` path for an authoritatively proven
+   never-dispatched safety rejection; issuing that row once is not a replay.
+   Never retry an admitted or ambiguous request, recover by reapplying, or
+   substitute a matrix row.
 5. `qualification_wait` is the final qualification step. It is the scenario's
    final step except for the owned DLSS trace stop described above. For vendor
    destinations, pass the full
@@ -247,9 +250,11 @@ preparation, telemetry, and trace history once, correlate it by transition
 ID/QPC/frame, and write and hash the complete evidence bundle in one local
 batch. A response-store handle is permitted during the live loop but every
 retained terminal response must be a decoded raw file in the completed bundle.
-This transition evidence requirement does not include `prepare_coc` or the
-positioning scenario. Missing startup receipts are a non-blocking anomaly and
-never stop a valid matrix.
+This per-transition evidence requirement does not duplicate `prepare_coc` or
+the positioning scenario. Materialize their stored exact receipts once under
+`raw/startup` during finalization. Missing startup evidence is explicitly
+`startup_evidence_incomplete`, forbids a ledger append, and never replays the
+startup calls or changes completed row classifications.
 
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
@@ -399,6 +404,23 @@ consecutive frames/recovery as anomalies even when the row passes. Likewise,
 report absent duplicate-constants or evaluation-failure counters as
 `not_exposed`, never as zero.
 
+Use these exact finalization mappings in both `summary.json` and
+`transitions.csv`:
+
+- `finalMethod`, `finalQuality`, `finalRenderScaleMode`, and
+  `finalStateRevision` come from the terminal waiter's authoritative stable
+  profile and state revision;
+- CSV `physical_mutation_started` comes only from
+  `replacementTimeline.firstPhysicalMutation.physicalMutationStarted`, never
+  `lastPreMutation`;
+- CSV `actual_backend` comes from physical-stable/actual-dispatch backend for a
+  scaled vendor row, `nativeVendorExecution.actualBackend` for a vendor-native
+  row, and `none` for None/TAA.
+
+These fields must not be JSON null on a `PASS`. When the owning producer facet
+is absent, write `not_exposed`, mark `reporting_contract_incomplete`, and retain
+the row's render classification separately.
+
 Expose recovered stretch explicitly in every output. Add these per-row fields
 to `summary.json` and `transitions.csv` and show them in the rendered transition
 tables:
@@ -489,6 +511,12 @@ Compute a ratio only when the pass 1 delta is positive; otherwise report
 - Every other complete comparison is `inconclusive`. A missing repeat is
   `repeat_not_completed`, makes the assay `INTERRUPTED`, and forbids a ledger
   append.
+
+Always emit the memory table and `memoryConfirmation` object, including for an
+interrupted pass. When pass 2 never ran, set `passesCompleted` to the actual
+count, set `verdict: repeat_not_completed`, identify the unavailable boundaries,
+and state that no leak/retention conclusion is possible. Never omit the object
+or serialize its verdict as null.
 
 Neither `retention_signal` nor Normal final pressure proves or disproves a
 leak. Print the memory classification, its exact predicate inputs, and the

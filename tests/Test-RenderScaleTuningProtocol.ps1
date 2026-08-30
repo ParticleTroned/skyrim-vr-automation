@@ -51,10 +51,9 @@ foreach ($token in @(
     '`0x1002`/4098', 'Report positioning as soon as it returns',
     'do not create an evidence directory', 'decode Base64',
     'read another reference first', 'in one local read action',
-    '`startup_receipts_not_retained`',
-    'non-blocking evidence anomaly',
-    'only during finalization',
-    'not a render, control, or assay failure',
+    'run-unique startup keys', '`raw/startup`',
+    '`startup_evidence_incomplete`',
+    'forbid the comparison-ledger append',
     'Every later mutation and ownership scenario remains synchronous',
     'terminal baseline waiter receipt', '`milestoneTimings`',
     '`replacementTimeline`', 'Fast measured-loop contract',
@@ -66,7 +65,9 @@ foreach ($token in @(
     'sole server-owned `wait` of exactly 5,000 ms',
     'preceding terminal waiter', 'At pass finalization', '`load()`',
     'one cumulative evidence-read batch', 'generate the receipt index',
-    'after every interrupted pass'
+    'after every interrupted pass', '`tooling_false_positive`',
+    'row was never dispatched',
+    'read `qualification_status` once'
 )) {
     Assert-Contains $fastStart $token 'Shared tuning fast-start contract'
 }
@@ -196,6 +197,11 @@ foreach ($variant in $variants) {
     Assert-Contains $skill '"kind": "state"' $variant.Name
     Assert-Contains $skill '"kind": "scene"' $variant.Name
     Assert-Contains $skill 'Do not insert commentary' $variant.Name
+    Assert-Contains $skill 'one orchestration cell' $variant.Name
+    Assert-Contains $skill '`startup-prepare`' $variant.Name
+    Assert-Contains $skill '`startup-positioning`' $variant.Name
+    Assert-Contains $skill 'verify both keys with `load()`' $variant.Name
+    Assert-Contains $skill 'finalization materializes both stored responses' $variant.Name
     Assert-Contains $skill 'report positioning immediately' $variant.Name
     Assert-Contains $skill 'completely in one local read' $variant.Name
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
@@ -280,7 +286,7 @@ foreach ($variant in $variants) {
         '`retention_signal`', '`initialization_dominated`',
         '`repeat_not_completed`',
         'Memory growth alone never changes a transition''s',
-        'Missing startup receipts are a non-blocking anomaly',
+        '`startup_evidence_incomplete`', '`raw/startup`',
         '`docs/development/vr-render-scale-comparison-ledger.csv`',
         'never search for a',
         'No external', 'Never average'
@@ -428,7 +434,9 @@ foreach ($protocol in @(
         'Inspect the completed transition before allowing the next apply',
         'Run a synchronous (`async: false`), server-owned 5,000 ms settling scenario',
         'pre_snapshot_transport_unavailable',
-        'Do not attempt cleanup until the user explicitly directs it'
+        'Do not attempt cleanup until the user explicitly directs it',
+        'Missing startup receipts are a non-blocking anomaly',
+        '`startup_receipts_not_retained`'
     )) {
         Assert-True (-not $protocol.Text.Contains($forbidden, [StringComparison]::Ordinal)) "$($protocol.Name) retains blocking per-row work: $forbidden"
     }
@@ -440,6 +448,9 @@ foreach ($protocol in @(
         'write and hash the complete evidence bundle',
         'finalize immediately',
         'Do not demand a second snapshot or status receipt',
+        'shared `tooling_false_positive` path',
+        'never-dispatched safety rejection',
+        'Never retry an admitted or ambiguous request',
         'Keep chat output compact',
         'rather than JSON null',
         'Expose recovered stretch explicitly in every output',
@@ -450,7 +461,16 @@ foreach ($protocol in @(
         '`presentationStretchRecoveryElapsedMs`',
         '`presentationStretchAnomalies`',
         'never hardcode an expected number',
-        'anomaly rather than a failure'
+        'anomaly rather than a failure',
+        '`finalMethod`, `finalQuality`, `finalRenderScaleMode`',
+        'CSV `physical_mutation_started` comes only from',
+        '`replacementTimeline.firstPhysicalMutation.physicalMutationStarted`',
+        'CSV `actual_backend` comes from',
+        'must not be JSON null on a `PASS`',
+        '`reporting_contract_incomplete`',
+        'Always emit the memory table and `memoryConfirmation` object',
+        '`verdict: repeat_not_completed`',
+        'no leak/retention conclusion is possible'
     )) {
         Assert-Contains $protocol.Text $required "$($protocol.Name) fast measured-loop guard"
     }

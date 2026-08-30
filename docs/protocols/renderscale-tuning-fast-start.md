@@ -34,13 +34,19 @@ Then read the selected matrix, vendor protocol, and this contract completely
 in one local read action. Do not load Simple COC or Simple CSM instructions,
 enumerate tools, inspect schemas, or run another admission/reset scenario.
 
-Keep the exact `prepare_coc` and positioning responses in context when the
-client retains them, but they are not measurement evidence. Never replay a
-startup call, stop a measured run, or delay transition 1 because either startup
-response expired from the client response store. Record
-`startup_receipts_not_retained` as a non-blocking evidence anomaly and continue.
-Write retained startup responses only during finalization; failure to preserve
-them is not a render, control, or assay failure.
+The vendor `SKILL.md` stores the exact `prepare_coc` and positioning responses
+under run-unique startup keys before this contract is read. They are startup
+identity/admission evidence, not measurement timing evidence. Load them only
+inside the later orchestration/finalization cells; do not print them to chat or
+perform another live startup read. During finalization, materialize both under
+`raw/startup` and include them in the one receipt-index/hash batch.
+
+If either stored startup receipt is unexpectedly unavailable, never replay a
+startup call or invalidate completed render rows. Record
+`startup_evidence_incomplete`, forbid the comparison-ledger append, and make the
+missing receipt explicit in the report. The normal protocol must not produce
+this state because both keys are stored and verified before positioning is
+reported.
 
 Every later mutation and ownership scenario remains synchronous with
 `async: false` and `continueOnError: false`.
@@ -216,9 +222,18 @@ handling, own the inter-transition pace.
 
 If a local safety layer refuses to send a scenario before any direct MCP call
 is dispatched, correct that local refusal and issue the never-sent scenario
-once. This is not a replay. Never retry when DevBench may have accepted the
-scenario, when a new qualification owner exists, or when the response was
-lost; use the owner-correlated recovery rule in those cases.
+once. This is not a replay.
+
+If the direct tooling layer rejects a row as possibly still owned but proves
+that row was never dispatched and created no owner, read `qualification_status`
+once. When it reports `active: false` and terminal `lastEvidence` exactly
+matches the preceding row's owner/transition, stable/satisfied result, and zero
+active operation, classify the rejection as `tooling_false_positive` and issue
+the never-dispatched row once. Preserve the rejection and recovery receipts for
+finalization. If any ownership, dispatch, or terminal fact is absent or differs,
+stop without retry. Never retry when DevBench may have accepted the scenario,
+when a new qualification owner exists, or when the response was lost; use the
+owner-correlated recovery rule in those cases.
 
 At pass finalization, use `load()` to materialize every retained terminal
 response losslessly without first printing it to chat,

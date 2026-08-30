@@ -14,6 +14,13 @@ Use only the named direct `mcp__devbench_vr__*` tools. Do not read a reference,
 run a local command, create evidence, enumerate tools, or inspect a fallback
 before positioning.
 
+Run the fixture call and positioning scenario in one orchestration cell using
+the installed direct tools. Immediately `store()` each exact response under
+run-unique `startup-prepare` and `startup-positioning` keys and verify both keys
+with `load()` in memory. Return only a compact positioning projection to chat.
+Do not create a file, hash, encode, or expand either startup response here;
+finalization materializes both stored responses.
+
 The first live call is `communityshaders.menu` with exactly
 `{"action":"prepare_coc"}`. Require `ready: true`, `persisted: false`, a
 64-character producer Build ID, active Skyrim VR/in-game readiness and VR FPS
@@ -82,8 +89,8 @@ another call, or local work between the fixture and this request.
 }
 ```
 
-Do not replay a failed or lost positioning scenario. After its response
-returns, report positioning immediately. Then read the
+Do not replay a failed or lost positioning scenario. After its response is
+stored, report positioning immediately. Then read the
 [shared post-position contract](../../docs/protocols/renderscale-tuning-fast-start.md),
 [NVIDIA matrix](references/matrix.v1.json), and
 [NVIDIA tuning protocol](references/protocol.md) completely in one local read
