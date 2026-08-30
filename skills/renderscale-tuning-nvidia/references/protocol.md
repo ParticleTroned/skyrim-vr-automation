@@ -388,20 +388,39 @@ Every transition record must retain direct raw paths for:
   33, plus all stress, fidelity, stereo, lifetime, load-presentation, and trace
   session identities.
 
-Project the three `replacementTimeline` facets separately into `summary.json`,
-`transitions.csv`, and the rendered report. Prefix fields from
-`lastPreMutation`, `blockedPreMutation`, and `firstPhysicalMutation` with those
-facet names; never flatten one facet over another. In particular,
-`physicalMutationStarted` comes from `firstPhysicalMutation`, while current
-presentation proof and replacement-admission blocking retain their own
-pre-mutation facets. Expose `currentPresentationProven`,
-`currentPresentationGeneration`, `replacementAdmissionBlocked`, and
-`replacementAdmissionBlockReasons`. Preserve
-`selectedPresentationDisposition`, current presentation device/resource
-identity, both-eye path/generation, completed-
-output reuse/ownership proof, and the relative raw receipt paths plus hashes.
-A missing timeline entry makes only that facet `INCONCLUSIVE`; do not invent it
-from a later status snapshot.
+Project every `replacementTimeline` facet independently into `summary.json`,
+`transitions.csv`, and the rendered report. Use these prefixes exactly:
+`dispatch_`, `blocked_pre_mutation_`, `last_pre_mutation_`,
+`first_physical_mutation_`, `first_post_mutation_`,
+`first_new_generation_proven_`, and `terminal_`. Never combine proof,
+admission, disposition, generation, or ownership fields from different
+facets. Preserve each facet's complete raw object in the terminal waiter.
+This includes the facet-local `selectedPresentationDisposition`; never move it
+to another facet.
+
+Report preparation admission separately from replacement-mutation admission.
+CS-menu preparation reasons such as wrong origin or method ineligibility are
+`preparationAdmission: not_applicable`; they do not by themselves mean that
+public-API mutation was blocked. Use the producer's authoritative
+`replacementMutationAdmission` status, reason mask, and reasons.
+
+Retain `presentationCycleAudit`, all disposition counters, and the four
+decisive violation counters with their first-offender identity. A partial eye
+observation is not a submitted mixed stereo pair. Render and evidence verdicts
+remain separate. Task 2 evidence is `PASS` only when every required facet is
+present, the authoritative audit is complete, and all four counters are zero;
+it is `FAIL` only for an exact recorded violation and `INCONCLUSIVE` for missing
+or overflowed evidence. Missing `firstPhysicalMutation` is valid only when
+`mutationExpectation` is explicitly `not_required`; otherwise it is
+`INCONCLUSIVE`. Do not synthesize a missing facet from terminal status.
+
+Preserve server-QPC phase durations for dispatch to blocked/preparation,
+blocked/preparation to first physical mutation, first physical mutation to
+the first exact new generation, new generation to cleanup drained, and
+presentation to strict completion. Retain the raw apply, waiter, operation,
+preparation, full timeline, audit, and NVIDIA DLSS trace receipts plus relative
+paths and hashes. Materialize and hash them only during pass finalization.
+Index their relative raw receipt paths plus hashes without rewriting receipts.
 
 Project final method, quality, render-scale mode, and state revision from the
 terminal waiter's authoritative stable profile. For scaled vendor rows,

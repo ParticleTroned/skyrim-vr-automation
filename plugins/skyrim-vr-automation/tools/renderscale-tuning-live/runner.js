@@ -210,11 +210,178 @@ async function runRenderScaleTuningLive(context) {
             facts.physicalMutationClear === true && facts.terminalClear === true;
     }
 
+    function facetProjection(facet) {
+        if (!facet || typeof facet !== "object") return null;
+        const proof = facet.presentationProof && typeof facet.presentationProof === "object" ?
+            facet.presentationProof : null;
+        const preparation = facet.preparationAdmission &&
+            typeof facet.preparationAdmission === "object" ? facet.preparationAdmission : null;
+        const mutationAdmission = facet.replacementMutationAdmission &&
+            typeof facet.replacementMutationAdmission === "object" ?
+            facet.replacementMutationAdmission : null;
+        const leftEye = proof && proof.leftEye && typeof proof.leftEye === "object" ?
+            proof.leftEye : null;
+        const rightEye = proof && proof.rightEye && typeof proof.rightEye === "object" ?
+            proof.rightEye : null;
+        return {
+            tick: facet.tick ?? null,
+            frame: facet.frame ?? null,
+            proof_kind: proof ? proof.kind ?? null : null,
+            proof_frame: proof ? proof.frame ?? null : null,
+            proof_qpc_tick: proof ? proof.qpcTick ?? null : null,
+            proof_method: proof ? proof.method ?? null : null,
+            proof_backend: proof ? proof.backend ?? null : null,
+            proof_request_id: proof ? proof.requestId ?? null : null,
+            proof_transition_epoch: proof ? proof.transitionEpoch ?? null : null,
+            proof_contract_generation: proof ? proof.contractGeneration ?? null : null,
+            proof_provider_runtime_generation: proof ?
+                proof.providerRuntimeGeneration ?? null : null,
+            proof_publication_generation: proof ?
+                proof.resourcePublicationGeneration ?? null : null,
+            proof_resource_revision: proof ? proof.resourceRevision ?? null : null,
+            proof_device_identity: proof ? proof.deviceIdentity ?? null : null,
+            proof_compositor_cycle_token: proof ? proof.compositorCycleToken ?? null : null,
+            proof_render_width: proof ? proof.renderWidth ?? null : null,
+            proof_render_height: proof ? proof.renderHeight ?? null : null,
+            proof_display_width: proof ? proof.displayWidth ?? null : null,
+            proof_display_height: proof ? proof.displayHeight ?? null : null,
+            left_eye_frame: leftEye ? leftEye.frame ?? null : null,
+            left_eye_compositor_cycle_token: leftEye ?
+                leftEye.compositorCycleToken ?? null : null,
+            left_eye_transition_epoch: leftEye ? leftEye.transitionEpoch ?? null : null,
+            left_eye_method: leftEye ? leftEye.method ?? null : null,
+            left_eye_path: leftEye ? leftEye.path ?? null : null,
+            left_eye_generation: leftEye ? leftEye.generation ?? null : null,
+            left_eye_device_identity: leftEye ? leftEye.deviceIdentity ?? null : null,
+            left_eye_resource_revision: leftEye ? leftEye.resourceRevision ?? null : null,
+            left_eye_loading_or_menu_context: leftEye ?
+                leftEye.loadingOrMenuContext === true : null,
+            left_eye_transition_cooldown: leftEye ?
+                leftEye.transitionCooldown === true : null,
+            right_eye_frame: rightEye ? rightEye.frame ?? null : null,
+            right_eye_compositor_cycle_token: rightEye ?
+                rightEye.compositorCycleToken ?? null : null,
+            right_eye_transition_epoch: rightEye ? rightEye.transitionEpoch ?? null : null,
+            right_eye_method: rightEye ? rightEye.method ?? null : null,
+            right_eye_path: rightEye ? rightEye.path ?? null : null,
+            right_eye_generation: rightEye ? rightEye.generation ?? null : null,
+            right_eye_device_identity: rightEye ? rightEye.deviceIdentity ?? null : null,
+            right_eye_resource_revision: rightEye ? rightEye.resourceRevision ?? null : null,
+            right_eye_loading_or_menu_context: rightEye ?
+                rightEye.loadingOrMenuContext === true : null,
+            right_eye_transition_cooldown: rightEye ?
+                rightEye.transitionCooldown === true : null,
+            preparation_status: preparation ? preparation.status ?? null : null,
+            preparation_reason_mask: preparation ? preparation.reasonMask ?? null : null,
+            mutation_admission_status: mutationAdmission ?
+                mutationAdmission.status ?? null : null,
+            mutation_admission_blocked: mutationAdmission ?
+                mutationAdmission.blocked === true : null,
+            mutation_admission_reason_mask: mutationAdmission ?
+                mutationAdmission.reasonMask ?? null : null,
+            physical_mutation_started: facet.physicalMutationStarted === true,
+            physical_mutation_source: facet.physicalMutationSource ?? null,
+            selected_presentation_disposition:
+                facet.selectedPresentationDisposition ?? null,
+        };
+    }
+
+    function invariantCount(audit, name) {
+        const violations = audit && audit.violations;
+        const value = violations && violations[name];
+        return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    }
+
+    function task2Projection(waiter) {
+        const timeline = waiter && waiter.replacementTimeline;
+        const audit = waiter && waiter.presentationCycleAudit;
+        const expectation = timeline && timeline.mutationExpectation || "unknown";
+        const expectationReason = timeline && timeline.mutationExpectationReason;
+        const required = expectation === "required";
+        const notRequired = expectation === "not_required";
+        const explicitNotRequiredReason = typeof expectationReason === "string" &&
+            expectationReason.length > 0 && expectationReason !== "replacement_not_observed";
+        const terminalProof = timeline && timeline.terminal &&
+            timeline.terminal.presentationProof;
+        const exactTerminalProof = terminalProof && terminalProof.proven === true &&
+            (terminalProof.kind === "exact_native_presentation" ||
+                terminalProof.kind === "exact_vendor_evaluation");
+        const missing = [];
+        if (!timeline || !timeline.dispatch) missing.push("dispatch");
+        else if (!timeline.dispatch.presentationProof ||
+            timeline.dispatch.presentationProof.proven !== true) {
+            missing.push("truthful_current_contract");
+        }
+        if (required && !timeline.firstPhysicalMutation) {
+            missing.push("first_physical_mutation");
+        }
+        if (required && !timeline.firstPostMutation) {
+            missing.push("first_post_mutation");
+        }
+        if (required && (!timeline.firstNewGenerationProven ||
+            !timeline.firstNewGenerationProven.presentationProof ||
+            timeline.firstNewGenerationProven.presentationProof.proven !== true)) {
+            missing.push("first_new_generation_proven");
+        }
+        if (notRequired && !explicitNotRequiredReason) {
+            missing.push("mutation_not_required_reason");
+        }
+        if (notRequired && !exactTerminalProof) {
+            missing.push("mutation_not_required_terminal_proof");
+        }
+        if (!audit || audit.evidenceComplete !== true ||
+            audit.retentionOverflow === true) {
+            missing.push("authoritative_cycle_audit");
+        }
+        if (audit && (audit.ownerTransitionId !== waiter.transitionId ||
+            !Number.isSafeInteger(audit.ownerToken) || audit.ownerToken <= 0)) {
+            missing.push("authoritative_cycle_owner");
+        }
+        const violationNames = [
+            "preMutationExactPresentationSuppressed",
+            "preMutationStretchWithoutMutation",
+            "postMutationOldGenerationPresented",
+            "postMutationUnprovenStereoSubmitted",
+        ];
+        const violations = Object.fromEntries(violationNames.map((name) =>
+            [name, invariantCount(audit, name)]));
+        if (Object.values(violations).some((value) => value === null)) {
+            missing.push("authoritative_cycle_counters");
+        }
+        const exactViolation = Object.values(violations).some((value) => value > 0);
+        const evidenceVerdict = exactViolation ? "FAIL" :
+            missing.length > 0 || expectation === "unknown" ? "INCONCLUSIVE" : "PASS";
+        return {
+            renderVerdict: waiter && waiter.satisfied === true ? "PASS" : "FAIL",
+            evidenceVerdict,
+            task2Verdict: evidenceVerdict,
+            mutationExpectation: expectation,
+            mutationExpectationReason: expectationReason || null,
+            mutationNotRequiredProven: notRequired &&
+                explicitNotRequiredReason && exactTerminalProof,
+            missingEvidence: missing,
+            invariantViolations: violations,
+        };
+    }
+
     function transitionProjection(waiter) {
-        const mutation = waiter && waiter.replacementTimeline &&
-            waiter.replacementTimeline.firstPhysicalMutation;
-        const presentationStretchSelected = mutation &&
-            mutation.selectedPresentationDisposition === "PresentationStretch";
+        const timeline = waiter && waiter.replacementTimeline || {};
+        const auditDispositions = waiter && waiter.presentationCycleAudit &&
+            waiter.presentationCycleAudit.dispositionCounts;
+        const presentationStretchSelected = [
+            timeline.firstPhysicalMutation,
+            timeline.firstPostMutation,
+            timeline.firstNewGenerationProven,
+            timeline.terminal,
+        ].some((facet) => facet &&
+            (facet.selectedPresentationDisposition === "PresentationStretch" ||
+                facet.selectedPresentationDisposition === "presentation_stretch")) ||
+            Boolean(auditDispositions &&
+                ((auditDispositions.beforeMutation &&
+                    auditDispositions.beforeMutation.presentation_stretch > 0) ||
+                    (auditDispositions.afterMutation &&
+                        auditDispositions.afterMutation.presentation_stretch > 0)));
+        const task2 = task2Projection(waiter);
         return {
             satisfied: waiter.satisfied === true,
             presentationStable: waiter.presentationStable === true,
@@ -223,6 +390,19 @@ async function runRenderScaleTuningLive(context) {
             presentationStretchTerminalRecovery: presentationStretchSelected === true &&
                 waiter.satisfied === true && waiter.presentationStable === true &&
                 waiter.cleanupDrained === true,
+            ...task2,
+            dispatch_: facetProjection(timeline.dispatch),
+            blocked_pre_mutation_: facetProjection(timeline.blockedPreMutation),
+            last_pre_mutation_: facetProjection(timeline.lastPreMutation),
+            first_physical_mutation_: facetProjection(timeline.firstPhysicalMutation) ||
+                (task2.mutationNotRequiredProven ?
+                    "not_required" : "not_exposed"),
+            first_post_mutation_: facetProjection(timeline.firstPostMutation),
+            first_new_generation_proven_: facetProjection(
+                timeline.firstNewGenerationProven),
+            terminal_: facetProjection(timeline.terminal),
+            phaseDurations: waiter.phaseDurations || null,
+            presentationCycleAudit: waiter.presentationCycleAudit || null,
         };
     }
 
@@ -355,9 +535,15 @@ async function runRenderScaleTuningLive(context) {
             response = await scenario(steps);
         } catch {
             const waiter = await recoverTerminal(identifiers);
-            store(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`, { waiter });
+            const projection = transitionProjection(waiter);
+            store(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`, {
+                waiter,
+                projection,
+                replacementTimeline: waiter.replacementTimeline || null,
+                presentationCycleAudit: waiter.presentationCycleAudit || null,
+            });
             if (!safeTerminal(waiter, identifiers)) throw new Error("transition_unsafe");
-            return { boundary: terminalBoundary(waiter), waiter };
+            return { boundary: terminalBoundary(waiter), waiter, projection };
         }
         const entries = resultMap(response.root);
         const waiter = entries.get("qualification-wait");
@@ -366,6 +552,14 @@ async function runRenderScaleTuningLive(context) {
             apply: entries.get("profile-apply"),
             waiter,
             projection,
+            operation: waiter && waiter.upscalingSnapshot ? {
+                activeOperationId: waiter.upscalingSnapshot.activeOperationId,
+                stateRevision: waiter.upscalingSnapshot.stateRevision,
+            } : null,
+            preparation: waiter && waiter.observation ?
+                waiter.observation.preparationTelemetry || null : null,
+            replacementTimeline: waiter ? waiter.replacementTimeline || null : null,
+            presentationCycleAudit: waiter ? waiter.presentationCycleAudit || null : null,
             traceReset: entries.get("dlss-trace-reset") || null,
             traceStart: entries.get("dlss-trace-start") || null,
             traceStop: entries.get("dlss-trace-stop") || null,

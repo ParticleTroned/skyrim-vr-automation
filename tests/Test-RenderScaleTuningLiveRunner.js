@@ -66,7 +66,7 @@ function flatProfile(target) {
     };
 }
 
-function createMock(semanticFailureOrdinal) {
+function createMock(semanticFailureOrdinal, receiptTransform = null) {
     let revision = 1;
     let stressSession = 0;
     let stressActive = false;
@@ -195,9 +195,94 @@ function createMock(semanticFailureOrdinal) {
                     frames: { dispatch: 10, stable: 11 },
                     milestoneTimings: { presentationElapsedMs: 1, cleanupElapsedMs: 1 },
                     replacementTimeline: {
+                        mutationExpectation: "required",
+                        mutationExpectationReason: "physical_relatch_plan",
+                        dispatch: {
+                            tick: 10,
+                            frame: 10,
+                            presentationProof: {
+                                proven: true,
+                                kind: "exact_vendor_evaluation",
+                                contractGeneration: 8,
+                                leftEye: {
+                                    frame: 10, compositorCycleToken: 20,
+                                    transitionEpoch: 8, method: "dlss",
+                                    path: "VendorEvaluated", generation: 8,
+                                    deviceIdentity: 100, resourceRevision: 40,
+                                },
+                                rightEye: {
+                                    frame: 10, compositorCycleToken: 20,
+                                    transitionEpoch: 8, method: "dlss",
+                                    path: "VendorEvaluated", generation: 8,
+                                    deviceIdentity: 100, resourceRevision: 40,
+                                },
+                            },
+                        },
+                        lastPreMutation: {
+                            tick: 11,
+                            frame: 11,
+                            presentationProof: {
+                                proven: true,
+                                kind: "exact_vendor_evaluation",
+                                contractGeneration: 8,
+                            },
+                        },
                         firstPhysicalMutation: {
+                            tick: 12,
+                            frame: 12,
+                            physicalMutationStarted: true,
                             selectedPresentationDisposition: "PresentationStretch",
                         },
+                        firstPostMutation: {
+                            tick: 13,
+                            frame: 13,
+                            selectedPresentationDisposition: "PresentationStretch",
+                        },
+                        firstNewGenerationProven: {
+                            tick: 14,
+                            frame: 14,
+                            presentationProof: {
+                                proven: true,
+                                kind: target.method === "fsr" ?
+                                    "exact_vendor_evaluation" :
+                                    target.method === "dlss" ?
+                                        "exact_vendor_evaluation" :
+                                        "exact_native_presentation",
+                                contractGeneration: 9,
+                            },
+                        },
+                        terminal: {
+                            tick: 15,
+                            frame: 15,
+                            presentationProof: {
+                                proven: true,
+                                kind: target.renderScaleMode ?
+                                    "exact_vendor_evaluation" :
+                                    "exact_native_presentation",
+                                contractGeneration: 9,
+                            },
+                        },
+                    },
+                    presentationCycleAudit: {
+                        evidenceComplete: true,
+                        retentionOverflow: false,
+                        ownerTransitionId: waitStep.args.transitionId,
+                        ownerToken: 1,
+                        partialEyeObservations: 0,
+                        incompleteStereoCycles: 0,
+                        violations: {
+                            preMutationExactPresentationSuppressed: 0,
+                            preMutationStretchWithoutMutation: 0,
+                            postMutationOldGenerationPresented: 0,
+                            postMutationUnprovenStereoSubmitted: 0,
+                        },
+                    },
+                    phaseDurations: {
+                        dispatchToBlockedOrPreparationMs: 1,
+                        blockedOrPreparationToFirstPhysicalMutationMs: 1,
+                        firstPhysicalMutationToFirstNewGenerationMs: 2,
+                        firstNewGenerationToCleanupDrainedMs: 1,
+                        presentationToStrictCompletionMs: 0,
                     },
                     presentationStable: true,
                     cleanupDrained: true,
@@ -226,6 +311,17 @@ function createMock(semanticFailureOrdinal) {
                 },
             };
         });
+        if (receiptTransform) {
+            for (const entry of results) {
+                if (entry.label === "qualification-wait") {
+                    entry.result = receiptTransform(entry.result, {
+                        transitionOrdinal,
+                        baseline: args.steps.some((step) =>
+                            step.label === "baseline-stress-start"),
+                    });
+                }
+            }
+        }
         return envelope({
             ok: true,
             aborted: false,
@@ -269,6 +365,19 @@ async function testNvidia() {
     assert(mock.notifications.length === 66, "NVIDIA progress count is wrong.");
     assert(mock.notifications.filter((row) => row.satisfied === false).length === 2,
         "NVIDIA semantic failures did not continue through both passes.");
+    assert(mock.notifications.every((row) => row.evidenceVerdict === "PASS"),
+        `Complete NVIDIA Task 2 evidence was not classified PASS: ${JSON.stringify(mock.notifications[0])}`);
+    assert(mock.notifications.every((row) => row.renderVerdict ===
+        (row.satisfied ? "PASS" : "FAIL")),
+    "Render and evidence verdicts were not kept separate.");
+    assert(mock.notifications.every((row) => row.dispatch_ &&
+        row.last_pre_mutation_ && row.first_physical_mutation_ &&
+        row.first_post_mutation_ && row.first_new_generation_proven_ && row.terminal_),
+    "NVIDIA timeline facets were not projected independently.");
+    assert(mock.notifications.every((row) =>
+        row.last_pre_mutation_.proof_contract_generation === 8 &&
+        row.first_new_generation_proven_.proof_contract_generation === 9),
+    "NVIDIA old/new generations were flattened across facets.");
     assert(mock.notifications.every((row) => row.cleanupDrained === true),
         "Structured cleanup debt was not projected from cleanupDrained.");
     assert(mock.notifications.filter((row) => row.satisfied === true).every((row) =>
@@ -333,6 +442,9 @@ async function testAmd() {
     assert(fsr3.passes.every((pass) => pass.rows.length === 31), "AMD mock row count is wrong.");
     assert(fallback.passes.every((pass) => pass.rows.length === 31), "AMD fallback row count is wrong.");
     assert(mock.notifications.length === 124, "AMD progress count is wrong.");
+    assert(mock.notifications.every((row) => row.evidenceVerdict === "PASS" &&
+        row.dispatch_ && row.first_new_generation_proven_),
+    "AMD did not receive the shared Task 2 evidence projection.");
     const capabilityEnvelope = mock.stores.get("amd-test:amd:dlss-trace-capability");
     assert(capabilityEnvelope, "AMD DLSS trace capability lifecycle was not retained.");
     const capability = JSON.parse(capabilityEnvelope.content[0].text);
@@ -354,7 +466,142 @@ async function testAmd() {
     assert(amdTransitionTrace === false, "AMD matrix started a per-row DLSS trace.");
 }
 
-Promise.all([testNvidia(), testAmd()]).then(() => {
+async function runNvidiaProjectionTransform(receiptTransform) {
+    const matrix = JSON.parse(fs.readFileSync(path.join(
+        repositoryRoot, "skills", "renderscale-tuning-nvidia", "references", "matrix.v1.json")));
+    const mock = createMock(0, receiptTransform);
+    const result = await runRenderScaleTuningLive({
+        ...mock.context,
+        variant: "nvidia",
+        runId: `projection-${Date.now()}`,
+        buildId,
+        initialBoundary: initialBoundary(),
+        capabilities: {},
+        matrix,
+    });
+    assert(result.ok === true, "Projection test run did not complete.");
+    return mock.notifications;
+}
+
+async function testEvidenceVerdicts() {
+    const missingMutation = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) delete receipt.replacementTimeline.firstPhysicalMutation;
+        return receipt;
+    });
+    assert(missingMutation.every((row) => row.evidenceVerdict === "INCONCLUSIVE" &&
+        row.missingEvidence.includes("first_physical_mutation") &&
+        row.first_physical_mutation_ === "not_exposed"),
+    "Missing required mutation evidence was not INCONCLUSIVE.");
+
+    const notRequired = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.replacementTimeline.mutationExpectation = "not_required";
+            receipt.replacementTimeline.mutationExpectationReason = "compatible_contract_reuse";
+            delete receipt.replacementTimeline.firstPhysicalMutation;
+            delete receipt.replacementTimeline.firstPostMutation;
+            delete receipt.replacementTimeline.firstNewGenerationProven;
+        }
+        return receipt;
+    });
+    assert(notRequired.every((row) => row.evidenceVerdict === "PASS" &&
+        row.mutationExpectation === "not_required" &&
+        row.mutationNotRequiredProven === true &&
+        row.first_physical_mutation_ === "not_required"),
+    "Explicit mutation not_required was not accepted.");
+
+    const notRequiredWithoutReason = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.replacementTimeline.mutationExpectation = "not_required";
+            receipt.replacementTimeline.mutationExpectationReason = "replacement_not_observed";
+            delete receipt.replacementTimeline.firstPhysicalMutation;
+        }
+        return receipt;
+    });
+    assert(notRequiredWithoutReason.every((row) =>
+        row.evidenceVerdict === "INCONCLUSIVE" &&
+        row.missingEvidence.includes("mutation_not_required_reason") &&
+        row.first_physical_mutation_ === "not_exposed"),
+    "Mutation not_required without an explicit reason was accepted.");
+
+    const notRequiredWithoutProof = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.replacementTimeline.mutationExpectation = "not_required";
+            receipt.replacementTimeline.mutationExpectationReason =
+                "native_contract_reuse";
+            delete receipt.replacementTimeline.firstPhysicalMutation;
+            delete receipt.replacementTimeline.terminal.presentationProof.kind;
+        }
+        return receipt;
+    });
+    assert(notRequiredWithoutProof.every((row) =>
+        row.evidenceVerdict === "INCONCLUSIVE" &&
+        row.missingEvidence.includes("mutation_not_required_terminal_proof") &&
+        row.first_physical_mutation_ === "not_exposed"),
+    "Mutation not_required without exact terminal proof was accepted.");
+
+    const unknown = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.replacementTimeline.mutationExpectation = "unknown";
+            receipt.replacementTimeline.mutationExpectationReason =
+                "replacement_not_observed";
+            delete receipt.replacementTimeline.firstPhysicalMutation;
+        }
+        return receipt;
+    });
+    assert(unknown.every((row) => row.evidenceVerdict === "INCONCLUSIVE" &&
+        row.first_physical_mutation_ === "not_exposed"),
+    "Unknown mutation expectation did not remain INCONCLUSIVE.");
+
+    const violated = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.presentationCycleAudit.violations.postMutationOldGenerationPresented = 1;
+        }
+        return receipt;
+    });
+    assert(violated.every((row) => row.evidenceVerdict === "FAIL" &&
+        row.invariantViolations.postMutationOldGenerationPresented === 1),
+    "Exact Task 2 violation was not classified FAIL.");
+
+    const wrongOrigin = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.replacementTimeline.lastPreMutation.preparationAdmission = {
+                status: "not_applicable", reasonMask: 2,
+            };
+            receipt.replacementTimeline.lastPreMutation.replacementMutationAdmission = {
+                status: "admitted", blocked: false, reasonMask: 0,
+            };
+        }
+        return receipt;
+    });
+    assert(wrongOrigin.every((row) =>
+        row.last_pre_mutation_.preparation_status === "not_applicable" &&
+        row.last_pre_mutation_.mutation_admission_blocked === false),
+    "Wrong-origin preparation was conflated with mutation blocking.");
+
+    const nativeProof = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.replacementTimeline.firstNewGenerationProven.presentationProof.kind =
+                "exact_native_presentation";
+        }
+        return receipt;
+    });
+    assert(nativeProof.every((row) =>
+        row.first_new_generation_proven_.proof_kind === "exact_native_presentation"),
+    "Native presentation proof was not retained in its own facet.");
+
+    const partialEye = await runNvidiaProjectionTransform((receipt, context) => {
+        if (!context.baseline) {
+            receipt.presentationCycleAudit.partialEyeObservations = 1;
+            receipt.presentationCycleAudit.incompleteStereoCycles = 1;
+        }
+        return receipt;
+    });
+    assert(partialEye.every((row) => row.evidenceVerdict === "PASS" &&
+        row.invariantViolations.postMutationUnprovenStereoSubmitted === 0),
+    "A partial eye observation was treated as submitted mixed stereo.");
+}
+
+Promise.all([testNvidia(), testAmd(), testEvidenceVerdicts()]).then(() => {
     process.stdout.write("Render-scale tuning live runner tests passed.\n");
 }).catch((error) => {
     process.stderr.write(`${error.stack || error}\n`);
