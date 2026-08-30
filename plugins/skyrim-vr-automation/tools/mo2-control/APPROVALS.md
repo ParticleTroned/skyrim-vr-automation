@@ -52,13 +52,14 @@ Do not propose reusable approval for:
 
 - `recover-access`, because it transfers an abandoned lease;
 - `terminate-game` or `terminate`, because they force process termination;
-- workspace `refresh-fixture`, `prepare-source`, or `release`, because they
+- workspace `refresh-fixture`, `prepare-source`, `retire`, or deprecated
+  `release`, because they
   replace shared fixture metadata, move overwrite cache trees into a shared
   stable mod, or recursively remove exact owned workspace paths;
 - any profile-control mutation, because it overwrites `modlist.txt` under its
   exact backup transaction.
 
-Workspace `create`, `register-mod`, and `ensure-mod-wins` are eligible only
+Workspace `create`, `resume`, `register-mod`, and `ensure-mod-wins` are eligible only
 through the exact workspace entry point and literal subcommand. Their access
 and ownership proofs remain mandatory. Profile `inspect` is read-only; all
 other profile commands remain one-shot.

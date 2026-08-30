@@ -18,6 +18,7 @@ param(
     [string]$ShaderSourceSha256,
     [string]$BuildId,
     [string]$PresetSha256,
+    [string]$FeatureSetSha256,
     [string]$GameRuntime = 'SkyrimVR-1.4.15',
     [string]$RenderPath = 'vr',
     [string]$BytecodeCompatibilityClass = 'skyrimvr-d3d11',
@@ -33,14 +34,24 @@ param(
     [string]$WorkingSetStatus = 'unverified',
     [ValidateNotNullOrEmpty()]
     [string[]]$BlockingProcessNames = @('ModOrganizer', 'SkyrimVR', 'sksevr_loader'),
+    [ValidateRange(1, 1000000)]
+    [int]$MaxInventoryFiles = 20000,
+    [ValidateRange(1, [long]::MaxValue)]
+    [long]$MaxInventoryBytes = 21474836480,
+    [ValidateRange(1, 128)]
+    [int]$MaxInventoryDepth = 24,
+    [ValidateRange(1, 3600)]
+    [int]$InventoryTimeoutSeconds = 120,
     [switch]$NoExit,
     [switch]$Compact
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:CatalogCommandContext = $PSCmdlet
 $contractVersion = '1.0.0'
 $transactionTool = Join-Path $PSScriptRoot 'Invoke-CSXShaderCacheTransaction.ps1'
+. (Join-Path $PSScriptRoot 'ShaderCacheInventory.ps1')
 
 function Test-Property($Value, [string]$Name) {
     return $null -ne $Value -and $Value.PSObject.Properties.Name -contains $Name
@@ -115,22 +126,7 @@ function Resolve-CatalogRoot {
 }
 
 function Get-TreeInventory([string]$Root) {
-    $resolved = Assert-SafeDirectory $Root 'shader-cache tree' -MustExist
-    $files = @(
-        Get-ChildItem -LiteralPath $resolved -Recurse -File |
-            ForEach-Object {
-                [pscustomobject][ordered]@{
-                    relativePath = [IO.Path]::GetRelativePath($resolved, $_.FullName).Replace('/', '\')
-                    bytes = [long]$_.Length
-                    sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
-                }
-            } |
-            Sort-Object relativePath
-    )
-    $canonical = ($files | ForEach-Object { '{0}|{1}|{2}' -f $_.relativePath, $_.bytes, $_.sha256 }) -join "`n"
-    $treeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical)))
-    $totalBytes = if ($files.Count -gt 0) { [long](($files | Measure-Object bytes -Sum).Sum) } else { [long]0 }
-    return [pscustomobject][ordered]@{ root = $resolved; files = $files.Count; bytes = $totalBytes; treeSha256 = $treeHash; entries = $files }
+    return Get-CSXShaderCacheTreeInventory -Root $Root -MaxFiles $MaxInventoryFiles -MaxBytes $MaxInventoryBytes -MaxDepth $MaxInventoryDepth -TimeoutSeconds $InventoryTimeoutSeconds -ProgressActivity 'Inventorying shader-cache catalog tree'
 }
 
 function Get-IniValue([string]$Path, [string]$Section, [string]$Key) {
@@ -227,6 +223,9 @@ function Get-CatalogRecords($Layout) {
             if ((Test-Property $manifest.compatibility 'presetSha256') -and -not [string]::IsNullOrWhiteSpace([string]$manifest.compatibility.presetSha256)) {
                 [void](Assert-Hash ([string]$manifest.compatibility.presetSha256) 'manifest presetSha256')
             }
+            if ((Test-Property $manifest.compatibility 'featureSetSha256') -and -not [string]::IsNullOrWhiteSpace([string]$manifest.compatibility.featureSetSha256)) {
+                [void](Assert-Hash ([string]$manifest.compatibility.featureSetSha256) 'manifest featureSetSha256')
+            }
             $expectedObject = 'objects\' + $treeHash + '\ShaderCache'
             if ([string]$manifest.cacheObject -cne $expectedObject) { throw 'cache object does not match the manifest tree identity' }
             $cache = [IO.Path]::GetFullPath((Join-Path $Layout.root ([string]$manifest.cacheObject)))
@@ -246,14 +245,19 @@ function Get-ReceiptProof([string]$Path, [string]$SourcePath, [string]$ExpectedH
     $resolvedReceipt = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolvedReceipt -PathType Leaf)) { throw "Source receipt does not exist: $resolvedReceipt" }
     $receipt = Get-Content -LiteralPath $resolvedReceipt -Raw | ConvertFrom-Json -Depth 30
+    $operation = [string](Get-PropertyValue $receipt 'operation' '')
+    $transactionId = [string](Get-PropertyValue $receipt 'transactionId' '')
+    if ($operation -notin @('snapshot', 'seed', 'restore') -or [string]::IsNullOrWhiteSpace($transactionId)) { throw 'Source receipt lacks a supported operation and immutable transaction identity.' }
     $resolvedSource = [IO.Path]::GetFullPath($SourcePath)
     $pairs = @(
-        @{ path = 'backupPath'; hash = 'beforeTreeSha256' },
-        @{ path = 'displacedPath'; hash = 'displacedTreeSha256' },
-        @{ path = 'sourceCachePath'; hash = 'sourceTreeSha256' }
+        @{ operation = 'snapshot'; path = 'backupPath'; hash = 'beforeTreeSha256' },
+        @{ operation = 'seed'; path = 'displacedPath'; hash = 'displacedTreeSha256' },
+        @{ operation = 'restore'; path = 'displacedPath'; hash = 'displacedTreeSha256' },
+        @{ operation = 'seed'; path = 'sourceCachePath'; hash = 'sourceTreeSha256' }
     )
     $matched = $false
     foreach ($pair in $pairs) {
+        if ($operation -cne [string]$pair.operation) { continue }
         if (-not (Test-Property $receipt $pair.path) -or -not (Test-Property $receipt $pair.hash)) { continue }
         if ([IO.Path]::GetFullPath([string]$receipt.($pair.path)) -eq $resolvedSource -and [string]$receipt.($pair.hash) -ieq $ExpectedHash) {
             $matched = $true
@@ -265,6 +269,8 @@ function Get-ReceiptProof([string]$Path, [string]$SourcePath, [string]$ExpectedH
         path = $resolvedReceipt
         sha256 = (Get-FileHash -LiteralPath $resolvedReceipt -Algorithm SHA256).Hash
         contractVersion = [string](Get-PropertyValue $receipt 'contractVersion' '')
+        operation = $operation
+        transactionId = $transactionId
     }
 }
 
@@ -275,6 +281,7 @@ function Assert-CompatibilityInput {
     if ([string]::IsNullOrWhiteSpace($BytecodeCompatibilityClass)) { throw '-BytecodeCompatibilityClass is required.' }
     $script:ShaderSourceSha256 = Assert-Hash $ShaderSourceSha256 'ShaderSourceSha256'
     if (-not [string]::IsNullOrWhiteSpace($PresetSha256)) { $script:PresetSha256 = Assert-Hash $PresetSha256 'PresetSha256' }
+    if (-not [string]::IsNullOrWhiteSpace($FeatureSetSha256)) { $script:FeatureSetSha256 = Assert-Hash $FeatureSetSha256 'FeatureSetSha256' }
     if ($AllowSourceMismatch -and [string]::IsNullOrWhiteSpace($CompatibilityReason)) {
         throw '-CompatibilityReason is required when -AllowSourceMismatch is used.'
     }
@@ -284,20 +291,36 @@ function Get-NormalizedStrings([string[]]$Values) {
     return @($Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Sort-Object -Unique)
 }
 
+function Get-RenderFamily([string]$Value) {
+    $normalized = $Value.Trim().ToLowerInvariant()
+    if ($normalized -in @('vr-steamvr-physical', 'vr-steamvr-null')) { return 'vr-steamvr' }
+    return $normalized
+}
+
 function New-CompatibilityRecord {
     return [pscustomobject][ordered]@{
         shaderCacheAbi = $ShaderCacheAbi
         gameRuntime = $GameRuntime
         bytecodeCompatibilityClass = $BytecodeCompatibilityClass
         renderPath = $RenderPath
+        renderFamily = Get-RenderFamily $RenderPath
         shaderSourceSha256 = $ShaderSourceSha256
         buildId = $(if ([string]::IsNullOrWhiteSpace($BuildId)) { $null } else { $BuildId })
         presetSha256 = $(if ([string]::IsNullOrWhiteSpace($PresetSha256)) { $null } else { $PresetSha256 })
+        featureSetSha256 = $(if ([string]::IsNullOrWhiteSpace($FeatureSetSha256)) { $null } else { $FeatureSetSha256 })
         tags = @(Get-NormalizedStrings $Tags)
     }
 }
 
-function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [string]$ReceiptPath, [string]$Status) {
+function New-CatalogSnapshot {
+    param(
+        [Parameter(Mandatory)]$Storage,
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$ExpectedHash,
+        [Parameter(Mandatory)][string]$ReceiptPath,
+        [Parameter(Mandatory)][string]$Status,
+        [Parameter(Mandatory)][Management.Automation.PSCmdlet]$Caller
+    )
     Assert-CompatibilityInput
     $resolvedSource = Assert-SafeDirectory $Source 'preserved shader-cache source' -MustExist
     $expected = Assert-Hash $ExpectedHash 'ExpectedSourceTreeSha256'
@@ -344,10 +367,11 @@ function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [
             if ([string]$m.inventory.treeSha256 -ieq $expected -and [string]$m.status -ceq $Status -and
                 [string]$m.compatibility.shaderCacheAbi -ceq $ShaderCacheAbi -and
                 [string]$m.compatibility.gameRuntime -ceq $GameRuntime -and
-                [string]$m.compatibility.renderPath -ceq $RenderPath -and
+                (Get-RenderFamily ([string]$m.compatibility.renderPath)) -ceq (Get-RenderFamily $RenderPath) -and
                 [string]$m.compatibility.shaderSourceSha256 -ieq $ShaderSourceSha256 -and
                 [string](Get-PropertyValue $m.compatibility 'buildId' '') -ceq [string](Get-PropertyValue $compatibility 'buildId' '') -and
                 [string](Get-PropertyValue $m.compatibility 'presetSha256' '') -ieq [string](Get-PropertyValue $compatibility 'presetSha256' '') -and
+                [string](Get-PropertyValue $m.compatibility 'featureSetSha256' '') -ieq [string](Get-PropertyValue $compatibility 'featureSetSha256' '') -and
                 ($manifestTags -join "`n") -ceq (@($compatibility.tags) -join "`n")) {
                 return [pscustomobject][ordered]@{ state = 'already-present'; record = $record }
             }
@@ -357,7 +381,7 @@ function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [
             $existing = Get-TreeInventory $objectPath
             if ($existing.treeSha256 -ne $expected) { throw "Catalog object is corrupt: $objectPath" }
         }
-        elseif ($PSCmdlet.ShouldProcess($objectPath, 'Add verified content-addressed shader-cache object')) {
+        elseif ($Caller.ShouldProcess($objectPath, 'Add verified content-addressed shader-cache object')) {
             $incoming = Join-Path $layout.incoming ([guid]::NewGuid().ToString('N'))
             $incomingCache = Join-Path $incoming 'ShaderCache'
             try {
@@ -387,7 +411,7 @@ function New-CatalogSnapshot($Storage, [string]$Source, [string]$ExpectedHash, [
             compatibility = $compatibility
             provenance = [pscustomobject][ordered]@{ sourceReceipt = $proof; sourceLeaf = [IO.Path]::GetFileName($resolvedSource) }
         }
-        if ($PSCmdlet.ShouldProcess($manifestPath, 'Publish immutable shader-cache snapshot manifest')) {
+        if ($Caller.ShouldProcess($manifestPath, 'Publish immutable shader-cache snapshot manifest')) {
             Write-JsonAtomic $manifestPath $manifest -RefuseExisting
         }
         return [pscustomobject][ordered]@{ state = $(if ($WhatIfPreference) { 'dry-run' } else { 'captured' }); record = [pscustomobject]@{ manifestPath = $manifestPath; cachePath = $objectPath; manifest = $manifest } }
@@ -410,6 +434,12 @@ function Select-CatalogSnapshot($Storage) {
         if ([string]$m.compatibility.gameRuntime -cne $GameRuntime) { $reasons += 'game-runtime-mismatch' }
         $candidateBytecodeClass = [string](Get-PropertyValue $m.compatibility 'bytecodeCompatibilityClass' $(if ([string]$m.compatibility.gameRuntime -like 'SkyrimVR*') { 'skyrimvr-d3d11' } else { [string]$m.compatibility.renderPath }))
         if ($candidateBytecodeClass -cne $BytecodeCompatibilityClass) { $reasons += 'bytecode-compatibility-class-mismatch' }
+        $candidateRenderFamily = Get-RenderFamily ([string]$m.compatibility.renderPath)
+        $candidateFeatureSet = [string](Get-PropertyValue $m.compatibility 'featureSetSha256' '')
+        if (-not [string]::IsNullOrWhiteSpace($FeatureSetSha256)) {
+            if ([string]::IsNullOrWhiteSpace($candidateFeatureSet)) { $reasons += 'feature-set-unknown' }
+            elseif ($candidateFeatureSet -ine $FeatureSetSha256) { $reasons += 'feature-set-mismatch' }
+        }
         $sourceExact = [string]$m.compatibility.shaderSourceSha256 -ieq $ShaderSourceSha256
         if (-not $sourceExact -and -not $AllowSourceMismatch) { $reasons += 'shader-source-mismatch' }
         $candidateTags = @(Get-NormalizedStrings @($m.compatibility.tags))
@@ -420,8 +450,9 @@ function Select-CatalogSnapshot($Storage) {
         }
         $buildExact = -not [string]::IsNullOrWhiteSpace($BuildId) -and [string](Get-PropertyValue $m.compatibility 'buildId' '') -ceq $BuildId
         $presetExact = -not [string]::IsNullOrWhiteSpace($PresetSha256) -and [string](Get-PropertyValue $m.compatibility 'presetSha256' '') -ieq $PresetSha256
+        $featureSetExact = -not [string]::IsNullOrWhiteSpace($FeatureSetSha256) -and $candidateFeatureSet -ieq $FeatureSetSha256
         $renderPathExact = [string]$m.compatibility.renderPath -ceq $RenderPath
-        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + $(if ($renderPathExact) { 100 } else { 0 }) + ($required.Count * 10)
+        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($featureSetExact) { 100000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + $(if ($renderPathExact) { 100 } else { 0 }) + ($required.Count * 10)
         $eligible += [pscustomobject][ordered]@{
             snapshotId = [string]$m.snapshotId
             score = $score
@@ -430,6 +461,8 @@ function Select-CatalogSnapshot($Storage) {
             exactPreset = $presetExact
             exactRenderPathProvenance = $renderPathExact
             bytecodeCompatibilityClass = $candidateBytecodeClass
+            exactFeatureSet = $featureSetExact
+            renderFamily = $candidateRenderFamily
             files = [int]$m.inventory.files
             bytes = [long]$m.inventory.bytes
             createdUtc = [string]$m.createdUtc
@@ -454,7 +487,11 @@ function Select-CatalogSnapshot($Storage) {
 }
 
 function Invoke-Transaction([string]$Action, [hashtable]$Arguments) {
-    $parameters = @{ Command = $Action; NoExit = $true; Compact = $true }
+    $parameters = @{
+        Command = $Action; NoExit = $true; Compact = $true
+        MaxInventoryFiles = $MaxInventoryFiles; MaxInventoryBytes = $MaxInventoryBytes
+        MaxInventoryDepth = $MaxInventoryDepth; InventoryTimeoutSeconds = $InventoryTimeoutSeconds
+    }
     foreach ($key in $Arguments.Keys) { $parameters[$key] = $Arguments[$key] }
     $raw = & $transactionTool @parameters
     $parsed = $raw | ConvertFrom-Json -Depth 40
@@ -467,8 +504,13 @@ function Prepare-TaskCache($Storage) {
     $resolvedCache = Assert-SafeDirectory $CachePath 'live shader-cache' -MustExist
     $evidence = Assert-SafeDirectory $EvidenceDirectory 'shader-cache task evidence'
     $planPath = Join-Path $evidence 'shader-cache-task.plan.json'
-    if (Test-Path -LiteralPath $planPath) { throw "Refusing to overwrite an existing task cache plan: $planPath" }
-    $selection = Select-CatalogSnapshot $Storage
+    $existingPlan = $null
+    if (Test-Path -LiteralPath $planPath -PathType Leaf) {
+        $existingPlan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -Depth 40
+        if ([IO.Path]::GetFullPath([string]$existingPlan.cachePath) -ne $resolvedCache -or [IO.Path]::GetFullPath([string]$existingPlan.catalog.path) -ne [IO.Path]::GetFullPath([string]$Storage.path) -or [IO.Path]::GetFullPath([string]$existingPlan.evidenceDirectory) -ne $evidence) { throw 'Existing task cache plan owns different immutable source or target identities.' }
+        if ([string]$existingPlan.state -notin @('snapshot-preserved', 'prepared')) { throw "Existing task cache plan is not resumable from state '$($existingPlan.state)'." }
+    }
+    $selection = if ($null -ne $existingPlan) { $existingPlan.selection } else { Select-CatalogSnapshot $Storage }
     if ($RequireMatch -and $null -eq $selection.selected) { throw 'No compatible known-working shader-cache snapshot matched the task request.' }
 
     if ($WhatIfPreference) {
@@ -476,11 +518,23 @@ function Prepare-TaskCache($Storage) {
         return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; current = $current.data; selection = $selection; action = $(if ($null -eq $selection.selected) { 'use-current-no-match' } elseif ([string]$selection.selected.treeSha256 -ieq [string]$current.data.treeSha256) { 'use-current-exact' } else { 'seed-selected' }) }
     }
 
-    $snapshot = Invoke-Transaction 'snapshot' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+    if ($null -ne $existingPlan -and [string]$existingPlan.state -eq 'prepared') {
+        $current = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
+        $expectedLiveHash = if ([string]$existingPlan.action -eq 'seed-selected') { [string]$existingPlan.selection.selected.treeSha256 } else { [string]$existingPlan.beforeTreeSha256 }
+        if ([string]$current.data.treeSha256 -ine $expectedLiveHash) { throw 'Prepared task cache plan no longer matches the exact live cache state.' }
+        return [pscustomobject][ordered]@{ state = 'already-prepared'; planPath = $planPath; action = [string]$existingPlan.action; selection = $existingPlan.selection; before = @{ treeSha256 = [string]$existingPlan.beforeTreeSha256 }; seed = $null }
+    }
+    $snapshot = if ($null -ne $existingPlan) {
+        [pscustomobject]@{ data = [pscustomobject]@{ receiptPath = [string]$existingPlan.transactionReceiptPath; inventory = [pscustomobject]@{ treeSha256 = [string]$existingPlan.beforeTreeSha256 } } }
+    }
+    else {
+        Invoke-Transaction 'snapshot' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+    }
     $action = 'use-current-no-match'
     $seed = $null
-    $plan = [pscustomobject][ordered]@{
+    $plan = if ($null -ne $existingPlan) { $existingPlan } else { [pscustomobject][ordered]@{
         contractVersion = $contractVersion
+        transactionId = [guid]::NewGuid().ToString('N')
         state = 'snapshot-preserved'
         createdUtc = [DateTime]::UtcNow.ToString('o')
         catalog = $Storage
@@ -492,8 +546,8 @@ function Prepare-TaskCache($Storage) {
         transactionReceiptPath = [string]$snapshot.data.receiptPath
         beforeTreeSha256 = [string]$snapshot.data.inventory.treeSha256
         seedReceiptPath = $null
-    }
-    Write-JsonAtomic $planPath $plan -RefuseExisting
+    } }
+    if ($null -eq $existingPlan) { Write-JsonAtomic $planPath $plan -RefuseExisting }
     if ($null -ne $selection.selected) {
         if ([string]$selection.selected.treeSha256 -ieq [string]$snapshot.data.inventory.treeSha256) {
             $action = 'use-current-exact'
@@ -525,7 +579,11 @@ function Complete-TaskCache($Storage) {
     $planPath = Join-Path $evidence 'shader-cache-task.plan.json'
     $completionPath = Join-Path $evidence 'shader-cache-task.completion.json'
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) { throw "Task cache plan does not exist: $planPath" }
-    if (Test-Path -LiteralPath $completionPath) { throw "Refusing to overwrite an existing task cache completion: $completionPath" }
+    if (Test-Path -LiteralPath $completionPath -PathType Leaf) {
+        $existingCompletion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 40
+        if ([IO.Path]::GetFullPath([string]$existingCompletion.planPath) -ne $planPath) { throw 'Existing completion owns a different task cache plan.' }
+        return [pscustomobject][ordered]@{ state = 'already-complete'; completionPath = $completionPath; workingTree = $existingCompletion.workingTree; restoredTreeSha256 = [string]$existingCompletion.restoredTreeSha256; promoted = $existingCompletion.promoted }
+    }
     $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json -Depth 40
     if ([IO.Path]::GetFullPath([string]$plan.cachePath) -ne $resolvedCache) { throw 'Task cache plan owns a different live cache path.' }
     if ([IO.Path]::GetFullPath([string]$plan.catalog.path) -ne [IO.Path]::GetFullPath([string]$Storage.path)) { throw 'Task cache plan owns a different catalog root.' }
@@ -536,8 +594,38 @@ function Complete-TaskCache($Storage) {
         return [pscustomobject][ordered]@{ state = 'dry-run'; planPath = $planPath; completionPath = $completionPath; current = $current.data; wouldRestore = $true; wouldPromote = [bool]$Promote }
     }
 
-    $currentBeforeRestore = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
-    $restore = Invoke-Transaction 'restore' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+    $currentBeforeRestore = if ($plan.PSObject.Properties['workingTreeInventory']) { [pscustomobject]@{ data = $plan.workingTreeInventory } } else { Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache } }
+    if (-not $plan.PSObject.Properties['workingTreeInventory']) {
+        $plan | Add-Member -NotePropertyName workingTreeInventory -NotePropertyValue $currentBeforeRestore.data -Force
+        $plan.state = 'completing'
+        Write-JsonAtomic $planPath $plan
+    }
+    $restore = $null
+    if ($plan.PSObject.Properties['restoreReceiptPath'] -and -not [string]::IsNullOrWhiteSpace([string]$plan.restoreReceiptPath)) {
+        $restoreReceipt = Get-Content -LiteralPath ([string]$plan.restoreReceiptPath) -Raw | ConvertFrom-Json -Depth 30
+        $restore = [pscustomobject]@{ data = [pscustomobject]@{ displacedPath = [string]$restoreReceipt.displacedPath; baseline = [pscustomobject]@{ treeSha256 = [string]$restoreReceipt.restoredTreeSha256 }; restoreReceiptPath = [string]$plan.restoreReceiptPath } }
+    }
+    else {
+        $liveNow = Invoke-Transaction 'inspect' @{ CachePath = $resolvedCache }
+        if ([string]$liveNow.data.treeSha256 -ieq [string]$plan.beforeTreeSha256) {
+            $matchingReceipts = @(Get-ChildItem -LiteralPath $evidence -Filter 'shader-cache-restore.*.receipt.json' -File | Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
+                try {
+                    $candidate = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 30
+                    if ([string]$candidate.cachePath -eq $resolvedCache -and [string]$candidate.restoredTreeSha256 -ieq [string]$plan.beforeTreeSha256 -and [string]$candidate.displacedTreeSha256 -ieq [string]$currentBeforeRestore.data.treeSha256) { [pscustomobject]@{ path = $_.FullName; receipt = $candidate } }
+                } catch { }
+            })
+            if ($matchingReceipts.Count -ne 1) { throw 'Live cache is restored but no unique committed restore receipt proves the preserved working tree; recovery is required.' }
+            $match = $matchingReceipts[0]
+            $restore = [pscustomobject]@{ data = [pscustomobject]@{ displacedPath = [string]$match.receipt.displacedPath; baseline = [pscustomobject]@{ treeSha256 = [string]$match.receipt.restoredTreeSha256 }; restoreReceiptPath = [string]$match.path } }
+        }
+        elseif ([string]$liveNow.data.treeSha256 -ieq [string]$currentBeforeRestore.data.treeSha256) {
+            $restore = Invoke-Transaction 'restore' @{ CachePath = $resolvedCache; EvidenceDirectory = $evidence; BlockingProcessNames = $BlockingProcessNames; Confirm = $false }
+        }
+        else { throw 'Live cache matches neither the recorded working tree nor the preserved baseline; recovery is required.' }
+        $plan | Add-Member -NotePropertyName restoreReceiptPath -NotePropertyValue ([string]$restore.data.restoreReceiptPath) -Force
+        $plan.state = 'restored'
+        Write-JsonAtomic $planPath $plan
+    }
     $promoted = $null
     if ($Promote) {
         $request = $plan.request
@@ -547,10 +635,10 @@ function Complete-TaskCache($Storage) {
         $script:ShaderSourceSha256 = [string]$request.shaderSourceSha256
         $script:BuildId = [string](Get-PropertyValue $request 'buildId' '')
         $script:PresetSha256 = [string](Get-PropertyValue $request 'presetSha256' '')
+        $script:FeatureSetSha256 = [string](Get-PropertyValue $request 'featureSetSha256' '')
         $script:Tags = @($request.tags)
         $script:Label = if ([string]::IsNullOrWhiteSpace($Label)) { 'task-complete-' + [IO.Path]::GetFileName($evidence) } else { $Label }
-        $restoreReceipt = Join-Path $evidence 'shader-cache-restore.receipt.json'
-        $promoted = New-CatalogSnapshot $Storage ([string]$restore.data.displacedPath) ([string]$currentBeforeRestore.data.treeSha256) $restoreReceipt 'known-working'
+        $promoted = New-CatalogSnapshot -Storage $Storage -Source ([string]$restore.data.displacedPath) -ExpectedHash ([string]$currentBeforeRestore.data.treeSha256) -ReceiptPath ([string]$restore.data.restoreReceiptPath) -Status 'known-working' -Caller $script:CatalogCommandContext
     }
     $completion = [pscustomobject][ordered]@{
         contractVersion = $contractVersion
@@ -575,7 +663,7 @@ try {
     }
     elseif ($Command -eq 'capture') {
         if ([string]::IsNullOrWhiteSpace($SourceCachePath) -or [string]::IsNullOrWhiteSpace($ExpectedSourceTreeSha256) -or [string]::IsNullOrWhiteSpace($SourceReceiptPath)) { throw 'capture requires SourceCachePath, ExpectedSourceTreeSha256, and SourceReceiptPath.' }
-        $captured = New-CatalogSnapshot $storage $SourceCachePath $ExpectedSourceTreeSha256 $SourceReceiptPath $SnapshotStatus
+        $captured = New-CatalogSnapshot -Storage $storage -Source $SourceCachePath -ExpectedHash $ExpectedSourceTreeSha256 -ReceiptPath $SourceReceiptPath -Status $SnapshotStatus -Caller $script:CatalogCommandContext
         $result = [pscustomobject][ordered]@{ contractVersion = $contractVersion; ok = $true; command = $Command; state = $captured.state; data = @{ storage = $storage; snapshot = $captured.record }; errors = @() }
     }
     elseif ($Command -eq 'select') {

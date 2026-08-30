@@ -24,8 +24,9 @@ edit `modlist.txt` ad hoc.
   controller's `-WinningPaths` transaction; do not guess MO2 priority order.
 - For every independent test task, read
   `../../tools/mo2-workspace-control/README.md`, run `prepare-source` to move
-  every `ShaderCache*` directory out of overwrite, and create a unique task
-  profile from `defaults.testProfileSource` before preparing a session. Never
+  every `ShaderCache*` directory out of overwrite, and use the stable task ID
+  to discover, resume, or create its task profile before preparing a session.
+  Never
   use an experimental alternate profile as an implicit template, and never
   hand off a task profile while a ShaderCache directory remains in overwrite.
 - Treat the repository-root `AGENTS.md` as binding operational policy.
@@ -44,6 +45,13 @@ are:
 2. Start with `inspect`. Before any planned MO2 operation, call
    `request-access`, retain its exact `accessId`, and respect `access-busy`.
    An estimated duration is advisory only and never permits lease stealing.
+   Use workspace `list-task -TaskId` to discover retained state. On the first
+   request, run `prepare-source`, require `fixture-status` to report
+   `fixture-valid`, and then run `create -TaskId`; the primary profile, its
+   complete save tree, and the mandatory default world-entry save are cloned,
+   verified, and selected. On later requests, require an explicit
+   `resume -TaskId -WorkspaceId` or fresh `create -TaskId`. Never silently
+   replace, refresh, or requalify a retained profile after task-local edits.
    Before any closed-state mutation, run `validate -AccessId <literal-access-id>
    -RequireClosed` and account for every warning or block.
 3. Use `-WhatIf` when the command supports it and the requested change has not
@@ -56,16 +64,32 @@ are:
    variable may retain data for local reasoning, but an approval request must
    contain the literal path and subcommand reported by the tool. Parse the JSON result; do not infer
    success from process appearance alone.
+   For DevBench, SKSE plugins, or any extension-dependent test, pass
+   `-RequireSKSE` to both validation and preparation. Do not accept direct
+   `SkyrimVR.exe` launch as equivalent; the requirement is retained and
+   revalidated for subsequent launches in the same session.
    Pass the exact profile returned by the task workspace rather than accepting
    the ordinary configured session default.
+   Every fresh task profile receives a verified copy of the stable source
+   profile's complete saves tree and mandatory default world-entry fixture.
+   This makes saves available but does not authorize their use: respect
+   `SavePolicy`, and use only a declared `VerifiedFixture` as a deterministic
+   automation baseline. A resumed task profile is preserved as-is; never claim
+   its save remains working after the task has changed its profile.
    When the test requires a deterministic new-game baseline, create the
    workspace with `-SavePolicy VerifiedFixture`. Use the returned fixture ID
    and `loadName`; do not copy saves manually or substitute `coc`.
+   If fixture discovery reports `fixture-not-configured` or
+   `fixture-manifest-missing`, follow its returned example path and guidance;
+   do not guess a save or manifest path.
    If the task may compile CSX shaders, apply `$shader-cache-control` while MO2
    and Skyrim are still closed: catalog `prepare` the exact task cache before
-   launch, then catalog `complete` after shutdown and before workspace release.
+   launch, then catalog `complete` after shutdown and before yielding access or
+   retiring the workspace.
 5. For repeated measurements, retain the owning MO2 process and cycle Skyrim
    with `stop-game` followed by `launch`.
+   If `stop-game` returns `mo2-exited-after-game-stop` or `releaseRequired`, do
+   not relaunch from that session; release it and request access normally.
 6. Use `-StartOnly` when the outer host cannot safely wait for UI/game
    readiness; retain the immediate receipt and poll the exact session with
    `status`.
@@ -77,8 +101,10 @@ are:
    call `release-access` as soon as MO2 is no longer needed.
    If the game main thread is deadlocked, `terminate-game` is the only forced
    game recovery: it targets launch-recorded identities, retains MO2, invokes
-   exact Unlock, and requires RootBuilder cleanup. Release the task workspace
-   before releasing access.
+   exact Unlock, and requires RootBuilder cleanup. `release-access` is the
+   normal yield path and preserves the task workspace. Use workspace `retire`
+   only when that exact profile is no longer wanted; workspace `release` is a
+   deprecated destructive alias.
 9. Preserve session identifiers, receipts, hashes, logs, screenshots, dumps,
    and the pre/post inspection results with the test record.
 
@@ -104,11 +130,17 @@ are:
   prove ownership and game/loader absence.
 - Never delete or replace a mod that existed when a test workspace was created.
   A task may clean only uniquely named mods explicitly registered as its own.
+- A task may enable or disable existing mods only in its own cloned profile.
+  It must not edit an existing shared mod directory. Update the maintained
+  primary list additively: install a new version under a new mod name, disable
+  the old marker, and enable the new marker. Retained task profiles remain
+  unchanged until their owner explicitly requests a fresh clone.
 - Register a task DLL with its exact relative path in `-WinningPaths`. Treat
   the returned loose-file provider proof as scoped: overwrite, unmanaged game
   files, and archives still require separate VFS evidence.
-- Never treat `coc APStartCell` as a genuine New Game and never use an
-  inherited or unknown-provenance save for a baseline.
+- Never treat `coc APStartCell` as a genuine New Game. Copied ordinary saves
+  are conveniences, not deterministic baselines; use only an exact
+  hash-verified fixture when baseline provenance matters.
 - Run visible MO2/game window operations through the approved elevated route so
   they execute as the logged-on interactive user. A sandbox
   `interactive-desktop-required` result is a precondition failure, not

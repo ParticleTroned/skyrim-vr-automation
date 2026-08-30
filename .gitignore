@@ -1,12 +1,15 @@
 # Machine-specific configuration and transient state
 **/config/machine.local.json
 **/config/*.local.json
+**/config/.fixture-refresh-*/
 **/sessions/
 
 # Generated evidence and reports
 evidence/
 artifacts/
 output/
+native/**/build/
+native/**/build-*/
 *.before
 *.receipt.json
 *.lock.json

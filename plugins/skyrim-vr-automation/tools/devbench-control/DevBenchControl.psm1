@@ -11,9 +11,35 @@ function Get-DevBenchSemanticStatus {
     $codes = [Collections.Generic.List[string]]::new()
     $states = [Collections.Generic.List[string]]::new()
     $retryableHints = [Collections.Generic.List[bool]]::new()
+    $replaySchedulerReceipts = [Collections.Generic.List[string]]::new()
+    $explicitOutcomeEvidence = [Collections.Generic.List[string]]::new()
     $guardCodes = @('producer_mismatch', 'contract_mismatch', 'unsupported_contract_major', 'idempotency_conflict')
     $successNames = @('success', 'ok', 'ready', 'completed', 'accepted', 'idle', 'available')
     $transientNames = @('service_unavailable', 'initializing', 'starting', 'waiting_for_safe_point', 'loading_transition', 'relatch_pending', 'compiling', 'pending', 'queued', 'running')
+
+    function Test-ExplicitOutcomeValue($Value) {
+        if ($null -eq $Value) { return $false }
+        if ($Value -is [bool]) { return $true }
+        if ($Value -is [string] -or $Value -is [ValueType]) { return $false }
+        if ($Value -is [Collections.IDictionary]) {
+            $evidenceProperties = @($Value.GetEnumerator() | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Key; Value = $_.Value } })
+        }
+        elseif ($Value -is [Collections.IEnumerable] -and $Value -isnot [pscustomobject]) {
+            foreach ($entry in $Value) { if (Test-ExplicitOutcomeValue $entry) { return $true } }
+            return $false
+        }
+        else {
+            $evidenceProperties = @($Value.PSObject.Properties)
+        }
+        foreach ($property in $evidenceProperties) {
+            $name = [string]$property.Name
+            if ($name -in @('ok', 'success', 'passed', 'failed', 'aborted', 'code', 'state', 'status', 'resultStatus') -and $null -ne $property.Value) {
+                return $true
+            }
+            if (Test-ExplicitOutcomeValue $property.Value) { return $true }
+        }
+        return $false
+    }
 
     function Visit-Value($Value, [string]$Path) {
         if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return }
@@ -29,6 +55,21 @@ function Get-DevBenchSemanticStatus {
             $properties = @($Value.PSObject.Properties)
         }
 
+        $propertyNames = @($properties | ForEach-Object { [string]$_.Name })
+        if ($propertyNames -contains 'done' -and $propertyNames -contains 'runId' -and $propertyNames -contains 'result') {
+            $resultProperty = @($properties | Where-Object Name -eq 'result' | Select-Object -First 1)
+            if ($resultProperty.Count -eq 1 -and $null -ne $resultProperty[0].Value -and
+                $resultProperty[0].Value.PSObject.Properties['stepsRun']) {
+                $replaySchedulerReceipts.Add($Path)
+            }
+        }
+        foreach ($evidenceName in @('semantic', 'postconditions', 'outcomeChecks', 'assertions')) {
+            $evidenceProperty = @($properties | Where-Object Name -eq $evidenceName | Select-Object -First 1)
+            if ($evidenceProperty.Count -eq 1 -and (Test-ExplicitOutcomeValue $evidenceProperty[0].Value)) {
+                $explicitOutcomeEvidence.Add("$Path.$evidenceName")
+            }
+        }
+
         foreach ($property in $properties) {
             $name = [string]$property.Name
             $childPath = if ([string]::IsNullOrWhiteSpace($Path)) { $name } else { "$Path.$name" }
@@ -36,6 +77,14 @@ function Get-DevBenchSemanticStatus {
             if ($name -eq 'ok' -and $null -ne $child) {
                 $script:semanticKnown = $true
                 if (-not [bool]$child) { $reasons.Add("$childPath is false") }
+            }
+            elseif ($name -in @('success', 'passed') -and $child -is [bool]) {
+                $script:semanticKnown = $true
+                if (-not [bool]$child) { $reasons.Add("$childPath is false") }
+            }
+            elseif ($name -eq 'failed' -and $child -is [bool]) {
+                $script:semanticKnown = $true
+                if ([bool]$child) { $reasons.Add("$childPath is true") }
             }
             elseif ($name -eq 'aborted' -and [bool]$child) {
                 $script:semanticKnown = $true
@@ -79,10 +128,12 @@ function Get-DevBenchSemanticStatus {
     finally {
         Remove-Variable semanticKnown -Scope Script -ErrorAction SilentlyContinue
     }
+    $schedulerOnly = $replaySchedulerReceipts.Count -gt 0 -and $explicitOutcomeEvidence.Count -eq 0 -and $reasons.Count -eq 0
+    if ($schedulerOnly) { $known = $false }
     $guarded = @($codes | Where-Object { $_ -in $guardCodes }).Count -gt 0
     $transient = $retryableHints.Count -gt 0 -or @($codes + $states | Where-Object { $_ -in $transientNames }).Count -gt 0
     $ok = $reasons.Count -eq 0
-    $outcome = if ($ok) { if ($transient) { 'accepted-transient' } else { 'success' } } elseif ($guarded) { 'guard-rejected' } else { 'failure' }
+    $outcome = if ($schedulerOnly) { 'scheduler-complete-unverified' } elseif ($ok) { if ($transient) { 'accepted-transient' } else { 'success' } } elseif ($guarded) { 'guard-rejected' } else { 'failure' }
     return [pscustomobject][ordered]@{
         known = $known
         ok = $ok
@@ -92,6 +143,9 @@ function Get-DevBenchSemanticStatus {
         codes = @($codes)
         states = @($states)
         reasons = @($reasons | Select-Object -Unique)
+        schedulerOnly = $schedulerOnly
+        schedulerReceiptPaths = @($replaySchedulerReceipts)
+        explicitOutcomeEvidence = @($explicitOutcomeEvidence)
     }
 }
 
@@ -134,13 +188,19 @@ function Test-DevBenchServiceReady {
     $state = if ($stateRecord.Count -gt 0) { [string]$stateRecord[0].state } else { $null }
     $retryable = $semantic.transient -or ($state -in $RetryableStates)
     $terminalFailure = -not $semantic.ok -and -not $retryable
-    $ready = if ($state) { $state -in $AcceptedStates } else { $semantic.known -and $semantic.ok -and -not $retryable }
+    $probeReturnedContent = @($Content).Count -gt 0
+    # Transport success or arbitrary non-empty content proves only that the
+    # tool answered. Readiness requires a recognized positive contract state;
+    # otherwise polling an unknown payload could repeatedly dispatch work and
+    # then promote the unclassified response to ready.
+    $ready = if ($state) { $state -in $AcceptedStates } elseif ($semantic.known) { $semantic.ok -and -not $retryable } else { $false }
     return [pscustomobject][ordered]@{
         ready = $ready
         retryable = $retryable
         terminalFailure = $terminalFailure
         state = $state
         statePath = if ($stateRecord.Count -gt 0) { $stateRecord[0].path } else { $null }
+        probeReturnedContent = $probeReturnedContent
         semantic = $semantic
     }
 }
@@ -159,26 +219,6 @@ function Test-DevBenchNoBlockingMenu {
         openMenus = $openMenus
         ignoredMenus = @($IgnoredMenus)
         blockingMenus = $blocking
-        messageBoxOpen = [bool]$messageBoxOpen
-    }
-}
-
-function Test-DevBenchMainMenuReady {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]$MenuState,
-        [string[]]$AllowedMenus = @('HUD Menu', 'Main Menu')
-    )
-    $openMenus = if ($MenuState.PSObject.Properties['openMenus']) { @($MenuState.openMenus) } else { @() }
-    $unexpected = @($openMenus | Where-Object { $_ -notin $AllowedMenus })
-    $messageBoxOpen = $MenuState.PSObject.Properties['messageBoxOpen'] -and [bool]$MenuState.messageBoxOpen
-    $mainMenuOpen = $openMenus -contains 'Main Menu'
-    return [pscustomobject][ordered]@{
-        satisfied = $mainMenuOpen -and $unexpected.Count -eq 0 -and -not $messageBoxOpen
-        mainMenuOpen = $mainMenuOpen
-        openMenus = $openMenus
-        allowedMenus = @($AllowedMenus)
-        unexpectedMenus = $unexpected
         messageBoxOpen = [bool]$messageBoxOpen
     }
 }
@@ -202,4 +242,90 @@ function Get-DevBenchRuntimeExpectations {
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchRuntimeExpectations
+function Test-DevBenchMainMenuReady {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$MenuState,
+        [string[]]$AllowedMenus = @('HUD Menu', 'Main Menu')
+    )
+    $openMenus = if ($MenuState.PSObject.Properties['openMenus']) { @($MenuState.openMenus) } else { @() }
+    $unexpected = @($openMenus | Where-Object { $_ -notin $AllowedMenus })
+    $messageBoxOpen = $MenuState.PSObject.Properties['messageBoxOpen'] -and [bool]$MenuState.messageBoxOpen
+    $mainMenuOpen = $openMenus -contains 'Main Menu'
+    return [pscustomobject][ordered]@{
+        satisfied = $mainMenuOpen -and $unexpected.Count -eq 0 -and -not $messageBoxOpen
+        mainMenuOpen = $mainMenuOpen
+        openMenus = $openMenus
+        allowedMenus = @($AllowedMenus)
+        unexpectedMenus = $unexpected
+        messageBoxOpen = [bool]$messageBoxOpen
+    }
+}
+
+function Resolve-DevBenchServiceProbeArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$ToolDefinition,
+        [Parameter(Mandatory)][Collections.IDictionary]$Arguments,
+        [Parameter(Mandatory)][bool]$ArgumentsSupplied,
+        [Parameter(Mandatory)][string]$ToolName
+    )
+
+    if ($ArgumentsSupplied) {
+        throw "serviceReady does not accept explicit -ArgumentsJson because an arbitrary action cannot be proven read-only across retries. Use toolAvailable for registration-only waits or omit -ArgumentsJson so the controller can synthesize a qualified probe."
+    }
+
+    $schemaProperty = $ToolDefinition.PSObject.Properties['inputSchema']
+    if (-not $schemaProperty -or $null -eq $schemaProperty.Value) {
+        throw "serviceReady cannot safely probe '$ToolName' because tools/list did not publish an inputSchema. Use toolAvailable when registration is sufficient."
+    }
+    $schema = $schemaProperty.Value
+    $requiredProperty = $schema.PSObject.Properties['required']
+    [string[]]$required = @()
+    if ($requiredProperty -and $null -ne $requiredProperty.Value) {
+        $required = @($requiredProperty.Value | ForEach-Object { [string]$_ })
+    }
+    if ($required.Count -eq 0) {
+        return [pscustomobject][ordered]@{ arguments = $Arguments; source = 'schema-empty-valid'; synthesizedAction = $null }
+    }
+
+    $missing = @($required | Where-Object { -not $Arguments.Contains($_) })
+    if ($missing.Count -eq 0) {
+        return [pscustomobject][ordered]@{ arguments = $Arguments; source = 'schema-satisfied'; synthesizedAction = $null }
+    }
+    $supportedEnvelope = @('contractMajor', 'clientId', 'commandId', 'action')
+    $unknownRequired = @($missing | Where-Object { $_ -notin $supportedEnvelope })
+    if ($unknownRequired.Count -gt 0) {
+        throw "serviceReady cannot synthesize a qualified read-only probe for '$ToolName'; required field(s) are not part of the registry envelope: $($unknownRequired -join ', '). Use toolAvailable or add a reviewed tool-specific probe adapter."
+    }
+
+    $propertiesProperty = $schema.PSObject.Properties['properties']
+    $properties = if ($propertiesProperty) { $propertiesProperty.Value } else { $null }
+    $action = $null
+    if ($missing -contains 'action') {
+        $actionSchema = if ($properties) { $properties.PSObject.Properties['action'] } else { $null }
+        $enumProperty = if ($actionSchema) { $actionSchema.Value.PSObject.Properties['enum'] } else { $null }
+        $allowedActions = if ($enumProperty) { @($enumProperty.Value | ForEach-Object { [string]$_ }) } else { @() }
+        if ($allowedActions.Count -eq 0 -or $allowedActions -contains 'registry') { $action = 'registry' }
+        elseif ($allowedActions -contains 'capabilities') { $action = 'capabilities' }
+        else {
+            throw "serviceReady cannot synthesize a qualified read-only probe for '$ToolName'; action supports neither registry nor capabilities. Use toolAvailable or add a reviewed tool-specific probe adapter."
+        }
+    }
+
+    $resolved = [ordered]@{}
+    foreach ($key in $Arguments.Keys) { $resolved[[string]$key] = $Arguments[$key] }
+    if ($missing -contains 'contractMajor') {
+        $contractSchema = if ($properties) { $properties.PSObject.Properties['contractMajor'] } else { $null }
+        $constProperty = if ($contractSchema) { $contractSchema.Value.PSObject.Properties['const'] } else { $null }
+        $defaultProperty = if ($contractSchema) { $contractSchema.Value.PSObject.Properties['default'] } else { $null }
+        $resolved['contractMajor'] = if ($constProperty) { [int]$constProperty.Value } elseif ($defaultProperty) { [int]$defaultProperty.Value } else { 1 }
+    }
+    if ($missing -contains 'clientId') { $resolved['clientId'] = 'devbench-control-service-ready' }
+    if ($missing -contains 'commandId') { $resolved['commandId'] = "service-ready-$([guid]::NewGuid().ToString('N'))" }
+    if ($missing -contains 'action') { $resolved['action'] = $action }
+
+    return [pscustomobject][ordered]@{ arguments = $resolved; source = 'schema-registry-envelope'; synthesizedAction = $action }
+}
+
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments

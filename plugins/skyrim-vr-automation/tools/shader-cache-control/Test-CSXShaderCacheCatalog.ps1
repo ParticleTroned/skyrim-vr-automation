@@ -23,6 +23,8 @@ $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
 if (-not $resolvedTestRoot.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Test root escaped the temporary directory: $resolvedTestRoot"
 }
+$priorControlRoot = $env:CSX_SHADER_CACHE_CONTROL_ROOT
+$env:CSX_SHADER_CACHE_CONTROL_ROOT = Join-Path $resolvedTestRoot 'target-controls'
 
 $transactionTool = Join-Path $PSScriptRoot 'Invoke-CSXShaderCacheTransaction.ps1'
 $catalogTool = Join-Path $PSScriptRoot 'Invoke-CSXShaderCacheCatalog.ps1'
@@ -30,6 +32,7 @@ $blockers = @('fixture-process-that-does-not-exist')
 $shaderSource = 'A' * 64
 $differentShaderSource = 'B' * 64
 $preset = 'C' * 64
+$featureSet = 'D' * 64
 
 try {
     $catalogRoot = Join-Path $resolvedTestRoot 'catalog'
@@ -53,6 +56,7 @@ try {
         BytecodeCompatibilityClass = 'skyrimvr-d3d11'
         BuildId = 'build-fixture'
         PresetSha256 = $preset
+        FeatureSetSha256 = $featureSet
         Tags = @('Quality', 'Full-Render')
         Compact = $true
         NoExit = $true
@@ -72,6 +76,10 @@ try {
     $dryRun = Invoke-Catalog $dryRunArgs
     Assert-Test ($dryRun.ok -and $dryRun.state -eq 'dry-run') 'catalog capture validates and reports a dry run'
     Assert-Test (-not (Test-Path -LiteralPath $dryRunRoot)) 'catalog capture dry run creates no catalog directories or lock file'
+    $boundedCaptureArgs = @{} + $captureArgs
+    $boundedCaptureArgs.MaxInventoryFiles = 1
+    $boundedCapture = Invoke-Catalog $boundedCaptureArgs
+    Assert-Test (-not $boundedCapture.ok -and $boundedCapture.errors[0] -match 'file-count bound') 'catalog capture uses the shared bounded inventory contract'
 
     $capture = Invoke-Catalog $captureArgs
     Assert-Test ($capture.ok -and $capture.state -eq 'captured') 'catalog captures a receipt-proven known-working tree'
@@ -90,7 +98,27 @@ try {
     $select = Invoke-Catalog $selectArgs
     Assert-Test ($select.ok -and $select.state -eq 'snapshot-selected') 'selection finds an exact bytecode-compatible source across physical and null SteamVR provenance'
     Assert-Test ($select.data.selection.selected.exactShaderSource -and $select.data.selection.selected.exactBuild -and $select.data.selection.selected.exactPreset) 'selection reports why the preferred snapshot won'
-    Assert-Test (-not $select.data.selection.selected.exactRenderPathProvenance -and $select.data.selection.selected.bytecodeCompatibilityClass -eq 'skyrimvr-d3d11') 'selection separates bytecode compatibility from exact render-route provenance'
+    Assert-Test (-not $select.data.selection.selected.exactRenderPathProvenance -and $select.data.selection.selected.bytecodeCompatibilityClass -eq 'skyrimvr-d3d11' -and $select.data.selection.selected.exactFeatureSet) 'selection separates bytecode compatibility from exact render-route provenance while retaining the feature-set gate'
+
+    $physicalRouteCapture = @{} + $captureArgs
+    $physicalRouteCapture.RenderPath = 'vr-steamvr-physical'
+    $physicalRouteCapture.Label = 'physical SteamVR fixture'
+    $physicalCapture = Invoke-Catalog $physicalRouteCapture
+    Assert-Test ($physicalCapture.ok -and $physicalCapture.data.snapshot.manifest.compatibility.renderFamily -eq 'vr-steamvr') 'capture records the canonical SteamVR render family while retaining the physical route'
+    $nullRouteArgs = @{} + $selectArgs
+    $nullRouteArgs.RenderPath = 'vr-steamvr-null'
+    $nullRouteSelect = Invoke-Catalog $nullRouteArgs
+    Assert-Test ($nullRouteSelect.ok -and $nullRouteSelect.state -eq 'snapshot-selected' -and $nullRouteSelect.data.selection.selected.renderFamily -eq 'vr-steamvr') 'null HMD selects a compatible physical SteamVR cache'
+
+    $openCompositeArgs = @{} + $nullRouteArgs
+    $openCompositeArgs.RenderPath = 'vr-opencomposite'
+    $openCompositeSelect = Invoke-Catalog $openCompositeArgs
+    Assert-Test ($openCompositeSelect.ok -and $openCompositeSelect.state -eq 'snapshot-selected' -and $openCompositeSelect.data.selection.selected.bytecodeCompatibilityClass -eq 'skyrimvr-d3d11') 'OpenComposite selects the same bytecode-compatible Skyrim VR cache while retaining distinct route provenance'
+
+    $unknownFeatureArgs = @{} + $nullRouteArgs
+    $unknownFeatureArgs.FeatureSetSha256 = 'E' * 64
+    $unknownFeature = Invoke-Catalog $unknownFeatureArgs
+    Assert-Test ($unknownFeature.ok -and $unknownFeature.state -eq 'no-compatible-snapshot' -and @($unknownFeature.data.selection.excluded | Where-Object { $_.reasons -contains 'feature-set-mismatch' }).Count -gt 0) 'feature-set fingerprint mismatch blocks cache reuse'
 
     $mismatchArgs = @{} + $selectArgs
     $mismatchArgs.ShaderSourceSha256 = $differentShaderSource
@@ -114,6 +142,8 @@ try {
     Assert-Test ($prepare.ok -and $prepare.data.task.action -eq 'seed-selected') 'task preparation snapshots the current tree and seeds the best known-working cache'
     $seeded = & $transactionTool inspect -CachePath $liveCache -NoExit | ConvertFrom-Json -Depth 30
     Assert-Test ([string]$seeded.data.treeSha256 -ieq [string]$baselineTransaction.data.inventory.treeSha256) 'task preparation verifies the seeded live tree'
+    $prepareAgain = Invoke-Catalog $prepareArgs
+    Assert-Test ($prepareAgain.ok -and $prepareAgain.state -eq 'already-prepared') 'task preparation retry reconciles the existing exact plan without reseeding'
 
     [IO.File]::WriteAllBytes((Join-Path $liveCache 'compiled-during-task.bin'), [byte[]](7, 7, 7, 7, 7))
     $taskResult = & $transactionTool inspect -CachePath $liveCache -NoExit | ConvertFrom-Json -Depth 30
@@ -150,11 +180,18 @@ try {
     Assert-Test ([string]$complete.data.task.workingTree.inventory.treeSha256 -ieq [string]$taskResult.data.treeSha256) 'task completion records the exact compiled result before restoration'
     Assert-Test (Test-Path -LiteralPath $complete.data.task.workingTree.preservedPath -PathType Container) 'task completion retains the displaced compiled result as evidence'
     Assert-Test ($complete.data.task.promoted.state -eq 'captured') 'known-working task output receives a distinct immutable snapshot manifest'
+    $completeAgain = Invoke-Catalog @{
+        Command = 'complete'; CatalogRoot = $catalogRoot; CachePath = $liveCache; EvidenceDirectory = $taskEvidence
+        Promote = $true; WorkingSetStatus = 'known-working'; Label = 'fixture completed task'; BlockingProcessNames = $blockers
+        Confirm = $false; Compact = $true; NoExit = $true
+    }
+    Assert-Test ($completeAgain.ok -and $completeAgain.state -eq 'already-complete') 'task completion retry returns the immutable existing completion'
 
     $finalList = Invoke-Catalog @{ Command = 'list'; CatalogRoot = $catalogRoot; Compact = $true; NoExit = $true }
-    Assert-Test (@($finalList.data.snapshots).Count -eq 2 -and @($finalList.data.issues).Count -eq 0) 'catalog retains both known-working trees and validates all manifests'
+    Assert-Test (@($finalList.data.snapshots).Count -eq 3 -and @($finalList.data.issues).Count -eq 0) 'catalog retains all known-working compatibility records and validates every manifest'
 }
 finally {
+    $env:CSX_SHADER_CACHE_CONTROL_ROOT = $priorControlRoot
     if (Test-Path -LiteralPath $resolvedTestRoot -PathType Container) {
         Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
     }

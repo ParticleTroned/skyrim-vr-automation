@@ -36,9 +36,14 @@ source, GitHub issues, pull requests, messages, or publication.
 ## Maintainer contract
 
 The designated toolkit maintainer uses `list`, `get`, `triage`, `accept`,
-`duplicate`, `defer`, `decline`, `resolve`, and `reopen`. Preserve actor,
+`duplicate`, `defer`, `decline`, `resolve`, and `reopen`, passing
+`-ActorRole maintainer`. Amendments also require an actor and an explicit
+`reporter` or `maintainer` role. Preserve actor,
 reason, commit, pull-request, and release links in lifecycle events. Reproduce
 and classify reports before changing public source when practical.
+
+Actor roles are audit declarations within a cooperative same-user local tool,
+not authentication. Do not expose the feedback root as a remote mutation API.
 
 `export` is the only sharing preparation operation. It requires an explicit
 path, is sanitized by default, and still requires review. Never publish the

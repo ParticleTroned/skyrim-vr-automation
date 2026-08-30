@@ -16,6 +16,13 @@ function Invoke-Feedback([string[]]$Arguments) {
 
 try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    $escapeLeaf = 'feedback-escape-' + [guid]::NewGuid().ToString('N')
+    $escapePath = Join-Path (Split-Path -Parent $fixture) ($escapeLeaf + '.json')
+    $invalidId = '..\..\' + $escapeLeaf
+    $invalidRead = Invoke-Feedback @('get', '-FeedbackId', $invalidId)
+    if ($invalidRead.exitCode -eq 0 -or $invalidRead.result.ok -or $invalidRead.result.errors[0] -notmatch 'malformed') { throw 'Malformed feedback ID was not rejected.' }
+    if (Test-Path -LiteralPath $escapePath) { throw 'Malformed feedback ID escaped the feedback root.' }
+
     $evidence = Join-Path $fixture 'private\evidence.txt'
     New-Item -ItemType Directory -Path (Split-Path -Parent $evidence) -Force | Out-Null
     [IO.File]::WriteAllText($evidence, 'durable evidence', [Text.UTF8Encoding]::new($false))
@@ -38,13 +45,15 @@ try {
     $read = Invoke-Feedback @('get', '-FeedbackId', $id)
     if ($read.result.data.feedback.status -ne 'new' -or -not $read.result.data.feedback.blocked) { throw 'Initial folded state is incorrect.' }
 
-    $amended = Invoke-Feedback @('amend', '-FeedbackId', $id, '-Observed', 'Corrected observation.', '-BlockedState', 'false', '-Actor', 'task-one')
+    $unattributedAmend = Invoke-Feedback @('amend', '-FeedbackId', $id, '-Observed', 'Must fail.')
+    if ($unattributedAmend.exitCode -eq 0 -or $unattributedAmend.result.ok -or $unattributedAmend.result.errors[0] -notmatch 'Actor') { throw 'Amend accepted an unattributed event.' }
+    $amended = Invoke-Feedback @('amend', '-FeedbackId', $id, '-Observed', 'Corrected observation.', '-BlockedState', 'false', '-Actor', 'task-one', '-ActorRole', 'reporter')
     if (-not $amended.result.ok -or $amended.result.data.feedback.observed -ne 'Corrected observation.' -or $amended.result.data.feedback.blocked) { throw 'Amend did not fold correctly.' }
 
     foreach ($transition in @(
-        @('triage', '-FeedbackId', $id, '-Actor', 'maintainer', '-Note', 'Reproduced.'),
-        @('accept', '-FeedbackId', $id, '-Actor', 'maintainer'),
-        @('resolve', '-FeedbackId', $id, '-Actor', 'maintainer', '-Resolution', 'Fixed with regression coverage.', '-Commit', 'abc123', '-PullRequest', 'https://example.invalid/pr/1', '-Release', '0.7.0')
+        @('triage', '-FeedbackId', $id, '-Actor', 'maintainer', '-ActorRole', 'maintainer', '-Note', 'Reproduced.'),
+        @('accept', '-FeedbackId', $id, '-Actor', 'maintainer', '-ActorRole', 'maintainer'),
+        @('resolve', '-FeedbackId', $id, '-Actor', 'maintainer', '-ActorRole', 'maintainer', '-Resolution', 'Fixed with regression coverage at C:\Private\fix.log.', '-Commit', 'abc123', '-PullRequest', 'https://example.invalid/pr/1', '-Release', '0.7.0')
     )) {
         $changed = Invoke-Feedback $transition
         if (-not $changed.result.ok) { throw "Transition failed: $($transition[0])" }
@@ -54,13 +63,15 @@ try {
 
     $closedAmend = Invoke-Feedback @('amend', '-FeedbackId', $id, '-Observed', 'Must fail.')
     if ($closedAmend.exitCode -eq 0 -or $closedAmend.result.ok) { throw 'Terminal feedback accepted an amendment without reopen.' }
-    $reopened = Invoke-Feedback @('reopen', '-FeedbackId', $id, '-Actor', 'maintainer')
+    $falseMaintainer = Invoke-Feedback @('reopen', '-FeedbackId', $id, '-Actor', 'task-one', '-ActorRole', 'reporter')
+    if ($falseMaintainer.exitCode -eq 0 -or $falseMaintainer.result.ok -or $falseMaintainer.result.errors[0] -notmatch 'maintainer') { throw 'Reporter role performed a maintainer transition.' }
+    $reopened = Invoke-Feedback @('reopen', '-FeedbackId', $id, '-Actor', 'maintainer', '-ActorRole', 'maintainer')
     if (-not $reopened.result.ok -or $reopened.result.data.feedback.status -ne 'reopened') { throw 'Reopen failed.' }
 
     $possibleDuplicate = Invoke-Feedback @('submit', '-Area', 'mo2', '-Kind', 'defect', '-Summary', 'Unlock dialog misclassified', '-Observed', 'Second occurrence.', '-Expected', 'Exact Unlock is selected.', '-ReporterTaskId', 'task-two')
     if (-not $possibleDuplicate.result.ok -or @($possibleDuplicate.result.data.possibleDuplicates).Count -ne 1) { throw 'Duplicate fingerprint was not reported.' }
     $duplicateId = [string]$possibleDuplicate.result.data.receipt
-    $duplicate = Invoke-Feedback @('duplicate', '-FeedbackId', $duplicateId, '-DuplicateOf', $id, '-Actor', 'maintainer')
+    $duplicate = Invoke-Feedback @('duplicate', '-FeedbackId', $duplicateId, '-DuplicateOf', $id, '-Actor', 'maintainer', '-ActorRole', 'maintainer')
     if (-not $duplicate.result.ok -or $duplicate.result.data.feedback.duplicateOf -ne $id) { throw 'Duplicate transition failed.' }
 
     $mine = Invoke-Feedback @('list-mine', '-ReporterTaskId', 'task-two')
@@ -72,7 +83,7 @@ try {
     $exported = Invoke-Feedback @('export', '-FeedbackId', $id, '-Format', 'markdown', '-OutputPath', $publicMarkdown)
     if (-not $exported.result.ok -or -not (Test-Path -LiteralPath $publicMarkdown -PathType Leaf)) { throw 'Markdown export failed.' }
     $markdown = Get-Content -LiteralPath $publicMarkdown -Raw
-    if ($markdown.Contains($evidence, [StringComparison]::OrdinalIgnoreCase) -or $markdown.Contains('C:\Private', [StringComparison]::OrdinalIgnoreCase)) { throw 'Default export leaked local paths.' }
+    if ($markdown.Contains($evidence, [StringComparison]::OrdinalIgnoreCase) -or $markdown.Contains('C:\Private', [StringComparison]::OrdinalIgnoreCase)) { throw 'Default export leaked local paths from evidence, context, or resolution fields.' }
     if ($markdown -notmatch 'Review this export before sharing') { throw 'Export omitted its review warning.' }
 
     $jobs = @()

@@ -16,6 +16,9 @@ param(
 
     [string]$AccessId,
 
+    [Alias('ReporterTaskId')]
+    [string]$TaskId,
+
     [string]$Label = 'automation',
 
     [ValidateRange(1, 600)]
@@ -29,6 +32,8 @@ param(
     [switch]$WhatIf,
 
     [switch]$RequireClosed,
+
+    [switch]$RequireSKSE,
 
     [switch]$StartOnly,
 
@@ -128,7 +133,7 @@ try {
             Invoke-MO2Inspect -Config $config -Profile $Profile -Executable $Executable
         }
         'validate' {
-            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
+            Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
         }
         'validate-closed' {
             $validated = Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed -OwnedAccessId $AccessId
@@ -136,7 +141,7 @@ try {
             $validated
         }
         'request-access' {
-            Invoke-MO2RequestAccess -Config $config -Label $Label -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
+            Invoke-MO2RequestAccess -Config $config -Label $Label -TaskId $TaskId -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
         }
         'access-status' {
             Invoke-MO2AccessStatus -Config $config -AccessId $AccessId
@@ -151,7 +156,7 @@ try {
             Invoke-MO2RecoverAccess -Config $config -AccessId $AccessId -Label $Label -ConfirmAbandoned:$ConfirmAbandoned -WhatIf:$WhatIf
         }
         'prepare' {
-            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
+            Invoke-MO2Prepare -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -Label $Label -AccessId $AccessId -WhatIf:$WhatIf
         }
         'open' {
             Invoke-MO2Open -Config $config -SessionId $SessionId -TimeoutSeconds $TimeoutSeconds -StartOnly:$StartOnly -WhatIf:$WhatIf

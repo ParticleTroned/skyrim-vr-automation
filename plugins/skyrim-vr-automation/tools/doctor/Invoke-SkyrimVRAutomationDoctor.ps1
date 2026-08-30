@@ -12,6 +12,8 @@ param(
     [string]$SteamVRSettingsPath = 'C:\Program Files (x86)\Steam\config\steamvr.vrsettings',
     [string]$SteamVRRoot = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR',
     [string]$RuntimePath = $env:CSX_DEVBENCH_RUNTIME_PATH,
+    [string]$EvidenceDirectory,
+    [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
     [switch]$WhatIf,
     [switch]$Compact,
 
@@ -22,6 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $mo2Root = Join-Path $repositoryRoot 'tools\mo2-control'
+$boundedProcessTool = Join-Path $repositoryRoot 'tools\process-control\Invoke-BoundedProcess.ps1'
 Import-Module (Join-Path $mo2Root 'ConfigResolution.psm1') -Force
 
 function New-DoctorCheck([string]$Name, [string]$Status, [string]$Message, $Data = $null) {
@@ -61,9 +64,53 @@ try {
 
         $mo2Validation = $null
         if ($resolution.exists) {
-            $raw = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $mo2Root 'Invoke-MO2Control.ps1') validate -ConfigPath $resolution.path -Compact 2>&1
-            try { $mo2Validation = ($raw -join "`n") | ConvertFrom-Json -Depth 30 } catch { $mo2Validation = [pscustomobject]@{ ok = $false; raw = @($raw) } }
+            $boundedParameters = @{
+                FilePath = (Get-Process -Id $PID).Path
+                ArgumentList = @('-NoProfile', '-File', (Join-Path $mo2Root 'Invoke-MO2Control.ps1'), 'validate', '-ConfigPath', [string]$resolution.path, '-Compact')
+                WorkingDirectory = $repositoryRoot; TimeoutSeconds = $TimeoutSeconds; MaxAttempts = 1; NoExit = $true; Compact = $true
+            }
+            if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $boundedParameters.EvidenceDirectory = $EvidenceDirectory }
+            $boundedValidation = & $boundedProcessTool @boundedParameters | ConvertFrom-Json -Depth 40
+            if ($boundedValidation.ok -and @($boundedValidation.attempts).Count -eq 1) {
+                try { $mo2Validation = ([string]$boundedValidation.attempts[0].stdout) | ConvertFrom-Json -Depth 30 } catch { $mo2Validation = [pscustomobject]@{ ok = $false; raw = @($boundedValidation.attempts[0].stdout); boundedProcess = $boundedValidation } }
+            }
+            else { $mo2Validation = [pscustomobject]@{ ok = $false; boundedProcess = $boundedValidation } }
             $checks.Add((New-DoctorCheck 'mo2-validation' $(if ($mo2Validation.ok) { 'pass' } else { 'fail' }) $(if ($mo2Validation.ok) { 'MO2 configuration validates.' } else { 'MO2 configuration validation failed.' }) $mo2Validation))
+            try {
+                $machineConfig = Get-Content -LiteralPath $resolution.path -Raw | ConvertFrom-Json
+                $fixtureInput = if ($machineConfig.defaults.PSObject.Properties['newGameFixtureManifest']) { [string]$machineConfig.defaults.newGameFixtureManifest } else { '' }
+                if ([string]::IsNullOrWhiteSpace($fixtureInput)) {
+                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry-integrity' 'fail' 'The maintained source profile has no configured world-entry save. Set defaults.newGameFixtureManifest and verify its default fixture before creating task profiles.' ([pscustomobject][ordered]@{
+                        configurationProperty = 'defaults.newGameFixtureManifest'
+                        exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
+                    })))
+                }
+                else {
+                    $fixtureParameters = @{
+                        FilePath = (Get-Process -Id $PID).Path
+                        ArgumentList = @('-NoProfile', '-File', (Join-Path $repositoryRoot 'tools\mo2-workspace-control\Invoke-MO2WorkspaceControl.ps1'), 'fixture-status', '-ConfigPath', [string]$resolution.path, '-Compact', '-NoExit')
+                        WorkingDirectory = $repositoryRoot; TimeoutSeconds = $TimeoutSeconds; MaxAttempts = 1; NoExit = $true; Compact = $true
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) { $fixtureParameters.EvidenceDirectory = $EvidenceDirectory }
+                    $boundedFixture = & $boundedProcessTool @fixtureParameters | ConvertFrom-Json -Depth 40
+                    $fixtureStatus = $null
+                    if ($boundedFixture.ok -and @($boundedFixture.attempts).Count -eq 1) {
+                        try { $fixtureStatus = ([string]$boundedFixture.attempts[0].stdout) | ConvertFrom-Json -Depth 30 } catch { $fixtureStatus = [pscustomobject]@{ ok = $false; raw = @($boundedFixture.attempts[0].stdout); boundedProcess = $boundedFixture } }
+                    }
+                    else { $fixtureStatus = [pscustomobject]@{ ok = $false; boundedProcess = $boundedFixture } }
+                    $fixtureValid = $fixtureStatus.ok -and [string]$fixtureStatus.state -eq 'fixture-valid' -and [bool]$fixtureStatus.data.valid
+                    $fixtureEvidence = [pscustomobject][ordered]@{
+                        configurationProperty = 'defaults.newGameFixtureManifest'
+                        configuredPath = [IO.Path]::GetFullPath($fixtureInput)
+                        exampleManifestPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\mo2-workspace-control\save-fixtures.example.json'))
+                        fixtureStatus = $fixtureStatus
+                    }
+                    $checks.Add((New-DoctorCheck 'prime-profile-world-entry-integrity' $(if ($fixtureValid) { 'pass' } else { 'fail' }) $(if ($fixtureValid) { "The maintained source profile has an integrity-verified world-entry save fixture '$($fixtureStatus.data.fixtureId)'. No live-load qualification is inferred." } else { 'The maintained source profile world-entry save is missing, stale, or invalid. Run fixture-status and repair or refresh it before creating task profiles.' }) $fixtureEvidence))
+                }
+            }
+            catch {
+                $checks.Add((New-DoctorCheck 'prime-profile-world-entry-integrity' 'fail' "Could not verify the maintained source profile world-entry save integrity: $($_.Exception.Message)"))
+            }
         }
 
         $nullProfile = Join-Path $repositoryRoot 'profiles\steamvr-null.profile.json'

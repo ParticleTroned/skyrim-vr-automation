@@ -15,6 +15,7 @@ param(
     [string]$EvidenceDirectory,
     [string]$EvidenceLabel,
     [string]$ArtifactPath,
+    [string]$WorkspaceManifestPath,
     [string]$ExpectedBuildId,
     [string]$ExpectedArtifactSha256,
     [ValidateSet('noBlockingMenu', 'mainMenuReady', 'playerLoaded', 'toolAvailable', 'serviceReady')]
@@ -34,68 +35,254 @@ param(
     [string[]]$IgnoredMenus = @('HUD Menu'),
     [string[]]$AllowedMainMenuMenus = @('HUD Menu', 'Main Menu'),
     [switch]$AcceptAlreadyLoaded,
+    [switch]$AllowUnsafeTfc1,
+    [switch]$AllowUnprovenGameMutation,
     [switch]$NoExit,
     [switch]$Compact
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$argumentsJsonSupplied = $PSBoundParameters.ContainsKey('ArgumentsJson')
 $endpoint = $null
 $runtimeIdentity = $null
 $transportRetries = [Collections.Generic.List[object]]::new()
+$invocationEvidencePath = $null
+$invocationRecord = $null
+$operationDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 Import-Module (Join-Path $PSScriptRoot 'DevBenchControl.psm1') -Force
 
+function Get-RequestTimeoutSeconds {
+    if ($null -eq $script:operationDeadlineUtc) { return $TimeoutSeconds }
+    $remainingSeconds = ($script:operationDeadlineUtc - [DateTime]::UtcNow).TotalSeconds
+    if ($remainingSeconds -lt 1) { throw [TimeoutException]::new('The DevBench operation deadline expired before another request could start.') }
+    return [int][Math]::Max(1, [Math]::Min(600, [Math]::Ceiling($remainingSeconds)))
+}
+
+function Start-OperationDelay([int]$RequestedMilliseconds) {
+    if ($RequestedMilliseconds -le 0) { return }
+    if ($null -eq $script:operationDeadlineUtc) { Start-Sleep -Milliseconds $RequestedMilliseconds; return }
+    $remainingMilliseconds = [long]($script:operationDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+    if ($remainingMilliseconds -le 0) { return }
+    Start-Sleep -Milliseconds ([int][Math]::Min($RequestedMilliseconds, $remainingMilliseconds))
+}
+
+function Write-JsonAtomic {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Value)
+    $temporary = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false))
+        $null = Get-Content -LiteralPath $temporary -Raw | ConvertFrom-Json -Depth 50
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Get-InvocationEvidenceDirectory {
+    if (-not [string]::IsNullOrWhiteSpace($EvidenceDirectory)) { return [IO.Path]::GetFullPath($EvidenceDirectory) }
+    $localRoot = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $env:LOCALAPPDATA } else { [IO.Path]::GetTempPath() }
+    return [IO.Path]::GetFullPath((Join-Path $localRoot 'SkyrimVRAutomation\evidence\devbench-control'))
+}
+
+function Initialize-InvocationEvidence {
+    $resolved = Get-InvocationEvidenceDirectory
+    New-Item -ItemType Directory -Path $resolved -Force | Out-Null
+    $rawLabel = if (-not [string]::IsNullOrWhiteSpace($EvidenceLabel)) { $EvidenceLabel } elseif ($Command -eq 'wait') { "$Command-$Condition-$Tool" } else { "$Command-$Tool" }
+    $safeLabel = ($rawLabel -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safeLabel)) { $safeLabel = 'invocation' }
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+    $script:invocationEvidencePath = Join-Path $resolved "devbench-invocation.$safeLabel.$stamp.$PID.json"
+    $script:invocationRecord = [ordered]@{
+        schemaVersion = 1
+        state = 'preparing'
+        command = $Command
+        tool = $Tool
+        condition = if ($Command -eq 'wait') { $Condition } else { $null }
+        endpoint = $endpoint
+        runtimePath = if ([string]::IsNullOrWhiteSpace($RuntimePath)) { $null } else { [IO.Path]::GetFullPath($RuntimePath) }
+        runtimeSha256 = if (-not [string]::IsNullOrWhiteSpace($RuntimePath) -and (Test-Path -LiteralPath $RuntimePath -PathType Leaf)) { (Get-FileHash -LiteralPath $RuntimePath -Algorithm SHA256).Hash } else { $null }
+        requestedArguments = if ($Command -eq 'call') { $ArgumentsJson } else { $null }
+        requestedArgumentsSha256 = if ($Command -eq 'call') { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.UTF8Encoding]::new($false).GetBytes($ArgumentsJson))) } else { $null }
+        commandId = $null
+        workspaceManifestPath = if ([string]::IsNullOrWhiteSpace($WorkspaceManifestPath)) { $null } else { [IO.Path]::GetFullPath($WorkspaceManifestPath) }
+        workspaceManifestSha256 = if (-not [string]::IsNullOrWhiteSpace($WorkspaceManifestPath) -and (Test-Path -LiteralPath $WorkspaceManifestPath -PathType Leaf)) { (Get-FileHash -LiteralPath $WorkspaceManifestPath -Algorithm SHA256).Hash } else { $null }
+        preparedUtc = [DateTime]::UtcNow.ToString('o')
+        dispatchedUtc = $null
+        completedUtc = $null
+        runtimeIdentity = $runtimeIdentity
+        transportRetries = @()
+        semantic = $null
+        data = $null
+        errors = @()
+    }
+    Write-JsonAtomic -Path $script:invocationEvidencePath -Value $script:invocationRecord
+}
+
+function Update-InvocationEvidence {
+    param([Parameter(Mandatory)][string]$State, $Semantic = $null, $Data = $null, [string[]]$Errors = @())
+    if ($null -eq $script:invocationRecord -or [string]::IsNullOrWhiteSpace($script:invocationEvidencePath)) { return }
+    $script:invocationRecord.state = $State
+    $script:invocationRecord.endpoint = $endpoint
+    $script:invocationRecord.runtimeIdentity = $runtimeIdentity
+    $script:invocationRecord.transportRetries = @($transportRetries)
+    $script:invocationRecord.semantic = $Semantic
+    $script:invocationRecord.data = $Data
+    $script:invocationRecord.errors = @($Errors)
+    if ($State -eq 'dispatching') { $script:invocationRecord.dispatchedUtc = [DateTime]::UtcNow.ToString('o') }
+    if ($State -in @('completed', 'failed', 'guard-rejected', 'indeterminate')) { $script:invocationRecord.completedUtc = [DateTime]::UtcNow.ToString('o') }
+    Write-JsonAtomic -Path $script:invocationEvidencePath -Value $script:invocationRecord
+}
+
+function Find-UnsafeTfc1 {
+    param($Value, [string]$Path = '$')
+    if ($Value -is [string]) {
+        if (($Value.Trim() -replace '\s+', ' ') -match '^(?i:tfc 1)$') { return $Path }
+        return $null
+    }
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            $match = Find-UnsafeTfc1 -Value $Value[$key] -Path "$Path.$key"
+            if ($match) { return $match }
+        }
+    }
+    elseif ($Value -is [Collections.IEnumerable]) {
+        $index = 0
+        foreach ($item in $Value) {
+            $match = Find-UnsafeTfc1 -Value $item -Path "$Path[$index]"
+            if ($match) { return $match }
+            $index++
+        }
+    }
+    return $null
+}
+
+function Get-GameMutationRequests {
+    param([string]$ToolName, $Arguments, [string]$Path = '$')
+    $requests = [Collections.Generic.List[object]]::new()
+    if ($ToolName -eq 'game' -and $Arguments -is [Collections.IDictionary]) {
+        $action = if ($Arguments.Contains('action')) { [string]$Arguments['action'] } else { '' }
+        if ($action -in @('load', 'loadLast', 'save')) {
+            $requests.Add([pscustomobject][ordered]@{ path = $Path; action = $action; arguments = $Arguments })
+        }
+        return @($requests)
+    }
+    if ($ToolName -eq 'console' -and $Arguments -is [Collections.IDictionary] -and $Arguments.Contains('command')) {
+        $commandText = ([string]$Arguments['command']).Trim()
+        if ($commandText -match '^(?i:(load|save))\s+(.+)$') {
+            $requests.Add([pscustomobject][ordered]@{ path = $Path; action = $Matches[1].ToLowerInvariant(); arguments = [ordered]@{ action = $Matches[1].ToLowerInvariant(); name = $Matches[2].Trim() } })
+        }
+        return @($requests)
+    }
+    function Find-NestedGameMutation($Value, [string]$CurrentPath) {
+        if ($Value -is [Collections.IDictionary]) {
+            if ($Value.Contains('tool') -and [string]$Value['tool'] -eq 'game' -and $Value.Contains('args') -and $Value['args'] -is [Collections.IDictionary]) {
+                $args = $Value['args']
+                $action = if ($args.Contains('action')) { [string]$args['action'] } else { '' }
+                if ($action -in @('load', 'loadLast', 'save')) {
+                    $requests.Add([pscustomobject][ordered]@{ path = "$CurrentPath.args"; action = $action; arguments = $args })
+                }
+            }
+            elseif ($Value.Contains('tool') -and [string]$Value['tool'] -eq 'console' -and $Value.Contains('args') -and $Value['args'] -is [Collections.IDictionary] -and $Value['args'].Contains('command')) {
+                $commandText = ([string]$Value['args']['command']).Trim()
+                if ($commandText -match '^(?i:(load|save))\s+(.+)$') {
+                    $requests.Add([pscustomobject][ordered]@{ path = "$CurrentPath.args"; action = $Matches[1].ToLowerInvariant(); arguments = [ordered]@{ action = $Matches[1].ToLowerInvariant(); name = $Matches[2].Trim() } })
+                }
+            }
+            foreach ($key in $Value.Keys) { Find-NestedGameMutation -Value $Value[$key] -CurrentPath "$CurrentPath.$key" }
+        }
+        elseif ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+            $index = 0
+            foreach ($item in $Value) {
+                Find-NestedGameMutation -Value $item -CurrentPath "$CurrentPath[$index]"
+                $index++
+            }
+        }
+    }
+    Find-NestedGameMutation -Value $Arguments -CurrentPath $Path
+    return @($requests)
+}
+
+function Test-GameMutationPolicy {
+    param([Parameter(Mandatory)]$Request)
+    if ($AllowUnprovenGameMutation) { return [pscustomobject]@{ allowed = $true; override = $true; error = $null } }
+    if ([string]::IsNullOrWhiteSpace($WorkspaceManifestPath)) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "DevBench game action '$($Request.action)' at $($Request.path) requires -WorkspaceManifestPath. Pass -AllowUnprovenGameMutation only when the caller explicitly accepts bypassing workspace save policy." }
+    }
+    $resolvedManifest = [IO.Path]::GetFullPath($WorkspaceManifestPath)
+    if (-not (Test-Path -LiteralPath $resolvedManifest -PathType Leaf)) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "Workspace manifest does not exist: $resolvedManifest" }
+    }
+    try { $workspace = Get-Content -LiteralPath $resolvedManifest -Raw | ConvertFrom-Json -Depth 50 } catch { return [pscustomobject]@{ allowed = $false; override = $false; error = "Workspace manifest is invalid JSON: $($_.Exception.Message)" } }
+    $policy = if ($workspace.PSObject.Properties['savePolicy']) { [string]$workspace.savePolicy } else { '' }
+    $workspaceStatus = if ($workspace.PSObject.Properties['status']) { [string]$workspace.status } else { '' }
+    if ($workspaceStatus -notin @('ready', 'retained')) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "Workspace status '$workspaceStatus' is not authorized for a DevBench game mutation." }
+    }
+    if ($policy -in @('MainMenuOnly', 'FreshGame')) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "Workspace save policy '$policy' forbids DevBench game action '$($Request.action)' at $($Request.path)." }
+    }
+    if ($policy -ne 'VerifiedFixture') {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "Workspace save policy '$policy' is absent or unsupported; refusing DevBench game mutation." }
+    }
+    if ($Request.action -ne 'load') {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "VerifiedFixture authorizes only its exact declared load; action '$($Request.action)' is not permitted." }
+    }
+    $fixture = if ($workspace.PSObject.Properties['saveFixture']) { $workspace.saveFixture } else { $null }
+    if (-not $workspace.PSObject.Properties['copiedVerifiedSaves'] -or -not [bool]$workspace.copiedVerifiedSaves) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = 'VerifiedFixture manifest does not prove that its declared save files were copied and verified.' }
+    }
+    $expectedName = if ($fixture -and $fixture.PSObject.Properties['loadName']) { [string]$fixture.loadName } else { '' }
+    $actualName = if ($Request.arguments.Contains('name')) { [string]$Request.arguments['name'] } else { '' }
+    if ([string]::IsNullOrWhiteSpace($expectedName) -or -not [string]::Equals($actualName, $expectedName, [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "VerifiedFixture load name mismatch at $($Request.path): requested '$actualName', expected '$expectedName'." }
+    }
+    if (-not $workspace.PSObject.Properties['profilePath'] -or [string]::IsNullOrWhiteSpace([string]$workspace.profilePath)) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = 'VerifiedFixture manifest does not declare its exact profile path.' }
+    }
+    $expectedDirectory = [IO.Path]::GetFullPath((Join-Path ([string]$workspace.profilePath) 'saves')).TrimEnd('\')
+    $actualDirectory = if ($Request.arguments.Contains('dir') -and -not [string]::IsNullOrWhiteSpace([string]$Request.arguments['dir'])) { [IO.Path]::GetFullPath([string]$Request.arguments['dir']).TrimEnd('\') } else { '' }
+    if (-not [string]::Equals($actualDirectory, $expectedDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ allowed = $false; override = $false; error = "VerifiedFixture saves directory mismatch at $($Request.path): requested '$actualDirectory', expected '$expectedDirectory'." }
+    }
+    return [pscustomobject]@{ allowed = $true; override = $false; error = $null; policy = $policy; manifestPath = $resolvedManifest; loadName = $expectedName }
+}
+
 function Invoke-McpRequest {
-    param([string]$Endpoint, [hashtable]$Headers, $Payload)
+    param([string]$Endpoint, [hashtable]$Headers, $Payload, [switch]$Mutation)
     $body = $Payload | ConvertTo-Json -Depth 30 -Compress
     $attempt = 0
     $delay = [Math]::Max(50, $PollMilliseconds)
     while ($true) {
         $attempt++
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $Headers -Body $body -TimeoutSec 15
+            $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $Headers -Body $body -TimeoutSec (Get-RequestTimeoutSeconds)
             return [pscustomobject]@{ response = $response; json = ($response.Content | ConvertFrom-Json -Depth 50); attempts = $attempt }
         }
         catch {
             $statusCode = $null
             try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = $null }
-            if ($Command -eq 'wait' -and $statusCode -eq 404 -and $Headers.ContainsKey('Mcp-Session-Id') -and $attempt -le $MaxTransientRetries) {
-                try {
-                    $resetHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
-                    $resetBody = @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{ protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.2' } } } | ConvertTo-Json -Depth 10 -Compress
-                    $resetResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $resetHeaders -Body $resetBody -TimeoutSec 15
-                    $resetSessionHeader = $resetResponse.Headers['Mcp-Session-Id']
-                    $resetSessionId = if ($resetSessionHeader -is [array]) { [string]$resetSessionHeader[0] } else { [string]$resetSessionHeader }
-                    if ([string]::IsNullOrWhiteSpace($resetSessionId)) { throw 'DevBench session recovery did not return an MCP session ID.' }
-                    $Headers['Mcp-Session-Id'] = $resetSessionId
-                    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $Endpoint -Headers $Headers -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec 15 | Out-Null
-                    $transportRetries.Add([pscustomobject][ordered]@{
-                        attempt = $attempt
-                        statusCode = $statusCode
-                        delayMilliseconds = $delay
-                        recovery = 'mcp-session-reinitialized'
-                        message = $_.Exception.Message
-                        timestampUtc = [DateTime]::UtcNow.ToString('o')
-                    })
-                    Start-Sleep -Milliseconds $delay
-                    $delay = [Math]::Min($MaxPollMilliseconds, $delay * 2)
-                    continue
-                }
-                catch {
-                    $transportRetries.Add([pscustomobject][ordered]@{
-                        attempt = $attempt
-                        statusCode = $statusCode
-                        delayMilliseconds = $delay
-                        recovery = 'mcp-session-reinitialize-failed'
-                        message = $_.Exception.Message
-                        timestampUtc = [DateTime]::UtcNow.ToString('o')
-                    })
-                }
-            }
-            $transient = $statusCode -in @(429, 502, 503, 504) -or
+            $transient = $statusCode -in @(408, 429, 500, 502, 503, 504) -or
                 ($Command -eq 'wait' -and $statusCode -eq 404) -or
                 $_.Exception -is [System.TimeoutException] -or
                 $_.Exception.Message -match 'timed out|temporarily unavailable|connection.*closed'
+            if ($Mutation -and $transient) {
+                $transportRetries.Add([pscustomobject][ordered]@{
+                    attempt = $attempt; statusCode = $statusCode; delayMilliseconds = 0
+                    recovery = 'not-retried-indeterminate'; message = $_.Exception.Message; timestampUtc = [DateTime]::UtcNow.ToString('o')
+                })
+                $indeterminate = [InvalidOperationException]::new('DevBench mutation transport failed after dispatch; the command may already have committed and was not replayed. Reconcile by commandId and runtime state before any retry.', $_.Exception)
+                $indeterminate.Data['DevBenchIndeterminateMutation'] = $true
+                throw $indeterminate
+            }
+            if ($Command -eq 'wait' -and $statusCode -eq 404 -and $Headers.ContainsKey('Mcp-Session-Id')) {
+                $transportRetries.Add([pscustomobject][ordered]@{
+                    attempt = $attempt; statusCode = $statusCode; delayMilliseconds = 0
+                    recovery = 'full-runtime-rebind-required'; message = $_.Exception.Message; timestampUtc = [DateTime]::UtcNow.ToString('o')
+                })
+                throw
+            }
             if (-not $transient -or $attempt -gt $MaxTransientRetries) { throw }
             $transportRetries.Add([pscustomobject][ordered]@{
                 attempt = $attempt
@@ -104,15 +291,15 @@ function Invoke-McpRequest {
                 message = $_.Exception.Message
                 timestampUtc = [DateTime]::UtcNow.ToString('o')
             })
-            Start-Sleep -Milliseconds $delay
+            Start-OperationDelay -RequestedMilliseconds $delay
             $delay = [Math]::Min($MaxPollMilliseconds, $delay * 2)
         }
     }
 }
 
 function Invoke-ToolRpc {
-    param([string]$Name, [hashtable]$Arguments, [hashtable]$Headers)
-    $rpc = Invoke-McpRequest -Endpoint $endpoint -Headers $Headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/call'; params = @{ name = $Name; arguments = $Arguments } }
+    param([string]$Name, [hashtable]$Arguments, [hashtable]$Headers, [switch]$Mutation)
+    $rpc = Invoke-McpRequest -Endpoint $endpoint -Headers $Headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/call'; params = @{ name = $Name; arguments = $Arguments } } -Mutation:$Mutation
     if ($rpc.json.PSObject.Properties['error']) { throw "DevBench tools/call failed: $($rpc.json.error | ConvertTo-Json -Compress)" }
     if ($rpc.json.result.PSObject.Properties['isError'] -and $rpc.json.result.isError) {
         $message = ($rpc.json.result.content | ForEach-Object { $_.text }) -join "`n"
@@ -141,14 +328,14 @@ function Open-McpSession($Runtime, [switch]$AllowDeferredBuildIdentity) {
     $baseHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json' }
     $initialize = Invoke-McpRequest -Endpoint $endpoint -Headers $baseHeaders -Payload @{
         jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'initialize'; params = @{
-            protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.3' }
+            protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'DevBenchControl'; version = '1.4' }
         }
     }
     $sessionHeader = $initialize.response.Headers['Mcp-Session-Id']
     $sessionId = if ($sessionHeader -is [array]) { [string]$sessionHeader[0] } else { [string]$sessionHeader }
     if ([string]::IsNullOrWhiteSpace($sessionId)) { throw 'DevBench did not return an MCP session ID.' }
     $sessionHeaders = @{ Accept = 'application/json, text/event-stream'; 'Content-Type' = 'application/json'; 'Mcp-Session-Id' = $sessionId }
-    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec 15 | Out-Null
+    Invoke-WebRequest -UseBasicParsing -Method Post -Uri $endpoint -Headers $sessionHeaders -Body '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' -TimeoutSec (Get-RequestTimeoutSeconds) | Out-Null
     $listRpc = Invoke-McpRequest -Endpoint $endpoint -Headers $sessionHeaders -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/list'; params = @{} }
     if ($listRpc.json.PSObject.Properties['error']) { throw "DevBench tools/list failed: $($listRpc.json.error | ConvertTo-Json -Compress)" }
     $sessionTools = @($listRpc.json.result.tools)
@@ -304,11 +491,31 @@ function Write-RuntimeEvidence($Binding) {
 }
 
 try {
+    Initialize-InvocationEvidence
     if ([string]::IsNullOrWhiteSpace($RuntimePath)) { throw 'RuntimePath is required. Pass -RuntimePath or set CSX_DEVBENCH_RUNTIME_PATH.' }
     if (-not (Test-Path -LiteralPath $RuntimePath -PathType Leaf)) { throw "DevBench runtime metadata does not exist: $RuntimePath" }
     $runtime = Get-Content -LiteralPath $RuntimePath -Raw | ConvertFrom-Json
     if (-not $runtime.PSObject.Properties['port']) { throw 'DevBench runtime metadata has no port.' }
     $endpoint = "http://127.0.0.1:$([int]$runtime.port)/mcp"
+    $arguments = $null
+    if ($Command -eq 'call') {
+        if ([string]::IsNullOrWhiteSpace($Tool)) { throw 'Tool is required for call.' }
+        try { $arguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
+        if ($arguments.Contains('commandId')) { $script:invocationRecord.commandId = [string]$arguments['commandId']; Write-JsonAtomic -Path $script:invocationEvidencePath -Value $script:invocationRecord }
+        $unsafeTfc1Path = Find-UnsafeTfc1 -Value $arguments
+        if ($unsafeTfc1Path -and -not $AllowUnsafeTfc1) {
+            $message = "Unsafe Skyrim VR console command 'tfc 1' was found at $unsafeTfc1Path. It has a confirmed null-camera crash path; use a stationary scene without simulation freeze, or pass -AllowUnsafeTfc1 only for an explicitly accepted crash-risk experiment."
+            Update-InvocationEvidence -State 'guard-rejected' -Errors @($message)
+            throw $message
+        }
+        foreach ($gameRequest in @(Get-GameMutationRequests -ToolName $Tool -Arguments $arguments)) {
+            $policyResult = Test-GameMutationPolicy -Request $gameRequest
+            if (-not $policyResult.allowed) {
+                Update-InvocationEvidence -State 'guard-rejected' -Errors @([string]$policyResult.error)
+                throw [string]$policyResult.error
+            }
+        }
+    }
     $headers = $null
     $tools = @()
     $evidencePath = $null
@@ -317,6 +524,11 @@ try {
         $headers = $session.headers
         $tools = @($session.tools)
         $runtimeIdentity = $session.runtimeIdentity
+        if (-not $SkipRuntimeIdentityVerification) {
+            if ($Command -eq 'call' -and -not $runtimeIdentity.complete) {
+                throw "Mutation-capable DevBench calls require complete runtime identity. Missing: $($runtimeIdentity.missing -join ', ')."
+            }
+        }
         $evidencePath = Write-RuntimeEvidence $runtimeIdentity
     }
 
@@ -326,11 +538,26 @@ try {
         $data = if ($NamesOnly) { [pscustomobject][ordered]@{ names = @($tools | ForEach-Object name); count = $tools.Count } } else { [pscustomobject][ordered]@{ tools = $tools } }
     }
     elseif ($Command -eq 'call') {
-        if ([string]::IsNullOrWhiteSpace($Tool)) { throw 'Tool is required for call.' }
         if (@($tools | Where-Object name -eq $Tool).Count -ne 1) { throw "Tool '$Tool' is not present in the authoritative tools/list response." }
-        try { $arguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
-        $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers
+        Update-InvocationEvidence -State 'dispatching'
+        $data = Invoke-ToolRpc -Name $Tool -Arguments $arguments -Headers $headers -Mutation
         $semantic = Get-DevBenchSemanticStatus -Content @($data.content)
+        if ($Tool -eq 'communityshaders.profiler' -and -not $semantic.known) {
+            $profilerPayload = @($data.content | Select-Object -First 1)
+            if ($profilerPayload.Count -eq 1 -and -not $profilerPayload[0].PSObject.Properties['error']) {
+                $requestedAction = [string]$arguments['action']
+                $profilerSuccess =
+                    ($requestedAction -eq 'status' -and $profilerPayload[0].PSObject.Properties['status'] -and $profilerPayload[0].status.PSObject.Properties['frame_count']) -or
+                    ($requestedAction -eq 'enable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and [bool]$profilerPayload[0].enabled) -or
+                    ($requestedAction -eq 'disable' -and $profilerPayload[0].PSObject.Properties['enabled'] -and -not [bool]$profilerPayload[0].enabled)
+                if ($profilerSuccess) {
+                    $semantic.known = $true
+                    $semantic.ok = $true
+                    $semantic.outcome = 'profiler-contract-satisfied'
+                    $semantic.reasons = @()
+                }
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($ExpectedErrorCode)) {
             $matched = @($semantic.codes | Where-Object { $_ -eq $ExpectedErrorCode }).Count -gt 0
             $semantic | Add-Member -NotePropertyName expectedErrorCode -NotePropertyValue $ExpectedErrorCode -Force
@@ -346,10 +573,13 @@ try {
         if ($Condition -in @('toolAvailable', 'serviceReady') -and [string]::IsNullOrWhiteSpace($Tool)) { throw "Condition '$Condition' requires -Tool." }
         $requiredTool = if ($Condition -in @('noBlockingMenu', 'mainMenuReady')) { 'menu' } elseif ($Condition -eq 'playerLoaded') { 'inspect' } else { $null }
         $waitArguments = @{}
+        $waitArgumentsResolved = $Condition -ne 'serviceReady'
+        $serviceProbe = $null
         if ($Condition -eq 'serviceReady') {
             try { $waitArguments = $ArgumentsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { throw "ArgumentsJson is invalid: $($_.Exception.Message)" }
         }
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $script:operationDeadlineUtc = $deadline
         $attempts = 0
         $observation = $null
         $currentDelay = $PollMilliseconds
@@ -379,7 +609,7 @@ try {
                         satisfied = $false; retryable = $true; phase = 'initialize'; classification = 'api-initializing-or-unavailable'
                         probeError = $_.Exception.Message
                     }
-                    Start-Sleep -Milliseconds $currentDelay
+                    Start-OperationDelay -RequestedMilliseconds $currentDelay
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
                 }
@@ -394,13 +624,13 @@ try {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
                     $headers = $null
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; phase = 'tools-list'; probeError = $_.Exception.Message }
-                    Start-Sleep -Milliseconds $currentDelay
+                    Start-OperationDelay -RequestedMilliseconds $currentDelay
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
                 }
                 if (@($tools | Where-Object name -eq $requiredTool).Count -ne 1) {
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; phase = 'tool-registration'; requiredTool = $requiredTool; authoritativeToolCount = $tools.Count }
-                    Start-Sleep -Milliseconds $currentDelay
+                    Start-OperationDelay -RequestedMilliseconds $currentDelay
                     $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2)
                     continue
                 }
@@ -416,6 +646,7 @@ try {
                 }
                 catch {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                    $headers = $null
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; retryable = $true; probeError = $_.Exception.Message }
                 }
             }
@@ -434,6 +665,7 @@ try {
                 }
                 catch {
                     if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                    $headers = $null
                     $observation = [pscustomobject][ordered]@{ satisfied = $false; state = $null; retryable = $true; probeError = $_.Exception.Message }
                 }
             }
@@ -450,11 +682,18 @@ try {
                 $service = $null
                 if ($Condition -eq 'serviceReady' -and $toolPresent) {
                     try {
+                        if (-not $waitArgumentsResolved) {
+                            $targetDefinition = @($currentTools | Where-Object name -eq $Tool | Select-Object -First 1)[0]
+                            $serviceProbe = Resolve-DevBenchServiceProbeArguments -ToolDefinition $targetDefinition -Arguments $waitArguments -ArgumentsSupplied:$argumentsJsonSupplied -ToolName $Tool
+                            $waitArguments = $serviceProbe.arguments
+                            $waitArgumentsResolved = $true
+                        }
                         $toolResult = Invoke-ToolRpc -Name $Tool -Arguments $waitArguments -Headers $headers
                         $service = Test-DevBenchServiceReady -Content @($toolResult.content) -AcceptedStates $AcceptedState -RetryableStates $RetryableState
                     }
                     catch {
                         if (-not (Test-WaitRetryableException -Exception $_.Exception)) { throw }
+                        $headers = $null
                         $service = [pscustomobject][ordered]@{
                             ready = $false
                             retryable = $true
@@ -498,6 +737,7 @@ try {
                     tool = $Tool
                     toolPresent = $toolPresent
                     service = $service
+                    serviceProbe = $serviceProbe
                     classification = $classification
                     cpuDeltaSeconds = $cpuDelta
                     authoritativeToolCount = $currentTools.Count
@@ -506,7 +746,7 @@ try {
                 if ($service -and $service.terminalFailure) { break }
             }
             if ($observation.satisfied) { break }
-            Start-Sleep -Milliseconds $currentDelay
+            Start-OperationDelay -RequestedMilliseconds $currentDelay
             if ($Condition -in @('toolAvailable', 'serviceReady')) { $currentDelay = [Math]::Min($MaxPollMilliseconds, $currentDelay * 2) }
         } while ([DateTime]::UtcNow -lt $deadline)
         $data = [pscustomobject][ordered]@{ condition = $Condition; satisfied = [bool]$observation.satisfied; attempts = $attempts; timeoutSeconds = $TimeoutSeconds; initialPollMilliseconds = $PollMilliseconds; maxPollMilliseconds = $MaxPollMilliseconds; observation = $observation }
@@ -514,7 +754,11 @@ try {
         $semantic = [pscustomobject][ordered]@{ known = $true; ok = [bool]$observation.satisfied; reasons = $(if ($observation.satisfied) { @() } else { @("Condition '$Condition' was not satisfied within $TimeoutSeconds seconds.") }) }
     }
 
-    $semanticFailure = $semantic.known -and -not $semantic.ok -and ($RequireSuccess -or $Command -eq 'wait')
+    if ($RequireSuccess -and -not $semantic.known) {
+        $semantic.outcome = 'unverified'
+        $semantic.reasons = @($semantic.reasons) + 'RequireSuccess was requested, but the response did not provide a verified semantic outcome.'
+    }
+    $semanticFailure = if ($Command -eq 'call') { -not $semantic.known -or -not $semantic.ok } elseif ($RequireSuccess) { -not $semantic.known -or -not $semantic.ok } else { $semantic.known -and -not $semantic.ok -and $Command -eq 'wait' }
     $result = [pscustomobject][ordered]@{
         ok = -not $semanticFailure
         transportOk = $true
@@ -523,29 +767,39 @@ try {
         timestampUtc = [DateTime]::UtcNow.ToString('o')
         runtimeIdentity = $runtimeIdentity
         evidencePath = $evidencePath
+        invocationEvidencePath = $invocationEvidencePath
         semantic = $semantic
         transportRetries = @($transportRetries)
         data = $data
         errors = $(if ($semanticFailure) { @($semantic.reasons) } else { @() })
     }
+    Update-InvocationEvidence -State 'completed' -Semantic $semantic -Data $data -Errors @($result.errors)
 }
 catch {
+    $failureMessage = $_.Exception.Message
+    $indeterminateMutation = [bool]$_.Exception.Data['DevBenchIndeterminateMutation']
+    if ($invocationRecord -and $invocationRecord.state -ne 'guard-rejected') {
+        try { Update-InvocationEvidence -State $(if ($indeterminateMutation) { 'indeterminate' } else { 'failed' }) -Errors @($failureMessage) } catch { $failureMessage = "$failureMessage Evidence update also failed: $($_.Exception.Message)" }
+    }
     $result = [pscustomobject][ordered]@{
         ok = $false
         transportOk = $false
+        state = if ($indeterminateMutation) { 'indeterminate-mutation' } else { 'failed' }
+        indeterminate = $indeterminateMutation
         command = $Command
         endpoint = $endpoint
         timestampUtc = [DateTime]::UtcNow.ToString('o')
         runtimeIdentity = $runtimeIdentity
-        evidencePath = $null
+        evidencePath = $invocationEvidencePath
+        invocationEvidencePath = $invocationEvidencePath
         semantic = $null
         transportRetries = @($transportRetries)
         data = $null
-        errors = @($_.Exception.Message)
+        errors = @($failureMessage)
     }
 }
 
 $parameters = @{ InputObject = $result; Depth = 50 }
 if ($Compact) { $parameters['Compress'] = $true }
 ConvertTo-Json @parameters
-if (-not $result.ok -and -not $NoExit) { exit 2 }
+if (-not $result.ok -and -not $NoExit) { exit $(if ($result.PSObject.Properties['indeterminate'] -and $result.indeterminate) { 3 } else { 2 }) }

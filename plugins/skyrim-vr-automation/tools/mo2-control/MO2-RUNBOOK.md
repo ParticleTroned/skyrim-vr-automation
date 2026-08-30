@@ -16,11 +16,14 @@ immediate start receipts, and attributable RootBuilder recovery. A successful va
 authorizes no mutation by itself. Changes still require the user's task to put
 the relevant MO2 state, mod files, game files, or captured artifacts in scope.
 
-Each independent test task creates its own profile from the explicit
+Each independent test task owns a durable profile from the explicit
 `defaults.testProfileSource` through `../mo2-workspace-control`. The stable
 source is distinct from the ordinary session default and from experimental
-alternate profiles. Workspaces never inherit saves and never own mods that
-predate their creation.
+alternate profiles. Workspaces inherit a verified copy of the stable source's
+complete saves tree and its mandatory default world-entry fixture, survive
+access-lease yields, and never own mods that predate their creation. The
+fixture is qualified at fresh-clone time only; a resumed task profile is
+preserved without any promise that its save remains loadable after task edits.
 
 ## Machine configuration
 
@@ -43,7 +46,9 @@ install and overwrite are not long-term diagnostic stores.
 ## Non-negotiable rules
 
 1. Address MO2 by exact profile and exact registered executable name. Never
-   treat MO2's fallback profile as success.
+   treat MO2's fallback profile as success. For DevBench or any SKSE-dependent
+   run, use `-RequireSKSE` during validation and preparation; a plain
+   `SkyrimVR.exe` entry is not an equivalent launcher.
 2. Before editing MO2 state, require MO2 and the game to be closed. VR runtime
    processes may remain live unless the operation specifically requires them
    closed.
@@ -111,6 +116,9 @@ analysis, report writing, or any other phase that does not require MO2:
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> release-access -AccessId <literal-access-id> -Compact
 ```
 
+This yields only the scarce access lease. It deliberately preserves the task's
+workspace profile, saves, options, and task-owned mods for a later `resume`.
+
 The task remains responsible for its lease even when the estimate is overdue.
 Use `renew-access` to update coordination metadata. Use `recover-access` only
 after the owner is positively classified as abandoned, and only with the exact
@@ -119,26 +127,35 @@ active RootBuilder deployment.
 
 ## Automated preparation
 
-Prepare the configured stable source while holding access, create a task
-workspace from it, then pass the returned task profile explicitly to `prepare`.
+Discover the stable task identity's retained workspaces, then explicitly create
+or resume one while holding access. On the first request, prepare the configured
+stable source and create a task workspace. On later requests, select an exact
+retained WorkspaceId or explicitly request a fresh clone. Pass the returned
+task profile explicitly to `prepare`.
 Source preparation moves every legacy `ShaderCache*` directory out of overwrite
 into a newly enabled stable-source mod; creation refuses to continue if any
-remain:
+remain. Fresh creation also refuses to continue unless `fixture-status` is
+`fixture-valid` for the maintained source's default world-entry save:
 
 ```text
 <absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> prepare-source -AccessId <literal-access-id> -Confirm:$false -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> fixture-status -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> list-task -TaskId <stable-task-id> -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> create -AccessId <literal-access-id> -TaskId <stable-task-id> -Label short-test-name -SavePolicy MainMenuOnly -Confirm:$false -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2WorkspaceControl.ps1> resume -AccessId <literal-access-id> -TaskId <stable-task-id> -WorkspaceId <exact-retained-workspace-id> -Confirm:$false -Compact
 ```
 
-At the end, release the evidence session, release the exact task workspace and
-its explicitly owned artifacts, then release access. A task must never replace
-or delete a pre-existing shared mod.
+After each live use, release the evidence session and access lease but retain
+the workspace. Use workspace `retire` only when its profile is no longer
+wanted. A task must never edit, replace, or delete a pre-existing shared mod;
+it may change existing mod markers only in its own cloned profile. Primary-list
+updates install a new mod name and change primary-profile markers additively.
 
 Preview first, then bind a session to the owned access lease:
 
 ```text
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -WhatIf -Compact
-<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -RequireSKSE -WhatIf -Compact
+<absolute-pwsh.exe> -NoProfile -NonInteractive -File <absolute-Invoke-MO2Control.ps1> prepare -AccessId <literal-access-id> -Label short-test-name -RequireSKSE -Compact
 ```
 
 `prepare` requires closed state, validates the exact profile/executable pair,
@@ -149,6 +166,8 @@ session; it remains valid if a plugin update replaces the versioned cache from
 which `prepare` was called. `prepare` does not change MO2's selected profile or
 mod list. Legacy callers may omit AccessId;
 that creates an implicit one-session lease which `release` removes.
+When `-RequireSKSE` is supplied, that requirement is durable session state and
+`launch` revalidates it before starting MO2.
 
 ## Manual preparation for unimplemented mutations
 

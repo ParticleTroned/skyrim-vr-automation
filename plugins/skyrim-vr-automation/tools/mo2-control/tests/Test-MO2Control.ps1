@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 
 $packageRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $packageRoot 'MO2Control.psm1') -Force
+$mo2Module = Get-Module MO2Control
 
 $failures = [System.Collections.Generic.List[string]]::new()
 $passes = [System.Collections.Generic.List[string]]::new()
@@ -27,6 +28,17 @@ function Assert-MO2Test {
         $failures.Add($Name)
     }
 }
+
+$retentionFixture = & $mo2Module {
+    $samples = [Collections.Generic.Queue[object]]::new()
+    $samples.Enqueue([pscustomobject]@{ processes = [pscustomobject]@{ mo2 = @([pscustomobject]@{ id = 4123 }) } })
+    $samples.Enqueue([pscustomobject]@{ processes = [pscustomobject]@{ mo2 = @() } })
+    $owned = [pscustomobject]@{ data = [pscustomobject]@{ ownerPid = 4123; profile = 'Fixture'; executable = 'Fixture' } }
+    $initial = $samples.Dequeue()
+    $inspectionFactory = { $samples.Dequeue() }.GetNewClosure()
+    Wait-MO2RetainedProcessStability -Config ([pscustomobject]@{}) -Owned $owned -InitialInspection $initial -StabilityMilliseconds 250 -PollMilliseconds 50 -InspectionFactory $inspectionFactory
+}
+Assert-MO2Test (-not $retentionFixture.stable -and $retentionFixture.samples.Count -eq 2 -and -not $retentionFixture.samples[-1].ownerPresent) 'MO2 retention stability detects an owner that exits immediately after game shutdown'
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('mo2-control-test-' + [guid]::NewGuid().ToString('N'))
 try {
@@ -49,8 +61,10 @@ try {
 
     $mo2Exe = Join-Path $mo2Root 'ModOrganizer.exe'
     $loader = Join-Path $loaderMod 'sksevr_loader.exe'
+    $plainGame = Join-Path $gameRoot 'SkyrimVR.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null
     New-Item -ItemType File -Path $loader -Force | Out-Null
+    New-Item -ItemType File -Path $plainGame -Force | Out-Null
     '+Skyrim Script Extender for VR (SKSEVR)' | Set-Content -LiteralPath (Join-Path $profile 'modlist.txt') -Encoding utf8
 
     $definition = Join-Path $rootBuilderDefinitions 'rootbuilder_defaults.json'
@@ -67,6 +81,10 @@ selected_profile=@ByteArray(Codex)
 1\binary=@ByteArray($loader)
 1\arguments=@ByteArray()
 1\workingDirectory=@ByteArray($gameRoot)
+2\title=@ByteArray(Skyrim VR)
+2\binary=@ByteArray($plainGame)
+2\arguments=@ByteArray()
+2\workingDirectory=@ByteArray($gameRoot)
 "@ | Set-Content -LiteralPath $ini -Encoding utf8
 
     $configPath = Join-Path $fixture 'config.json'
@@ -116,6 +134,11 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($validation.state -eq 'ready') 'clean fixture is ready'
     Assert-MO2Test ($validation.data.selectedProfile -eq 'Codex') 'ByteArray profile is decoded'
     Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').Count -eq 1) 'registered executable is parsed exactly once'
+    Assert-MO2Test (@($validation.data.executables | Where-Object title -eq 'Launch MGO - Do Not Unlock').capabilities -contains 'skse-loader') 'registered SKSE executable advertises its inferred capability'
+    $skseRequired = Invoke-MO2Validate -Config $config -Executable 'Launch MGO - Do Not Unlock' -RequireSKSE
+    Assert-MO2Test ($skseRequired.ok -and @($skseRequired.checks | Where-Object { $_.name -eq 'required-skse-loader' -and $_.status -eq 'pass' }).Count -eq 1) 'SKSE-required validation accepts the exact SKSE loader'
+    $plainRejected = Invoke-MO2Validate -Config $config -Executable 'Skyrim VR' -RequireSKSE
+    Assert-MO2Test (-not $plainRejected.ok -and @($plainRejected.checks | Where-Object { $_.name -eq 'required-skse-loader' -and $_.status -eq 'fail' }).Count -eq 1) 'SKSE-required validation rejects the plain game executable'
     Assert-MO2Test (@($validation.checks | Where-Object { $_.name -eq 'registered-binary-owner-mod' -and $_.status -eq 'pass' }).Count -eq 1) 'enabled executable owner mod passes validation'
     $legacySwap = Join-Path $overwrite 'ShaderCache.Swap'
     New-Item -ItemType Directory -Path $legacySwap -Force | Out-Null
@@ -138,6 +161,20 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($unlockDialogKind -eq 'unlock-required') 'Unlock dialog is classified structurally even when titled with a child executable'
     $failedRunDialogKind = & (Get-Module MO2Control) { Get-MO2KnownDialogKind -Title 'Mod Organizer' -Texts @('Failed to run SkyrimVR.exe') -Buttons @([pscustomobject]@{name='OK'}) }
     Assert-MO2Test ($failedRunDialogKind -eq 'failed-to-run') 'retained failed-to-run dialog is classified without matching the main window'
+    $transientWindow = [pscustomobject]@{ callCount = 0 }
+    $transientWindow | Add-Member -MemberType ScriptMethod -Name FindAll -Value {
+        param($scope, $condition)
+        $this.callCount++
+        if ($this.callCount -eq 1) { throw [InvalidOperationException]::new('Unrecognized error') }
+        return @('recovered')
+    }
+    $uiaRecovered = & $mo2Module { param($window) Invoke-MO2UiAutomationFindAll -Window $window -Scope 'fixture-scope' -Condition 'fixture-condition' -RetryDelayMilliseconds 0 } $transientWindow
+    Assert-MO2Test ($transientWindow.callCount -eq 2 -and @($uiaRecovered).Count -eq 1 -and @($uiaRecovered)[0] -eq 'recovered') 'transient UI Automation enumeration is retried once within a bounded operation'
+
+    $openingOwned = [pscustomobject]@{ data = [pscustomobject]@{ status = 'opening' } }
+    $openingResolution = [pscustomobject]@{ ok = $true; targets = @([pscustomobject]@{ id = 101 }) }
+    $openingReady = & $mo2Module { param($owned, $resolution) Test-MO2OpeningReady -Owned $owned -OwnershipResolution $resolution -MO2Processes @([pscustomobject]@{ id = 101 }) -GameProcesses @() -Windows @([pscustomobject]@{ visible = $true; automationId = 'MainWindow' }) } $openingOwned $openingResolution
+    Assert-MO2Test $openingReady 'an exact adopted StartOnly MO2 main window is eligible for durable mo2-open promotion'
 
     $missingProfile = Invoke-MO2Validate -Config $config -Profile 'Does Not Exist'
     Assert-MO2Test (-not $missingProfile.ok) 'missing exact profile blocks validation'
@@ -149,22 +186,44 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test (@($invalidRootBuilder.checks | Where-Object { $_.name -eq 'rootbuilder-json' -and $_.status -eq 'fail' }).Count -eq 1) 'RootBuilder failure is attributable'
 
     '{}' | Set-Content -LiteralPath $gameData -Encoding utf8
-    $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15 -WhatIf
-    Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory) 'access request dry-run reports an advisory estimate without locking'
+    $transitionPath = "$($config.session.lockFile).transition.lock"
+    $heldTransition = [IO.File]::Open($transitionPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $transitionTimedOut = $false
+    try {
+        try {
+            & $mo2Module { param($path) Invoke-WithMO2LeaseTransitionLock -LockPath $path -TimeoutMilliseconds 150 -Action { 'unexpected' } } ([string]$config.session.lockFile) | Out-Null
+        }
+        catch {
+            $transitionTimedOut = $_.Exception.Message -like 'Timed out waiting for the MO2 lease transition lock:*'
+        }
+    }
+    finally {
+        $heldTransition.Dispose()
+    }
+    Assert-MO2Test $transitionTimedOut 'lease transitions fail boundedly while another writer owns the companion lock'
+
+    $accessDryRun = Invoke-MO2RequestAccess -Config $config -Label 'first task' -TaskId 'fixture-task' -EstimatedMinutes 15 -WhatIf
+    Assert-MO2Test ($accessDryRun.ok -and $accessDryRun.state -eq 'dry-run' -and $accessDryRun.data.estimateIsAdvisory -and $accessDryRun.data.access.ownerTaskId -eq 'fixture-task') 'access request dry-run reports an advisory estimate and explicit task identity without locking'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'access request dry-run creates no lock'
-    $entryAccessDryRun = & (Join-Path $packageRoot 'Invoke-MO2Control.ps1') request-access -ConfigPath $configPath -Label 'approval fixture' -EstimatedMinutes 5 -WhatIf -Compact -NoExit | ConvertFrom-Json
-    Assert-MO2Test ($entryAccessDryRun.ok -and $entryAccessDryRun.data.configuration.exists -and $entryAccessDryRun.data.approval.reusableApprovalEligible -and $entryAccessDryRun.data.approval.reusablePrefix[5] -eq 'request-access') 'dictionary-backed entry-point results retain configuration and approval metadata'
+    $entryAccessDryRun = & (Join-Path $packageRoot 'Invoke-MO2Control.ps1') request-access -ConfigPath $configPath -Label 'approval fixture' -TaskId 'entry-fixture-task' -EstimatedMinutes 5 -WhatIf -Compact -NoExit | ConvertFrom-Json
+    Assert-MO2Test ($entryAccessDryRun.ok -and $entryAccessDryRun.data.access.ownerTaskId -eq 'entry-fixture-task' -and $entryAccessDryRun.data.configuration.exists -and $entryAccessDryRun.data.approval.reusableApprovalEligible -and $entryAccessDryRun.data.approval.reusablePrefix[5] -eq 'request-access') 'dictionary-backed entry-point results retain task identity, configuration, and approval metadata'
 
     $access = Invoke-MO2RequestAccess -Config $config -Label 'first task' -EstimatedMinutes 15
     $accessId = [string]$access.data.access.accessId
+    $leaseId = [string]$access.data.access.leaseId
     Assert-MO2Test ($access.ok -and $access.state -eq 'access-acquired' -and -not [string]::IsNullOrWhiteSpace($accessId)) 'first task atomically acquires access'
+    Assert-MO2Test (-not [string]::IsNullOrWhiteSpace($leaseId) -and $leaseId -ne $accessId) 'access receipt separates public lease identity from the bearer credential'
+    Assert-MO2Test ([long]$access.data.access.generation -eq 1L) 'new access lease starts at generation one'
     $busyAccess = Invoke-MO2RequestAccess -Config $config -Label 'second task' -EstimatedMinutes 5
     Assert-MO2Test (-not $busyAccess.ok -and $busyAccess.state -eq 'access-busy' -and $busyAccess.data.retryable) 'second task receives a retryable access-busy result'
-    Assert-MO2Test ($busyAccess.data.current.accessId -eq $accessId -and $busyAccess.data.current.estimatedReleaseUtc) 'busy result communicates owner and advisory estimate'
+    Assert-MO2Test ($busyAccess.data.current.leaseId -eq $leaseId -and $busyAccess.data.current.estimatedReleaseUtc) 'busy result communicates public lease identity and advisory estimate'
+    Assert-MO2Test ($busyAccess.data.current.PSObject.Properties.Name -notcontains 'accessId' -and (($busyAccess | ConvertTo-Json -Depth 12) -notmatch [regex]::Escape($accessId))) 'busy result never discloses the bearer credential'
 
     $ownedAccess = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
     Assert-MO2Test ($ownedAccess.ok -and $ownedAccess.state -eq 'access-owned' -and $ownedAccess.data.owned) 'access status proves exact ownership'
     Assert-MO2Test (-not $ownedAccess.data.access.estimateOverdue -and [string]$ownedAccess.data.access.estimatedReleaseUtc -match 'Z$') 'future advisory estimate survives JSON round-trip with UTC identity'
+    $unownedAccess = Invoke-MO2AccessStatus -Config $config -AccessId 'access-wrong-credential'
+    Assert-MO2Test ($unownedAccess.state -eq 'access-busy' -and -not $unownedAccess.data.owned -and (($unownedAccess | ConvertTo-Json -Depth 12) -notmatch 'access-wrong-credential')) 'status rejects a wrong credential without echoing it'
     $ownedValidation = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate -ConfigPath $configPath -AccessId $accessId -RequireClosed -NoExit | ConvertFrom-Json)
     Assert-MO2Test ($ownedValidation.ok -and @($ownedValidation.checks | Where-Object { $_.name -eq 'session-lock' -and $_.status -eq 'pass' }).Count -eq 1) 'validation accepts the exact owned access lease'
     $closedAlias = (& (Join-Path $packageRoot 'Invoke-MO2Control.ps1') validate-closed -ConfigPath $configPath -AccessId $accessId -NoExit | ConvertFrom-Json)
@@ -174,16 +233,26 @@ selected_profile=@ByteArray(Codex)
     Assert-MO2Test ($validationApproval.reusablePrefix[1] -eq '-NoProfile' -and $validationApproval.reusablePrefix[2] -eq '-NonInteractive' -and $validationApproval.reusablePrefix[3] -eq '-File' -and $validationApproval.reusablePrefix[4] -eq [IO.Path]::GetFullPath((Join-Path $packageRoot 'Invoke-MO2Control.ps1')) -and $validationApproval.reusablePrefix[5] -eq 'validate') 'approval prefix keeps the literal host, entry point, and subcommand visible'
     $renewedAccess = Invoke-MO2RenewAccess -Config $config -AccessId $accessId -EstimatedMinutes 30
     Assert-MO2Test ($renewedAccess.ok -and $renewedAccess.state -eq 'access-renewed' -and $renewedAccess.data.access.estimatedDurationMinutes -eq 30) 'access renewal replaces the advisory estimate'
+    Assert-MO2Test ([long]$renewedAccess.data.access.generation -eq 2L) 'access renewal advances the serialized lease generation'
 
     $explicitPrepared = Invoke-MO2Prepare -Config $config -Label 'explicit fixture test' -AccessId $accessId
     $explicitSessionId = [string]$explicitPrepared.data.session.sessionId
     Assert-MO2Test ($explicitPrepared.ok -and $explicitPrepared.data.explicitAccess -and $explicitPrepared.data.accessId -eq $accessId) 'prepare binds an explicitly owned access lease'
+    $boundAccessStatus = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
+    Assert-MO2Test ([long]$boundAccessStatus.data.access.generation -eq 3L -and $boundAccessStatus.data.access.sessionId -eq $explicitSessionId) 'session binding advances generation without losing lease identity'
+    $staleOwnedSession = & $mo2Module { param($fixtureConfig, $fixtureSessionId) Get-MO2OwnedSession -Config $fixtureConfig -SessionId $fixtureSessionId } $config $explicitSessionId
+    $inSessionRenewal = Invoke-MO2RenewAccess -Config $config -AccessId $accessId -EstimatedMinutes 45
+    $staleOwnedSession.data.status = 'fixture-stale-writer'
+    $null = & $mo2Module { param($fixtureOwned) Write-MO2OwnedSessionAtomic -Owned $fixtureOwned -Value $fixtureOwned.data } $staleOwnedSession
+    $postStaleWriteStatus = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
+    Assert-MO2Test ($inSessionRenewal.ok -and $postStaleWriteStatus.data.access.estimatedDurationMinutes -eq 45 -and [long]$postStaleWriteStatus.data.access.generation -eq 5L) 'a stale session writer preserves a concurrent serialized lease renewal'
     $prematureAccessRelease = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     Assert-MO2Test (-not $prematureAccessRelease.ok -and $prematureAccessRelease.state -eq 'session-release-required') 'access cannot be released while a session is bound'
     $explicitReleased = Invoke-MO2Release -Config $config -SessionId $explicitSessionId
     Assert-MO2Test ($explicitReleased.ok -and $explicitReleased.state -eq 'session-released-access-retained' -and $explicitReleased.data.releaseAccessRequired) 'session release retains explicitly requested access'
     $accessOnlyStatus = Invoke-MO2AccessStatus -Config $config -AccessId $accessId
     Assert-MO2Test ($accessOnlyStatus.state -eq 'access-owned' -and $accessOnlyStatus.data.access.state -eq 'access-held' -and [string]::IsNullOrWhiteSpace([string]$accessOnlyStatus.data.access.sessionId)) 'released session returns the lock to access-only state'
+    Assert-MO2Test ([long]$accessOnlyStatus.data.access.generation -eq 6L) 'session release advances the serialized lease generation'
     $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
     Assert-MO2Test ($releasedAccess.ok -and $releasedAccess.state -eq 'access-released') 'task explicitly releases access when MO2 is no longer needed'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'explicit access release removes the shared lock'
@@ -195,15 +264,24 @@ selected_profile=@ByteArray(Codex)
     $recoveredAccess = Invoke-MO2RecoverAccess -Config $config -AccessId $abandonedAccessId -ConfirmAbandoned -Label 'fixture confirmed abandoned'
     Assert-MO2Test ($recoveredAccess.ok -and $recoveredAccess.state -eq 'access-recovered') 'confirmed abandoned access can be recovered in proven closed state'
 
-    $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -WhatIf
+    [ordered]@{
+        contractVersion = 'fixture'; sessionId = 'session-pid-reuse'; status = 'running'; ownerPid = $PID
+        processStartTime = [DateTime]::UtcNow.AddDays(-1).ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath $config.session.lockFile -Encoding utf8
+    $pidReuseInspection = Invoke-MO2Inspect -Config $config
+    Assert-MO2Test (-not $pidReuseInspection.data.sessionLock.ownerRunning -and -not $pidReuseInspection.data.sessionLock.ownerIdentityMatched) 'session ownership rejects a reused PID with a different process start time'
+    Remove-Item -LiteralPath $config.session.lockFile -Force
+
+    $prepareDryRun = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE -WhatIf
     Assert-MO2Test ($prepareDryRun.ok -and $prepareDryRun.state -eq 'dry-run') 'prepare dry-run succeeds'
     Assert-MO2Test (-not (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf)) 'prepare dry-run creates no lock'
     Assert-MO2Test (-not (Test-Path -LiteralPath $prepareDryRun.data.sessionPath -PathType Container)) 'prepare dry-run creates no evidence directory'
 
-    $prepared = Invoke-MO2Prepare -Config $config -Label 'fixture test'
+    $prepared = Invoke-MO2Prepare -Config $config -Label 'fixture test' -RequireSKSE
     Assert-MO2Test ($prepared.ok -and $prepared.state -eq 'prepared') 'prepare creates an owned session'
     Assert-MO2Test (Test-Path -LiteralPath $config.session.lockFile -PathType Leaf) 'prepare creates the single-owner lock'
     Assert-MO2Test (Test-Path -LiteralPath (Join-Path $prepared.data.sessionPath 'session.json') -PathType Leaf) 'prepare creates a durable session manifest'
+    Assert-MO2Test ([bool]$prepared.data.session.requirements.skseLoader) 'prepare persists the SKSE requirement for launch revalidation'
     Assert-MO2Test (Test-Path -LiteralPath $prepared.data.controllerPath -PathType Leaf) 'prepare snapshots a durable session controller outside the plugin cache'
     $durableStatus = & $prepared.data.controllerPath status -SessionId ([string]$prepared.data.session.sessionId) -Compact -NoExit | ConvertFrom-Json
     Assert-MO2Test ($durableStatus.ok -and $durableStatus.state -eq 'prepared') 'durable session controller can resume the owned lifecycle independently'

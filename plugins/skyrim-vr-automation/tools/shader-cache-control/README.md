@@ -9,12 +9,26 @@ attributable transactions. It can enumerate every MO2 mod that provides the
 cache path, snapshot and verify an exact tree, seed a verified baseline, or
 restore it while preserving the displaced tree and both inventories. Snapshot,
 seed, and restore refuse to run while MO2, Skyrim, or the SKSE loader is active.
+Recursive inventory is reparse-point-free and bounded by file count, bytes,
+depth, and an absolute deadline. The shared transaction/catalog primitive emits
+periodic progress, records per-file sizes and hashes, and returns the applied
+limits with its inventory. Snapshot receipts bind the exact cache parent, leaf,
+path, and baseline hash before they authorize a destructive seed or restore.
+Mutation callers serialize through a bounded lock derived from the canonical
+live-cache path. A deterministic per-user control directory owns the
+authoritative journal; evidence journals are mirrors, not ownership
+partitions. Before every snapshot, seed, or restore, the next lock owner
+reconciles any nonterminal operation by accepting only the exact original or
+requested tree, restoring and verifying the displaced original, and retaining
+uncommitted staging/replacement trees in sibling recovery quarantine paths.
+Unknown target drift or a missing exact original fails closed for manual
+recovery.
 
 `Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
 cache management. It stores immutable, content-addressed cache objects and
 separate snapshot manifests carrying the cache ABI, game runtime, render path,
-shader-source hash, explicit bytecode compatibility class, optional build and
-preset hashes, normalized tags, status,
+shader-source hash, explicit bytecode compatibility class, optional build,
+preset, and effective feature-set hashes, normalized tags, status,
 and receipt provenance. There is no mutable index to repair: `list` validates
 the manifests and derives the catalog view from disk.
 
@@ -67,9 +81,12 @@ Configure a permanent catalog outside MO2 and the checkout:
 `CSX_SHADER_CACHE_CATALOG_ROOT`, the configured path, `CODEX_HOME`, and the
 user-local application-data fallback. A catalog candidate is never accepted
 from its label alone. The hard compatibility gates are known-working status,
-exact shader-cache ABI, game runtime, bytecode compatibility class, required tags, and—by
-default—exact shader-source SHA-256. Among compatible candidates, exact source,
-build, and preset matches rank first, followed by broader verified coverage and
+exact shader-cache ABI, game runtime, bytecode compatibility class, required
+tags, and—by default—exact shader-source SHA-256. Supply
+`-FeatureSetSha256` whenever an effective feature-set fingerprint is available;
+then an absent or different fingerprint is a hard exclusion. Among compatible
+candidates, exact source, feature-set, build, preset, and observed render-path
+matches rank first, followed by broader verified coverage and
 recency. `select` returns both the ranking and explicit exclusion reasons.
 
 The exact render path remains immutable provenance and an exact-match ranking
@@ -86,6 +103,7 @@ First admit a receipt-proven snapshot:
   -SourceReceiptPath 'D:\Evidence\known-good\shader-cache-transaction.receipt.json' `
   -ShaderCacheAbi '<exact ABI>' `
   -ShaderSourceSha256 '<exact source-tree SHA-256>' `
+  -FeatureSetSha256 '<exact effective feature-set SHA-256>' `
   -BuildId '<build identity>' `
   -PresetSha256 '<preset SHA-256>' `
   -Tags quality,full-render `
@@ -102,6 +120,7 @@ Prepare a closed task cache immediately before launching MO2:
   -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
   -ShaderCacheAbi '<exact ABI>' `
   -ShaderSourceSha256 '<exact source-tree SHA-256>' `
+  -FeatureSetSha256 '<exact effective feature-set SHA-256>' `
   -BuildId '<build identity>' `
   -PresetSha256 '<preset SHA-256>' `
   -RequiredTags quality,full-render `
@@ -112,6 +131,8 @@ Prepare a closed task cache immediately before launching MO2:
 selects the best compatible known-working snapshot and seeds it only when it is
 different. With no match it safely leaves the current tree in use; add
 `-RequireMatch` when a task must not proceed without a catalog baseline.
+Repeating `prepare` with the same immutable cache, evidence, and catalog
+identities reconciles and returns the existing prepared plan.
 
 After the game and MO2 are closed, complete the cache transaction:
 
@@ -130,7 +151,11 @@ caller explicitly classifies the task result as `known-working`. An unverified
 or failed task result is still preserved as evidence but is not added to the
 catalog. A shader-source mismatch remains excluded unless
 `-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
-this exception does not bypass ABI, runtime, bytecode-class, status, or tag gates.
+this exception does not bypass ABI, runtime, bytecode-class, feature-set, status,
+or tag gates.
+Repeated `complete` calls return the immutable existing completion. A retry
+after restoration but before completion publication accepts only one committed
+restore receipt proving both the baseline and preserved working tree.
 
 `seed` requires the existing snapshot receipt for the same live cache and
 evidence directory, verifies the exact source tree, stages it, swaps it into
@@ -153,7 +178,12 @@ deployment resolution to separate VFS evidence.
 
 Restore never silently discards the current tree: it copies the displaced
 contents into the evidence directory, verifies that copy, and only then removes
-the temporary sibling used for the atomic swap.
+the temporary sibling used for the atomic swap. Seed and restore mirror unique
+evidence journals while updating the one target-owned authoritative journal
+before each filesystem move. Any pre-commit failure first
+quarantines the uncommitted replacement, restores and hash-verifies the exact
+displaced original, and reports `recovery-required` if that rollback cannot be
+fully verified.
 
 Run `Test-CSXShaderCacheControl.ps1` after changing comparison or transaction
 logic, and `Test-CSXShaderCacheCatalog.ps1` after changing catalog selection or
