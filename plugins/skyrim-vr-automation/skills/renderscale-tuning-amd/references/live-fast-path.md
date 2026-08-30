@@ -16,6 +16,11 @@ numeric transition ID, the exact state revision and Build ID, Dragonsreach,
 the `0.3/0.3/0.7` fixture, `persistence: runtime_only`, and the full
 dispatch-relative `timeoutMs: 30000`.
 
+Before the first runnable AMD lane, run and retain one bounded DLSS trace
+status/reset/start/stop/read lifecycle and require its raw read to contain no
+DLSS dispatch. This is one capability/isolation receipt, not a per-row trace;
+never start a DLSS trace during an AMD matrix transition.
+
 On strict baseline success, immediately run one handoff scenario: stop the
 exact baseline stress session, start measured stress, reset/start texture
 lifetime, reset/start load presentation, and enable the profiler. Execute the

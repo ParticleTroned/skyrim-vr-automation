@@ -22,12 +22,14 @@ the matrix twice in this same orchestration cell. Each row scenario starts
 with the sole 5,000 ms wait, then optional owned DLSS trace reset/start,
 `qualification_begin`, transition-1 profiler history clear,
 `qualification_dispatch`, public-API `apply`, strict `qualification_wait`, and
-optional owned DLSS trace stop. Transition 1 alone sets
+optional owned DLSS trace stop/read. Transition 1 alone sets
 `startPerformanceTelemetry: true`. Construct each target from the preceding
 terminal waiter's authoritative stable profile and state revision plus the
-matrix destination. Store the exact terminal waiter immediately and emit only
-a compact projection. Do not pause for model reasoning, read files, write
-evidence, hash, or issue a confirmation read between rows.
+matrix destination. Store the exact terminal waiter immediately; for a traced
+row, retain its reset, start, stop, and bounded raw-read subreceipts in the same
+stored row record. Emit only a compact projection. Do not pause for model
+reasoning, read files, write evidence, hash, or issue a confirmation read
+between rows.
 
 Continue after a semantic row failure only when the terminal receipt proves
 the owner closed, zero active operation, matching PID/Build ID, and no device

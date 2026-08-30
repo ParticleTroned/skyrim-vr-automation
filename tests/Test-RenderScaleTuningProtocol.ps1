@@ -65,6 +65,9 @@ foreach ($token in @(
     'matrix.pacingMilliseconds', 'matrix.completionTimeoutMilliseconds',
     'startPerformanceTelemetry: firstRow',
     'store(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`',
+    'action: "dlss_trace_read"', 'traceReset:', 'traceStart:', 'traceRead:',
+    'retainAmdTraceCapability', 'amd:dlss-trace-capability',
+    'transitionProjection', 'waiter.cleanupDrained === true',
     'facts.physicalMutationClear === true', 'facts.terminalClear === true',
     'for (const row of matrix.transitions)', 'notify({'
 )) {
@@ -406,6 +409,7 @@ foreach ($variant in $variants) {
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
     Assert-True ($matrix.pacingMilliseconds -eq 5000) "$($variant.Name) pacing is wrong."
     Assert-True ($matrix.completionTimeoutMilliseconds -eq 30000) "$($variant.Name) timeout is wrong."
+    Assert-True ([int]$matrix.traceReadLimit -gt 0) "$($variant.Name) trace read limit is invalid."
     Assert-True (@($matrix.transitions).Count -eq $variant.Count) "$($variant.Name) transition count is wrong."
     $ordinals = @($matrix.transitions | ForEach-Object ordinal)
     Assert-True (($ordinals -join ',') -eq ((1..$variant.Count) -join ',')) "$($variant.Name) ordinals are not contiguous."
@@ -444,6 +448,7 @@ foreach ($property in $nvidia.destinations.PSObject.Properties | Where-Object { 
 $nvidiaProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-nvidia\references\protocol.md') -Raw
 foreach ($token in @(
     'For each DLSS or DLAA transition', 'owned bounded',
+    'reset, start, stop, and raw', 'bounded-read',
     'eErrorDuplicatedConstants` is a transition `FAIL`',
     'continue later matrix rows to preserve the error history',
     '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`'
@@ -467,6 +472,7 @@ foreach ($token in @(
     'For the first lane, reuse the', 'Before each later lane',
     'exactly one CPU reset and one GPU reset',
     'one bounded DLSS trace capability lifecycle', 'Require zero DLSS dispatch records.',
+    'Retain the complete lifecycle envelope',
     'Never corrupt resources'
 )) {
     Assert-Contains $amdProtocol $token 'AMD adversarial guard'
@@ -542,6 +548,8 @@ foreach ($protocol in @(
         '`presentationStretchRecoveryFrame`',
         '`presentationStretchRecoveryElapsedMs`',
         '`presentationStretchAnomalies`',
+        'structured `outstandingCleanupDebt` object',
+        'never compare that',
         'never hardcode an expected number',
         'anomaly rather than a failure',
         '`finalMethod`, `finalQuality`, `finalRenderScaleMode`',

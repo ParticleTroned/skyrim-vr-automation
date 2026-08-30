@@ -6,6 +6,7 @@
   "initialDormantFsrRuntime": "fsr3",
   "pacingMilliseconds": 5000,
   "completionTimeoutMilliseconds": 30000,
+  "traceReadLimit": 16,
   "destinations": {
     "none": { "label": "None", "method": "none", "qualityMode": "native_aa", "renderScaleMode": false, "completionClass": "native_logical" },
     "taa": { "label": "TAA", "method": "taa", "qualityMode": "native_aa", "renderScaleMode": false, "completionClass": "native_logical" },

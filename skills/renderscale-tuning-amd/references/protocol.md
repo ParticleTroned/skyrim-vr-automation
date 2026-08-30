@@ -453,8 +453,10 @@ tables:
 - `presentationStretchConsecutiveFrames`: the producer's maximum consecutive
   stretch-frame count for that transition, or `not_exposed`;
 - `presentationStretchRecovered`: true only when stretch was selected and the
-  terminal receipt proves coherent target presentation, zero terminal stretch
-  debt, and a row `PASS`;
+  terminal receipt has `satisfied: true`, `presentationStable: true`, and
+  top-level `cleanupDrained: true`, and the row is a `PASS`. Preserve the
+  structured `outstandingCleanupDebt` object as raw detail; never compare that
+  object directly with numeric zero;
 - `presentationStretchRecoveryFrame` and
   `presentationStretchRecoveryElapsedMs`: the terminal `milestoneTimings`
   presentation first-observation frame and elapsed value after stretch was
@@ -470,7 +472,10 @@ or fidelity violates this protocol.
 Perform one bounded DLSS trace capability lifecycle before the first AMD lane:
 status, reset, start, stop, and read. Require zero DLSS dispatch records. A
 missing trace action is `unsupported`; an exposed action that fails is a
-control failure. Do not start a DLSS trace during AMD matrix transitions.
+control failure. Retain the complete lifecycle envelope so its action receipts
+and empty raw read can be materialized during finalization. Do not start a DLSS
+trace during AMD matrix transitions. Missing lifecycle evidence forbids a
+ledger append but does not change completed AMD row classifications.
 
 Unsupported preparation providers are `n/a`, never zero. Preserve raw values
 before summarizing. Archive any log before reading it under the repository's

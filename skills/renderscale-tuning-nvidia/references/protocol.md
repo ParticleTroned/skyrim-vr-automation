@@ -148,8 +148,10 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    transition-1 profiler start when applicable,
    `qualification_dispatch`, `communityshaders.upscaling_api` `apply`, and the
    target-correlated `qualification_wait`. Label the apply and waiter steps
-   `profile-apply` and `qualification-wait`. For DLSS/DLAA only, stop the exact
-   owned trace as the final scenario step; do not read it separately.
+   `profile-apply` and `qualification-wait`. For DLSS/DLAA only, stop and then
+   bounded-read the exact owned trace as the final two scenario steps. The read
+   limit comes from the packaged matrix contract; do not perform a separate
+   client round trip.
    No wait, snapshot, client round trip, menu action, or other tool may appear
    between dispatch and apply. Scenario steps cannot interpolate earlier
    results, so no snapshot-dependent value may be deferred to scenario
@@ -170,7 +172,8 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    Never retry an admitted or ambiguous request, recover by reapplying, or
    substitute a matrix row.
 5. `qualification_wait` is the final qualification step. It is the scenario's
-   final step except for the owned DLSS trace stop described above. For vendor
+   final qualification step before the owned DLSS trace stop/read described
+   above. For vendor
    destinations, pass the full
    dispatch-relative `timeoutMs: 30000`; never calculate or pass a client-side
    remaining budget. This is the one shared 30,000 ms monotonic deadline from
@@ -237,15 +240,16 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    native physical key as telemetry.
    The terminal waiter receipt closes the timing bracket and is not a render
    failure.
-7. Preserve the terminal waiter response handle immediately and derive only
-   the shared contract's compact safety/classification projection. Do not read
+7. Preserve the terminal waiter response handle immediately. For a DLSS/DLAA
+   row, preserve the reset, start, stop, and raw-read subreceipts in the same
+   stored row record. Derive only the shared contract's compact
+   safety/classification projection. Do not read
    operation/event history, status, another snapshot, preparation records, or
-   cumulative telemetry before starting the next row. A DLSS trace owner may
-   be stopped in the same scenario after its waiter; defer its full read until
-   pass finalization.
+   cumulative telemetry before starting the next row.
 
-During the measured loop, retain only the exact terminal waiter response in
-the client response store and the compact transition projection in context.
+During the measured loop, retain the exact terminal waiter response and, when
+present, its four DLSS trace lifecycle subreceipts in the client response store;
+keep only the compact transition projection in context.
 Do not create per-row files or update `receipt-index.json` before the next
 apply. At pass finalization, materialize the exact terminal responses under
 `raw/transitions/transition-NN/`, collect operation/events, final status,
@@ -437,8 +441,10 @@ tables:
 - `presentationStretchConsecutiveFrames`: the producer's maximum consecutive
   stretch-frame count for that transition, or `not_exposed`;
 - `presentationStretchRecovered`: true only when stretch was selected and the
-  terminal receipt proves coherent target presentation, zero terminal stretch
-  debt, and a row `PASS`;
+  terminal receipt has `satisfied: true`, `presentationStable: true`, and
+  top-level `cleanupDrained: true`, and the row is a `PASS`. Preserve the
+  structured `outstandingCleanupDebt` object as raw detail; never compare that
+  object directly with numeric zero;
 - `presentationStretchRecoveryFrame` and
   `presentationStretchRecoveryElapsedMs`: the terminal `milestoneTimings`
   presentation first-observation frame and elapsed value after stretch was
@@ -452,10 +458,15 @@ anomaly rather than a failure unless its duration, failure mask, ownership, or
 fidelity violates this protocol.
 
 For each DLSS or DLAA transition, reset/start exactly one owned bounded DLSS
-trace after the row's five-second wait and stop it after the terminal waiter in
-the same scenario. Materialize its retained receipt only at pass finalization.
+trace after the row's five-second wait, then stop and bounded-read it after the
+terminal waiter in the same scenario. Retain the reset, start, stop, and raw
+read receipts together, and materialize them only at pass finalization.
 A missing trace action is `BLOCKED`; an exposed trace action that fails is a
 control failure. Do not start a DLSS trace for FSR, TAA, or None.
+
+Missing required trace lifecycle or raw-window evidence marks the evidence
+contract incomplete and forbids a ledger append, but it does not change an
+already completed row's render classification or authorize a replay.
 
 Unsupported preparation providers are `n/a`, never zero. Preserve raw values
 before summarizing. Archive any log before reading it under the repository's

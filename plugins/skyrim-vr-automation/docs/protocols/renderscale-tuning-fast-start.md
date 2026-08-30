@@ -204,17 +204,21 @@ row. Do not invent another previous-transition safety gate.
 
 Invoke the direct scenario inside one orchestration cell. Extract its uniquely
 labeled `qualification-wait` result, `store()` that exact terminal receipt
-under a run-unique pass/lane/transition key, and return only a compact
+under a run-unique pass/lane/transition key together with any trace lifecycle
+subreceipts produced by that scenario, and return only a compact
 projection with `text()`. Keep only this projection in context:
 pass/lane/ordinal,
 transition and owner IDs, target, classification and reason, dispatch and
 terminal QPC/frame, presentation/cleanup/strict elapsed values, closed-owner
 state, final active-operation ID, unresolved-mutation state, and terminal
-failure flags. Do not expand, quote, Base64-decode, or return the full response
+failure flags. Project cleanup completion only from the terminal waiter's
+top-level boolean `cleanupDrained`; retain `outstandingCleanupDebt` as structured
+raw evidence and never compare that object with numeric zero. Do not expand,
+quote, Base64-decode, or return the full response
 to the model/chat during the measured loop. The stored exact terminal receipt
-is the only immediate per-row evidence action. A stable response-store handle
-is raw evidence until pass finalization; it is not a substitute in the
-completed evidence bundle.
+and same-scenario trace subreceipts are the only immediate per-row evidence
+action. A stable response-store handle is raw evidence until pass finalization;
+it is not a substitute in the completed evidence bundle.
 
 The orchestration cell and packaged runner are only a response-handling
 boundary. Every nested live call must still use the installed plugin's selected
@@ -254,7 +258,8 @@ when a new qualification owner exists, or when the response was lost; use the
 owner-correlated recovery rule in those cases.
 
 At pass finalization, use `load()` to materialize every retained terminal
-response losslessly without first printing it to chat,
+response and trace lifecycle receipt losslessly without first printing it to
+chat,
 then make one cumulative evidence-read batch for operation/event history,
 render-scale status, preparation/provider traces, telemetry, profiler, stress,
 texture-lifetime, and load-presentation results. Correlate those cumulative

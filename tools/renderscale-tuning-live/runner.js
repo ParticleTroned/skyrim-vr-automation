@@ -191,6 +191,10 @@ async function runRenderScaleTuningLive(context) {
             steps.push(toolStep("dlss-trace-stop", "communityshaders.renderscale", {
                 action: "dlss_trace_stop", expectedBuildId: buildId,
             }));
+            steps.push(toolStep("dlss-trace-read", "communityshaders.renderscale", {
+                action: "dlss_trace_read", afterSequence: 0,
+                limit: matrix.traceReadLimit, expectedBuildId: buildId,
+            }));
         }
         return steps;
     }
@@ -204,6 +208,22 @@ async function runRenderScaleTuningLive(context) {
             facts && facts.stressSession === true && facts.exactCell === true &&
             facts.loadedInWorld === true && facts.apiOperationClear === true &&
             facts.physicalMutationClear === true && facts.terminalClear === true;
+    }
+
+    function transitionProjection(waiter) {
+        const mutation = waiter && waiter.replacementTimeline &&
+            waiter.replacementTimeline.firstPhysicalMutation;
+        const presentationStretchSelected = mutation &&
+            mutation.selectedPresentationDisposition === "PresentationStretch";
+        return {
+            satisfied: waiter.satisfied === true,
+            presentationStable: waiter.presentationStable === true,
+            cleanupDrained: waiter.cleanupDrained === true,
+            presentationStretchSelected: presentationStretchSelected === true,
+            presentationStretchTerminalRecovery: presentationStretchSelected === true &&
+                waiter.satisfied === true && waiter.presentationStable === true &&
+                waiter.cleanupDrained === true,
+        };
     }
 
     async function recoverTerminal(identifiers) {
@@ -341,10 +361,15 @@ async function runRenderScaleTuningLive(context) {
         }
         const entries = resultMap(response.root);
         const waiter = entries.get("qualification-wait");
+        const projection = waiter ? transitionProjection(waiter) : null;
         store(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`, {
             apply: entries.get("profile-apply"),
             waiter,
+            projection,
+            traceReset: entries.get("dlss-trace-reset") || null,
+            traceStart: entries.get("dlss-trace-start") || null,
             traceStop: entries.get("dlss-trace-stop") || null,
+            traceRead: entries.get("dlss-trace-read") || null,
         });
         if (!response.root.ok || !waiter) {
             await closeOpenQualification(identifiers);
@@ -356,11 +381,42 @@ async function runRenderScaleTuningLive(context) {
             pass,
             ordinal: row.ordinal,
             target,
-            satisfied: waiter.satisfied === true,
+            ...projection,
             outcome: waiter.outcome,
             elapsedMs: waiter.timing ? waiter.timing.elapsedMs : null,
         });
-        return { boundary: terminalBoundary(waiter), waiter };
+        return { boundary: terminalBoundary(waiter), waiter, projection };
+    }
+
+    async function retainAmdTraceCapability() {
+        const response = await scenario([
+            toolStep("amd-dlss-trace-status", "communityshaders.renderscale", {
+                action: "dlss_trace_status", expectedBuildId: buildId,
+            }),
+            toolStep("amd-dlss-trace-reset", "communityshaders.renderscale", {
+                action: "dlss_trace_reset", expectedBuildId: buildId,
+            }),
+            toolStep("amd-dlss-trace-start", "communityshaders.renderscale", {
+                action: "dlss_trace_start", expectedBuildId: buildId,
+            }),
+            toolStep("amd-dlss-trace-stop", "communityshaders.renderscale", {
+                action: "dlss_trace_stop", expectedBuildId: buildId,
+            }),
+            toolStep("amd-dlss-trace-read", "communityshaders.renderscale", {
+                action: "dlss_trace_read", afterSequence: 0,
+                limit: matrix.traceReadLimit, expectedBuildId: buildId,
+            }),
+        ]);
+        store(`${runId}:amd:dlss-trace-capability`, response.envelope);
+        const entries = requireScenario(response.root, 5);
+        const read = entries.get("amd-dlss-trace-read");
+        const capture = read && read.capture;
+        const summary = capture && capture.summary;
+        if (!capture || !summary || !Array.isArray(capture.records) ||
+            capture.records.length !== 0 || summary.totalRecords !== 0 ||
+            summary.setConstantsCalls !== 0 || summary.evaluateCalls !== 0) {
+            throw new Error("amd_dlss_trace_not_empty");
+        }
     }
 
     async function status(lane, pass, suffix) {
@@ -460,6 +516,17 @@ async function runRenderScaleTuningLive(context) {
     const summary = { ok: true, status: "COMPLETE", variant, runId, lanes: [] };
     let passSequence = 0;
     const selectedLanes = lanes();
+    if (variant === "amd" && selectedLanes.some((lane) => lane.runnable)) {
+        try {
+            await retainAmdTraceCapability();
+        } catch (error) {
+            summary.ok = false;
+            summary.status = "INTERRUPTED";
+            summary.error = error instanceof Error ? error.message : String(error);
+            store(`${runId}:live-result`, summary);
+            return summary;
+        }
+    }
     for (let laneIndex = 0; laneIndex < selectedLanes.length; laneIndex += 1) {
         const lane = selectedLanes[laneIndex];
         const laneSummary = { id: lane.id, status: lane.runnable ? "COMPLETE" : "BLOCKED", passes: [] };
@@ -478,7 +545,7 @@ async function runRenderScaleTuningLive(context) {
                     const completed = await transition(
                         boundary, lane, laneIndex + 1, pass, row);
                     boundary = completed.boundary;
-                    rows.push({ ordinal: row.ordinal, satisfied: completed.waiter.satisfied === true });
+                    rows.push({ ordinal: row.ordinal, ...completed.projection });
                 }
                 await cleanup(lane, pass, stressSessionId);
                 stressSessionId = 0;
