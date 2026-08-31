@@ -42,6 +42,7 @@ try {
 
     $manifest = Get-Content -LiteralPath (Join-Path $rebuilt '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
     $sourceManifest = Get-Content -LiteralPath (Join-Path $repositoryRoot '.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
+    $toolsetManifest = Get-Content -LiteralPath (Join-Path $rebuilt 'toolset.manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.name -ne 'skyrim-vr-automation' -or $manifest.version -ne $sourceManifest.version) { throw 'Rebuilt plugin identity/version is incorrect.' }
     if ($manifest.mcpServers -ne './.mcp.json' -or $sourceManifest.mcpServers -ne './.mcp.json') { throw 'DevBench MCP companion registration is missing.' }
     $mcpPath = Join-Path $rebuilt '.mcp.json'
@@ -50,7 +51,7 @@ try {
     $servers = @($mcp.mcpServers.PSObject.Properties)
     if ($servers.Count -ne 1 -or $servers[0].Name -ne 'devbench_vr') { throw 'DevBench MCP registration is missing or ambiguous.' }
     if ($servers[0].Value.type -ne 'http' -or $servers[0].Value.url -ne 'http://127.0.0.1:8921/mcp') { throw 'DevBench MCP endpoint is not the expected loopback server.' }
-    foreach ($skill in @('feedback-control', 'mo2-control', 'steamvr-null-hmd', 'devbench-control', 'coc-stability', 'simple-coc', 'simple-coc-5', 'simple-csm', 'renderscale-tuning-nvidia', 'renderscale-tuning-amd', 'static-coc', 'profiler-control', 'shader-cache-control', 'perftune-upscaling')) {
+    foreach ($skill in @('feedback-control', 'mo2-control', 'steamvr-null-hmd', 'devbench-control', 'coc-stability', 'simple-coc', 'simple-coc-5', 'simple-csm', 'renderscale-tuning-nvidia', 'renderscale-tuning-amd', 'static-coc', 'fidelstab', 'render-scale-qualification', 'profiler-control', 'shader-cache-control', 'perftune-upscaling', 'capture-interaction-control')) {
         if (-not (Test-Path -LiteralPath (Join-Path $rebuilt "skills\$skill\SKILL.md") -PathType Leaf)) { throw "Missing installed skill: $skill" }
     }
     if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Filter '*.local.json').Count -ne 0) { throw 'Distribution contains machine-local JSON.' }
@@ -75,6 +76,8 @@ try {
         'tools\render-scale-qualification\fixture.example.json',
         'tools\render-scale-qualification\protocol.v1.json',
         'tools\render-scale-qualification\Test-CSXRenderScaleQualification.ps1',
+        'tools\renderscale-tuning-finalizer\finalizer.js',
+        'tools\renderscale-tuning-live\runner.js',
         'tools\profiler-control\Measure-CSXProfiler.ps1',
         'tools\shader-cache-control\Compare-CSXShaderCache.ps1',
         'tools\shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1',
@@ -85,6 +88,7 @@ try {
         'tools\coc-stability-control\Invoke-CocStabilityControl.ps1'
         'tools\coc-stability-control\CocStabilityControl.psm1'
         'tools\coc-stability-control\protocol.v1.json'
+        'tools\capture-interaction-control\Invoke-CaptureInteraction.ps1'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $simulatedCache $entryPoint) -PathType Leaf)) { throw "Installed entry point is missing: $entryPoint" }
     }
@@ -93,7 +97,7 @@ try {
     [IO.File]::WriteAllText($hydratedPluginPath, '{"name":"skyrim-vr-automation","category":"Developer Tools","interface":{"category":"Developer Tools"}}', [Text.UTF8Encoding]::new($false))
     $hydratedFeedbackRoot = Join-Path $fixture 'hydrated-feedback'
     $hydratedFeedback = & (Join-Path $simulatedCache 'tools\feedback-control\Invoke-AutomationFeedback.ps1') submit -FeedbackRoot $hydratedFeedbackRoot -Area packaging -Kind defect -Summary 'Hydrated cache probe' -Observed 'Observed.' -Expected 'Expected.' -Compact | ConvertFrom-Json -Depth 50
-    if (-not $hydratedFeedback.ok -or $hydratedFeedback.state -ne 'recorded' -or $hydratedFeedback.data.feedback.toolkit.version -ne '0.8.0' -or $null -ne $hydratedFeedback.data.feedback.toolkit.pluginVersion) { throw 'Feedback control rejected hydration-stripped plugin metadata.' }
+    if (-not $hydratedFeedback.ok -or $hydratedFeedback.state -ne 'recorded' -or $hydratedFeedback.data.feedback.toolkit.version -ne [string]$toolsetManifest.version -or $null -ne $hydratedFeedback.data.feedback.toolkit.pluginVersion) { throw 'Feedback control rejected hydration-stripped plugin metadata.' }
 
     [pscustomobject][ordered]@{ ok = $true; marketplace = $marketplace.name; pluginVersion = $manifest.version; files = $rebuiltFiles.Count; simulatedCache = $simulatedCache } | ConvertTo-Json
 }
