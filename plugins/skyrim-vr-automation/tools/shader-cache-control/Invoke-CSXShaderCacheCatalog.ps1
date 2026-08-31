@@ -436,6 +436,7 @@ function Select-CatalogSnapshot($Storage) {
     $layout = Get-CatalogLayout $Storage
     $catalog = Get-CatalogRecords $layout
     $required = @(Get-NormalizedStrings $RequiredTags)
+    $requestedRenderFamily = Get-RenderFamily $RenderPath
     $eligible = @()
     $excluded = @()
     foreach ($record in @($catalog.records)) {
@@ -464,7 +465,8 @@ function Select-CatalogSnapshot($Storage) {
         $presetExact = -not [string]::IsNullOrWhiteSpace($PresetSha256) -and [string](Get-PropertyValue $m.compatibility 'presetSha256' '') -ieq $PresetSha256
         $featureSetExact = -not [string]::IsNullOrWhiteSpace($FeatureSetSha256) -and $candidateFeatureSet -ieq $FeatureSetSha256
         $renderPathExact = [string]$m.compatibility.renderPath -ceq $RenderPath
-        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($featureSetExact) { 100000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + $(if ($renderPathExact) { 100 } else { 0 }) + ($required.Count * 10)
+        $renderFamilyExact = $candidateRenderFamily -ceq $requestedRenderFamily
+        $score = $(if ($sourceExact) { 1000000 } else { 0 }) + $(if ($featureSetExact) { 100000 } else { 0 }) + $(if ($buildExact) { 10000 } else { 0 }) + $(if ($presetExact) { 1000 } else { 0 }) + $(if ($renderPathExact) { 100 } else { 0 }) + $(if ($renderFamilyExact) { 50 } else { 0 }) + ($required.Count * 10)
         $eligible += [pscustomobject][ordered]@{
             snapshotId = [string]$m.snapshotId
             score = $score
@@ -472,6 +474,7 @@ function Select-CatalogSnapshot($Storage) {
             exactBuild = $buildExact
             exactPreset = $presetExact
             exactRenderPathProvenance = $renderPathExact
+            exactRenderFamilyProvenance = $renderFamilyExact
             bytecodeCompatibilityClass = $candidateBytecodeClass
             exactFeatureSet = $featureSetExact
             renderFamily = $candidateRenderFamily
