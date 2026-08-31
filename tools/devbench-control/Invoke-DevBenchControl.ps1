@@ -19,7 +19,7 @@ param(
     [string]$WorkspaceManifestPath,
     [string]$ExpectedBuildId,
     [string]$ExpectedArtifactSha256,
-    [ValidateSet('noBlockingMenu', 'playerLoaded', 'upscalingStable', 'toolAvailable', 'serviceReady')]
+    [ValidateSet('noBlockingMenu', 'mainMenuReady', 'playerLoaded', 'upscalingStable', 'toolAvailable', 'serviceReady')]
     [string]$Condition = 'noBlockingMenu',
     [ValidateRange(1, 600)]
     [int]$TimeoutSeconds = 30,
@@ -41,6 +41,7 @@ param(
     [int]$MaxMenuDismissals = 1,
     [ValidateRange(0, 60)]
     [int]$MinimumMenuStableSeconds = 0,
+    [string[]]$AllowedMainMenuMenus = @('HUD Menu', 'Main Menu'),
     [switch]$AcceptAlreadyLoaded,
     [switch]$AllowUnsafeTfc1,
     [switch]$AllowUnprovenGameMutation,
@@ -734,7 +735,7 @@ try {
             }
         }
         $requiredTools = switch ($Condition) {
-            'noBlockingMenu' { @('menu') }
+            { $_ -in @('noBlockingMenu', 'mainMenuReady') } { @('menu') }
             'playerLoaded' { @('inspect') }
             'upscalingStable' { @('inspect', 'menu', 'communityshaders.upscaling_api', 'communityshaders.renderscale') }
             default { @() }
@@ -811,11 +812,15 @@ try {
                     continue
                 }
             }
-            if ($Condition -eq 'noBlockingMenu') {
+            if ($Condition -in @('noBlockingMenu', 'mainMenuReady')) {
                 try {
                     $menu = @(Invoke-ToolRpc -Name 'menu' -Arguments @{ action = 'list' } -Headers $headers).content | Select-Object -First 1
-                    $observation = Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
-                    if (-not $observation.satisfied -and $DismissBlockingMenus.Count -gt 0) {
+                    $observation = if ($Condition -eq 'mainMenuReady') {
+                        Test-DevBenchMainMenuReady -MenuState $menu -AllowedMenus $AllowedMainMenuMenus
+                    } else {
+                        Test-DevBenchNoBlockingMenu -MenuState $menu -IgnoredMenus $IgnoredMenus
+                    }
+                    if ($Condition -eq 'noBlockingMenu' -and -not $observation.satisfied -and $DismissBlockingMenus.Count -gt 0) {
                         $plan = Get-DevBenchMenuDismissalPlan -MenuObservation $observation -DismissBlockingMenus $DismissBlockingMenus
                         $observation | Add-Member -NotePropertyName dismissalPlan -NotePropertyValue $plan
                         if ($plan.permitted) {
@@ -1078,7 +1083,8 @@ try {
         data = $data
         errors = $(if ($semanticFailure) { @($semantic.reasons) } else { @() })
     }
-    $completionState = if ($semantic.guarded -and -not $semantic.ok) { 'guard-rejected' } else { 'completed' }
+    $guardedProperty = $semantic.PSObject.Properties['guarded']
+    $completionState = if ($guardedProperty -and [bool]$guardedProperty.Value -and -not $semantic.ok) { 'guard-rejected' } else { 'completed' }
     Update-InvocationEvidence -State $completionState -Semantic $semantic -Data $data -Errors @($result.errors)
 }
 catch {

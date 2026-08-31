@@ -146,46 +146,57 @@ $gatedStatus.vendorWorkGate.loadingMenu = $true
 $renderGated = Test-DevBenchUpscalingStable -UpscalingSnapshot $renderSnapshot -RenderScaleStatus $gatedStatus
 Assert-Test (-not $renderGated.satisfied -and $renderGated.reasons -match 'loadingMenu') 'loading presentation prevents a stable render-scale verdict'
 
-$nativeProfile = New-TestUpscalingProfile -Method 'dlss' -RenderScale $false
-$nativeSnapshot = [pscustomobject]@{
-    profilePresence = 11; flags = 1; activeOperationId = 0
-    transitionState = [pscustomobject]@{ name = 'idle'; value = 0 }
-    renderScaleStatus = [pscustomobject]@{ name = 'disabled'; value = 0 }
-    observedConditions = [pscustomobject]@{ names = @() }
-    profiles = [pscustomobject]@{ requested = $nativeProfile; effective = $nativeProfile; stable = $nativeProfile }
-    dimensions = [pscustomobject]@{ displayEyeWidth = 2468; displayEyeHeight = 2740; renderEyeWidth = 2468; renderEyeHeight = 2740 }
+function New-TestNativeSnapshot {
+    param(
+        $RequestedProfile,
+        $EffectiveProfile,
+        $StableProfile,
+        [ValidateSet('idle', 'active')][string]$TransitionState = 'idle',
+        [int]$ProfilePresence = 11
+    )
+    if ($null -eq $RequestedProfile) { $RequestedProfile = New-TestUpscalingProfile -Method 'dlss' -RenderScale $false }
+    if ($null -eq $EffectiveProfile) { $EffectiveProfile = $RequestedProfile }
+    if ($null -eq $StableProfile) { $StableProfile = $EffectiveProfile }
+    [pscustomobject]@{
+        profilePresence = $ProfilePresence; flags = 1; activeOperationId = 0
+        transitionState = [pscustomobject]@{ name = $TransitionState; value = $(if ($TransitionState -eq 'active') { 6 } else { 0 }) }
+        renderScaleStatus = [pscustomobject]@{ name = 'disabled'; value = 0 }
+        observedConditions = [pscustomobject]@{ names = @() }
+        profiles = [pscustomobject]@{ requested = $RequestedProfile; effective = $EffectiveProfile; stable = $StableProfile }
+        dimensions = [pscustomobject]@{ displayEyeWidth = 2468; displayEyeHeight = 2740; renderEyeWidth = 2468; renderEyeHeight = 2740 }
+    }
 }
-$nativeStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
+
+$nativeProfile = New-TestUpscalingProfile -Method 'dlss' -RenderScale $false
+$nativeStable = Test-DevBenchUpscalingStable -UpscalingSnapshot (New-TestNativeSnapshot -RequestedProfile $nativeProfile) -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
 Assert-Test ($nativeStable.satisfied -and $nativeStable.stereoEvidence -eq 'native_pipeline_frames') 'native-resolution stability uses converged profiles and advancing world frames'
 $nativeTaaProfile = New-TestUpscalingProfile -Method 'taa' -RenderScale $false
 $nativeProjectedNone = New-TestUpscalingProfile -Method 'none' -RenderScale $false
-$nativeSnapshot.profilePresence = 27
-$nativeSnapshot.transitionState = [pscustomobject]@{ name = 'active'; value = 6 }
-$nativeSnapshot.profiles.requested = $nativeProjectedNone
-$nativeSnapshot.profiles.effective = $nativeTaaProfile
-$nativeSnapshot.profiles.stable = $nativeProjectedNone
+$nativeTaaSnapshot = New-TestNativeSnapshot -RequestedProfile $nativeProjectedNone -EffectiveProfile $nativeTaaProfile -StableProfile $nativeProjectedNone -TransitionState active -ProfilePresence 27
 $nativeTaaStatus = New-TestRenderScaleStatus -RenderScale $false
 $nativeTaaStatus.controller.state = 'Active'
-$nativeTaaStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeTaaProfile
+$nativeTaaStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeTaaSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeTaaProfile
 Assert-Test ($nativeTaaStable.satisfied -and $nativeTaaStable.expectedProfileMatches) 'targeted native TAA accepts its active native controller state without treating the render-scale projection as a profile mismatch'
-$nativeWrongTarget = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeProjectedNone
+$nativeWrongTargetSnapshot = New-TestNativeSnapshot -RequestedProfile $nativeProjectedNone -EffectiveProfile $nativeTaaProfile -StableProfile $nativeProjectedNone -TransitionState active -ProfilePresence 27
+$nativeWrongTargetStatus = New-TestRenderScaleStatus -RenderScale $false
+$nativeWrongTargetStatus.controller.state = 'Active'
+$nativeWrongTarget = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeWrongTargetSnapshot -RenderScaleStatus $nativeWrongTargetStatus -ExpectedProfile $nativeProjectedNone
 Assert-Test (-not $nativeWrongTarget.satisfied -and $nativeWrongTarget.reasons -contains 'effective native profile does not match the expected target') 'targeted native stability rejects a different effective profile'
-$nativeSnapshot.transitionState = [pscustomobject]@{ name = 'active'; value = 6 }
-$nativeTaaStatus.controller.state = 'Idle'
-$nativeSplitState = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus $nativeTaaStatus -ExpectedProfile $nativeTaaProfile
+$nativeSplitSnapshot = New-TestNativeSnapshot -RequestedProfile $nativeProjectedNone -EffectiveProfile $nativeTaaProfile -StableProfile $nativeProjectedNone -TransitionState active -ProfilePresence 27
+$nativeSplitStatus = New-TestRenderScaleStatus -RenderScale $false
+$nativeSplitStatus.controller.state = 'Idle'
+$nativeSplitState = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSplitSnapshot -RenderScaleStatus $nativeSplitStatus -ExpectedProfile $nativeTaaProfile
 Assert-Test (-not $nativeSplitState.satisfied -and $nativeSplitState.reasons -contains "native-resolution controller state is 'active/idle'") 'targeted native stability rejects split controller states'
-$nativeSnapshot.transitionState = [pscustomobject]@{ name = 'idle'; value = 0 }
 $nativeFsrProfile = New-TestUpscalingProfile -Method 'fsr' -RenderScale $false
-$nativeSnapshot.profiles.requested = $nativeFsrProfile
-$nativeSnapshot.profiles.effective = $nativeFsrProfile
-$nativeSnapshot.profiles.stable = $nativeFsrProfile
-$nativeFsrStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
+$nativeFsrSnapshot = New-TestNativeSnapshot -RequestedProfile $nativeFsrProfile -EffectiveProfile $nativeFsrProfile -StableProfile $nativeFsrProfile -ProfilePresence 27
+$nativeFsrStable = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeFsrSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
 Assert-Test ($nativeFsrStable.satisfied -and $nativeFsrStable.method -eq 'fsr') 'native-resolution stability follows the effective method without prescribing DLSS or FSR'
 $mismatchedProfile = New-TestUpscalingProfile -Method 'fsr' -RenderScale $false
-$nativeSnapshot.profiles.effective = $nativeProfile
-$nativeSnapshot.profiles.requested = $mismatchedProfile
-$nativeMismatch = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
+$nativeMismatchSnapshot = New-TestNativeSnapshot -RequestedProfile $mismatchedProfile -EffectiveProfile $nativeProfile -StableProfile $nativeFsrProfile -ProfilePresence 27
+$nativeMismatch = Test-DevBenchUpscalingStable -UpscalingSnapshot $nativeMismatchSnapshot -RenderScaleStatus (New-TestRenderScaleStatus -RenderScale $false)
 Assert-Test (-not $nativeMismatch.satisfied -and $nativeMismatch.reasons -contains 'requested and effective profiles differ') 'native-resolution stability rejects profile divergence'
+$missingSnapshotFields = Test-DevBenchUpscalingStable -UpscalingSnapshot ([pscustomobject]@{}) -RenderScaleStatus ([pscustomobject]@{})
+Assert-Test (-not $missingSnapshotFields.satisfied -and $missingSnapshotFields.reasons -contains 'render-scale controller telemetry is missing') 'missing optional snapshot fields fail closed without a strict-mode exception'
 
 $resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response ([pscustomobject]@{
         status = [pscustomobject]@{
@@ -263,6 +274,12 @@ $missingPreparation = Get-DevBenchRenderScalePreparationTelemetry `
     -Response ([pscustomobject]@{ status = [pscustomobject]@{} })
 Assert-Test (-not $missingPreparation.available -and
     $missingPreparation.missingFields -contains 'events') 'missing preparation telemetry remains explicit'
+$mainReady = Test-DevBenchMainMenuReady -MenuState ([pscustomobject]@{ openMenus = @('HUD Menu', 'Main Menu'); messageBoxOpen = $false })
+Assert-Test $mainReady.satisfied 'mainMenuReady represents the normal main-menu state without treating Main Menu as blocking'
+$mainMissing = Test-DevBenchMainMenuReady -MenuState ([pscustomobject]@{ openMenus = @('HUD Menu'); messageBoxOpen = $false })
+Assert-Test (-not $mainMissing.satisfied) 'mainMenuReady requires the main menu rather than accepting gameplay'
+$mainObscured = Test-DevBenchMainMenuReady -MenuState ([pscustomobject]@{ openMenus = @('HUD Menu', 'Main Menu', 'MessageBoxMenu'); messageBoxOpen = $true })
+Assert-Test (-not $mainObscured.satisfied -and $mainObscured.unexpectedMenus -contains 'MessageBoxMenu') 'mainMenuReady rejects modal or unexpected overlays'
 
 $expectations = Get-DevBenchRuntimeExpectations -Runtime ([pscustomobject]@{ port = 8921; pid = 123; exe = 'SkyrimVR.exe'; buildId = 'build-1'; dllPath = 'C:\Test\CommunityShaders.dll'; artifactSha256 = 'ABC' })
 Assert-Test ($expectations.port -eq 8921 -and $expectations.pid -eq 123 -and $expectations.exe -eq 'SkyrimVR.exe') 'runtime expectations preserve process identity fields'
@@ -325,7 +342,7 @@ Assert-Test ($entryPointText -match '\[int\]\$RequestTimeoutSeconds = 15') 'cont
 Assert-Test ($entryPointText -match '\$arguments\.ContainsKey\(''timeoutMs''\)') 'controller detects a server-owned timeout budget'
 Assert-Test ($entryPointText -match 'Ceiling\(\$serverTimeoutMilliseconds / 1000\.0\)') 'controller converts the server budget without truncation'
 Assert-Test ($entryPointText -match '\$serverTimeoutSeconds \+ 5') 'controller keeps a five-second receipt envelope beyond the server budget'
-Assert-Test ($entryPointText -match '-TimeoutSec \(Get-RequestTimeoutSeconds\)') 'tool calls use the effective deadline-bounded request timeout'
+Assert-Test ($entryPointText -match 'function Invoke-ToolRpc[\s\S]{0,300}Invoke-McpRequest') 'tool calls use the shared deadline-bounded request path'
 Assert-Test ($entryPointText -match 'requestTimeoutSeconds = \$script:requestTimeoutSecondsForRpc') 'receipts expose the effective request timeout'
 Assert-Test ($entryPointText -match '\[string\]\$EvidenceLabel') 'runtime binding evidence accepts an explicit invocation label'
 Assert-Test ($entryPointText -match 'devbench-runtime-binding\.\$safeLabel\.\$stamp\.\$PID\.json') 'parallel runtime bindings use invocation-unique filenames'

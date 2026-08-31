@@ -333,7 +333,9 @@ function Get-DevBenchResourcePublicationTelemetry {
             'current', 'currentGeneration', 'completedGeneration',
             'publishedGeneration', 'expectedWidth', 'expectedHeight',
             'publishedWidth', 'publishedHeight', 'complete',
-            'deferredSetupAcknowledged', 'deviceMatches', 'contextMatches'
+            'deferredSetupAcknowledged', 'deviceMatches', 'contextMatches',
+            'evaluated', 'present', 'generationMatchesCurrent',
+            'generationMatchesCompleted', 'dimensionsMatch'
         )
         $missing = [Collections.Generic.List[string]]::new()
         $values = [ordered]@{}
@@ -358,11 +360,11 @@ function Get-DevBenchResourcePublicationTelemetry {
             deferredSetupAcknowledged = $values.deferredSetupAcknowledged
             deviceMatches = $values.deviceMatches
             contextMatches = $values.contextMatches
-            evaluated = Get-DevBenchTelemetryMember $Publication 'evaluated'
-            present = Get-DevBenchTelemetryMember $Publication 'present'
-            generationMatchesCurrent = Get-DevBenchTelemetryMember $Publication 'generationMatchesCurrent'
-            generationMatchesCompleted = Get-DevBenchTelemetryMember $Publication 'generationMatchesCompleted'
-            dimensionsMatch = Get-DevBenchTelemetryMember $Publication 'dimensionsMatch'
+            evaluated = $values.evaluated
+            present = $values.present
+            generationMatchesCurrent = $values.generationMatchesCurrent
+            generationMatchesCompleted = $values.generationMatchesCompleted
+            dimensionsMatch = $values.dimensionsMatch
         }
     }
 
@@ -565,15 +567,18 @@ function Test-DevBenchUpscalingStable {
         if (-not $Condition) { $reasons.Add($Reason) }
     }
 
-    $profilePresence = if ($snapshot.PSObject.Properties['profilePresence']) { [uint32]$snapshot.profilePresence } else { 0u }
-    $flags = if ($snapshot.PSObject.Properties['flags']) { [uint64]$snapshot.flags } else { 0u }
-    $renderScaleStatusName = Get-DevBenchNamedValue $snapshot.renderScaleStatus
-    $transitionState = Get-DevBenchNamedValue $snapshot.transitionState
+    $profilePresence = if ($snapshot.PSObject.Properties['profilePresence']) { [uint32]$snapshot.profilePresence } else { [uint32]0 }
+    $flags = if ($snapshot.PSObject.Properties['flags']) { [uint64]$snapshot.flags } else { [uint64]0 }
+    $renderScaleStatusName = Get-DevBenchNamedValue (Get-DevBenchTelemetryMember $snapshot 'renderScaleStatus')
+    $transitionState = Get-DevBenchNamedValue (Get-DevBenchTelemetryMember $snapshot 'transitionState')
     $renderScaleActive = $renderScaleStatusName -eq 'active'
-    $profiles = $snapshot.profiles
-    $hasRequested = ($profilePresence -band 0x2u) -ne 0
-    $hasEffective = ($profilePresence -band 0x8u) -ne 0
-    $hasStable = ($profilePresence -band 0x10u) -ne 0
+    $profiles = Get-DevBenchTelemetryMember $snapshot 'profiles'
+    $requestedProfile = Get-DevBenchTelemetryMember $profiles 'requested'
+    $effectiveProfile = Get-DevBenchTelemetryMember $profiles 'effective'
+    $stableProfile = Get-DevBenchTelemetryMember $profiles 'stable'
+    $hasRequested = ($profilePresence -band [uint32]0x2) -ne 0 -and $null -ne $requestedProfile
+    $hasEffective = ($profilePresence -band [uint32]0x8) -ne 0 -and $null -ne $effectiveProfile
+    $hasStable = ($profilePresence -band [uint32]0x10) -ne 0 -and $null -ne $stableProfile
     $expectsNativeProfile = $null -ne $ExpectedProfile -and
         $ExpectedProfile.PSObject.Properties['renderScaleMode'] -and
         -not [bool]$ExpectedProfile.renderScaleMode
@@ -583,40 +588,73 @@ function Test-DevBenchUpscalingStable {
         'provider_check_pending', 'provider_unavailable', 'restart_required',
         'resource_recovery'
     )
-    $conditionNames = if ($snapshot.observedConditions -and $snapshot.observedConditions.PSObject.Properties['names']) {
-        @($snapshot.observedConditions.names | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    $observedConditions = Get-DevBenchTelemetryMember $snapshot 'observedConditions'
+    $conditionNames = if ($observedConditions -and $observedConditions.PSObject.Properties['names']) {
+        @($observedConditions.names | ForEach-Object { ([string]$_).ToLowerInvariant() })
     } else { @() }
     $blockingConditions = @($conditionNames | Where-Object { $_ -in $criticalConditions })
 
-    Require-StableValue (($flags -band 0x1u) -ne 0) 'provider check is incomplete'
-    Require-StableValue (($flags -band 0x2u) -eq 0) 'an upscaling transition is active'
-    Require-StableValue (($flags -band 0x4u) -eq 0) 'an upscaling restart is required'
-    Require-StableValue ([uint64]$snapshot.activeOperationId -eq 0) 'an upscaling operation is still active'
+    Require-StableValue (($flags -band [uint64]0x1) -ne 0) 'provider check is incomplete'
+    Require-StableValue (($flags -band [uint64]0x2) -eq 0) 'an upscaling transition is active'
+    Require-StableValue (($flags -band [uint64]0x4) -eq 0) 'an upscaling restart is required'
+    $activeOperationId = Get-DevBenchTelemetryMember $snapshot 'activeOperationId'
+    Require-StableValue ($null -ne $activeOperationId -and [uint64]$activeOperationId -eq 0) 'an upscaling operation is still active'
     Require-StableValue ($blockingConditions.Count -eq 0) "blocking upscaling conditions remain: $($blockingConditions -join ', ')"
     if ($expectsNativeProfile) {
         Require-StableValue ($hasEffective) 'the effective native profile is not authoritative'
         if ($hasEffective) {
-            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.effective $ExpectedProfile) 'effective native profile does not match the expected target'
+            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $effectiveProfile $ExpectedProfile) 'effective native profile does not match the expected target'
         }
     }
     else {
         Require-StableValue ($hasRequested -and $hasEffective) 'requested and effective profiles are not both authoritative'
         if ($hasRequested -and $hasEffective) {
-            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.requested $profiles.effective) 'requested and effective profiles differ'
+            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $requestedProfile $effectiveProfile) 'requested and effective profiles differ'
         }
         if ($hasStable -and $hasEffective) {
-            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $profiles.stable $profiles.effective) 'stable and effective profiles differ'
+            Require-StableValue (Test-DevBenchUpscalingProfilesEqual $stableProfile $effectiveProfile) 'stable and effective profiles differ'
         }
     }
+    $dimensions = Get-DevBenchTelemetryMember $snapshot 'dimensions'
+    $displayEyeWidth = Get-DevBenchTelemetryMember $dimensions 'displayEyeWidth'
+    $displayEyeHeight = Get-DevBenchTelemetryMember $dimensions 'displayEyeHeight'
+    $renderEyeWidth = Get-DevBenchTelemetryMember $dimensions 'renderEyeWidth'
+    $renderEyeHeight = Get-DevBenchTelemetryMember $dimensions 'renderEyeHeight'
     Require-StableValue (
-        [uint32]$snapshot.dimensions.displayEyeWidth -gt 0 -and
-        [uint32]$snapshot.dimensions.displayEyeHeight -gt 0 -and
-        [uint32]$snapshot.dimensions.renderEyeWidth -gt 0 -and
-        [uint32]$snapshot.dimensions.renderEyeHeight -gt 0
+        $null -ne $displayEyeWidth -and [uint32]$displayEyeWidth -gt 0 -and
+        $null -ne $displayEyeHeight -and [uint32]$displayEyeHeight -gt 0 -and
+        $null -ne $renderEyeWidth -and [uint32]$renderEyeWidth -gt 0 -and
+        $null -ne $renderEyeHeight -and [uint32]$renderEyeHeight -gt 0
     ) 'upscaling dimensions are not materialized'
 
-    $controller = $renderStatus.controller
-    $gate = $renderStatus.vendorWorkGate
+    $method = if ($hasEffective) { Get-DevBenchNamedValue $effectiveProfile.method } else { $null }
+    $qualityMode = if ($hasEffective) { Get-DevBenchNamedValue $effectiveProfile.qualityMode } else { $null }
+    $effectiveRenderScaleMode = if ($hasEffective) { [bool]$effectiveProfile.renderScaleMode } else { $false }
+    $dlssProfile = if ($hasEffective) { Get-DevBenchNamedValue $effectiveProfile.dlssProfile } else { $null }
+    $fsrRuntime = if ($hasEffective) { Get-DevBenchNamedValue $effectiveProfile.fsrRuntime } else { $null }
+    $frame = Get-DevBenchTelemetryMember $renderStatus 'frame'
+    $controller = Get-DevBenchTelemetryMember $renderStatus 'controller'
+    $gate = Get-DevBenchTelemetryMember $renderStatus 'vendorWorkGate'
+    if ($null -eq $controller -or $null -eq $gate) {
+        Require-StableValue ($null -ne $controller) 'render-scale controller telemetry is missing'
+        Require-StableValue ($null -ne $gate) 'vendor work gate telemetry is missing'
+        return [pscustomobject][ordered]@{
+            satisfied = $false
+            renderScaleActive = $renderScaleActive
+            stereoEvidence = 'unavailable'
+            method = $method
+            qualityMode = $qualityMode
+            effectiveRenderScaleMode = $effectiveRenderScaleMode
+            expectedProfile = $ExpectedProfile
+            expectedProfileMatches = if ($null -ne $ExpectedProfile -and $hasEffective) { Test-DevBenchUpscalingProfilesEqual $effectiveProfile $ExpectedProfile } else { $null }
+            dlssProfile = $dlssProfile
+            fsrRuntime = $fsrRuntime
+            frame = if ($null -ne $frame) { [uint32]$frame } else { [uint32]0 }
+            signature = $null
+            resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $RenderScaleStatus
+            reasons = @($reasons | Select-Object -Unique)
+        }
+    }
     Require-StableValue (-not [bool]$controller.terminalFailureSignaled) 'render-scale terminal failure is signaled'
     Require-StableValue (-not [bool]$controller.terminalDeviceLossSignaled) 'render-scale device loss is signaled'
     Require-StableValue ([uint64]$controller.unresolvedPhysicalMutationEpoch -eq 0) 'a physical render-scale mutation remains unresolved'
@@ -643,15 +681,10 @@ function Test-DevBenchUpscalingStable {
         Require-StableValue (-not [bool]$controller.engineTargetRetirement.pending) 'engine render-target retirement is pending'
     }
 
-    $method = if ($hasEffective) { Get-DevBenchNamedValue $profiles.effective.method } else { $null }
-    $qualityMode = if ($hasEffective) { Get-DevBenchNamedValue $profiles.effective.qualityMode } else { $null }
-    $effectiveRenderScaleMode = if ($hasEffective) { [bool]$profiles.effective.renderScaleMode } else { $false }
-    $dlssProfile = if ($hasEffective) { Get-DevBenchNamedValue $profiles.effective.dlssProfile } else { $null }
-    $fsrRuntime = if ($hasEffective) { Get-DevBenchNamedValue $profiles.effective.fsrRuntime } else { $null }
     $stereoEvidence = 'native_pipeline_frames'
     if ($renderScaleActive) {
         $stereoEvidence = 'render_scale_fidelity'
-        Require-StableValue (($flags -band 0x10u) -ne 0 -and ($flags -band 0x20u) -ne 0) 'render-scale is not both latched and active'
+        Require-StableValue (($flags -band [uint64]0x10) -ne 0 -and ($flags -band [uint64]0x20) -ne 0) 'render-scale is not both latched and active'
         Require-StableValue ($hasStable) 'the stable render-scale profile is not authoritative'
         Require-StableValue ($transitionState -eq 'active') "render-scale transition state is '$transitionState'"
         Require-StableValue ((Get-DevBenchNamedValue $renderStatus.modeStatus) -eq 'active') 'render-scale mode status is not active'
@@ -699,20 +732,20 @@ function Test-DevBenchUpscalingStable {
             ($transitionState -eq 'idle' -and $controllerState -eq 'idle') -or
             ($transitionState -eq 'active' -and $controllerState -eq 'active')
         Require-StableValue ($nativeControllerSettled) "native-resolution controller state is '$transitionState/$controllerState'"
-        Require-StableValue (($flags -band 0x10u) -eq 0 -and ($flags -band 0x20u) -eq 0) 'render-scale remains latched or active for a native-resolution profile'
+        Require-StableValue (($flags -band [uint64]0x10) -eq 0 -and ($flags -band [uint64]0x20) -eq 0) 'render-scale remains latched or active for a native-resolution profile'
     }
 
     $signature = if ($hasEffective) {
         @(
             $method,
-            (Get-DevBenchNamedValue $profiles.effective.qualityMode),
-            [bool]$profiles.effective.renderScaleMode,
-            (Get-DevBenchNamedValue $profiles.effective.dlssProfile),
-            (Get-DevBenchNamedValue $profiles.effective.fsrRuntime),
-            [uint32]$snapshot.dimensions.displayEyeWidth,
-            [uint32]$snapshot.dimensions.displayEyeHeight,
-            [uint32]$snapshot.dimensions.renderEyeWidth,
-            [uint32]$snapshot.dimensions.renderEyeHeight,
+            (Get-DevBenchNamedValue $effectiveProfile.qualityMode),
+            [bool]$effectiveProfile.renderScaleMode,
+            (Get-DevBenchNamedValue $effectiveProfile.dlssProfile),
+            (Get-DevBenchNamedValue $effectiveProfile.fsrRuntime),
+            [uint32]$displayEyeWidth,
+            [uint32]$displayEyeHeight,
+            [uint32]$renderEyeWidth,
+            [uint32]$renderEyeHeight,
             [uint64]$controller.targetEpoch,
             [uint32]$controller.stable.contractGeneration
         ) -join '|'
@@ -726,10 +759,10 @@ function Test-DevBenchUpscalingStable {
         qualityMode = $qualityMode
         effectiveRenderScaleMode = $effectiveRenderScaleMode
         expectedProfile = $ExpectedProfile
-        expectedProfileMatches = if ($null -ne $ExpectedProfile -and $hasEffective) { Test-DevBenchUpscalingProfilesEqual $profiles.effective $ExpectedProfile } else { $null }
+        expectedProfileMatches = if ($null -ne $ExpectedProfile -and $hasEffective) { Test-DevBenchUpscalingProfilesEqual $effectiveProfile $ExpectedProfile } else { $null }
         dlssProfile = $dlssProfile
         fsrRuntime = $fsrRuntime
-        frame = [uint32]$renderStatus.frame
+        frame = if ($null -ne $frame) { [uint32]$frame } else { [uint32]0 }
         signature = $signature
         resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $RenderScaleStatus
         reasons = @($reasons | Select-Object -Unique)
@@ -753,6 +786,26 @@ function Get-DevBenchRuntimeExpectations {
     $artifactPath = if ($Runtime.PSObject.Properties['artifactPath']) { [string]$Runtime.artifactPath } elseif ($Runtime.PSObject.Properties['dllPath']) { [string]$Runtime.dllPath } else { $null }
     $artifactSha256 = if ($Runtime.PSObject.Properties['artifactSha256']) { [string]$Runtime.artifactSha256 } else { $null }
     return [pscustomobject][ordered]@{ port = [int]$Runtime.port; pid = $pidValue; exe = $exeValue; buildId = $buildId; artifactPath = $artifactPath; artifactSha256 = $artifactSha256 }
+}
+
+function Test-DevBenchMainMenuReady {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$MenuState,
+        [string[]]$AllowedMenus = @('HUD Menu', 'Main Menu')
+    )
+    $openMenus = if ($MenuState.PSObject.Properties['openMenus']) { @($MenuState.openMenus) } else { @() }
+    $unexpected = @($openMenus | Where-Object { $_ -notin $AllowedMenus })
+    $messageBoxOpen = $MenuState.PSObject.Properties['messageBoxOpen'] -and [bool]$MenuState.messageBoxOpen
+    $mainMenuOpen = $openMenus -contains 'Main Menu'
+    return [pscustomobject][ordered]@{
+        satisfied = $mainMenuOpen -and $unexpected.Count -eq 0 -and -not $messageBoxOpen
+        mainMenuOpen = $mainMenuOpen
+        openMenus = $openMenus
+        allowedMenus = @($AllowedMenus)
+        unexpectedMenus = $unexpected
+        messageBoxOpen = [bool]$messageBoxOpen
+    }
 }
 
 function Resolve-DevBenchServiceProbeArguments {
@@ -931,4 +984,4 @@ function Test-DevBenchPerformanceWindow {
     }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow
+Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow

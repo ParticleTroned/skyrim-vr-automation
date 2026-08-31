@@ -13,8 +13,8 @@ input-schema inventory, not as an output schema. Validate result fields in the
 structured action response that owns them;
 do not run the bundled controller's `list`, open another loopback MCP session,
 or switch transport lanes during that run. A generic scenario dispatcher does
-not prove that an ownership-
-bearing or intrusive custom action is callable. If the exact typed action is
+not prove that an ownership-bearing or intrusive custom action is callable. If
+the exact typed action is
 absent, report that protocol action unavailable; do not send it through the
 dispatcher.
 

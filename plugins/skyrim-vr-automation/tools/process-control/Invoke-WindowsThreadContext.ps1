@@ -200,6 +200,13 @@ try {
                 $stack,
                 [UIntPtr]::new([UInt64]$StackBytes),
                 [ref]$read)
+            $resumeResult = [SkyrimVRAutomation.LiveThreadContext.NativeMethods]::ResumeThread(
+                $threadHandle)
+            if ($resumeResult -eq [UInt32]::MaxValue) {
+                throw "ResumeThread failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            $suspended = $false
+
             $candidates = [System.Collections.Generic.List[object]]::new()
             if ($stackOk) {
                 for ($offset = 0; $offset -le ([int]$read.ToUInt64() - 8); $offset += 8) {
@@ -233,8 +240,11 @@ try {
         }
         finally {
             if ($suspended) {
-                [void][SkyrimVRAutomation.LiveThreadContext.NativeMethods]::ResumeThread(
+                $resumeResult = [SkyrimVRAutomation.LiveThreadContext.NativeMethods]::ResumeThread(
                     $threadHandle)
+                if ($resumeResult -eq [UInt32]::MaxValue) {
+                    $errors.Add("ResumeThread retry failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())")
+                }
             }
             [Runtime.InteropServices.Marshal]::FreeHGlobal($allocation)
             [void][SkyrimVRAutomation.LiveThreadContext.NativeMethods]::CloseHandle(

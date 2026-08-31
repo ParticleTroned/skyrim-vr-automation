@@ -148,9 +148,10 @@ $status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$stat
 $listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIFT_AT_CALL) -and [int]$env:CSX_PROFILER_TEST_DRIFT_AT_CALL -eq [int]$state.calls) { 456 } else { 123 }
 $data = [ordered]@{content=@([pscustomobject]@{ok=$true;status=$status})}
 if ($RequirePerformanceNeutral) {
-    $guard = [pscustomobject]@{applicable=$true;neutral=$true;performanceDistorted=$false;performanceEpoch=7;physicalStateKnown=$true;reason='intrusive-temporal-probe-disarmed'}
+    $distorted = -not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DISTORT_ACTION) -and $env:CSX_PROFILER_TEST_DISTORT_ACTION -eq $action
+    $guard = [pscustomobject]@{applicable=$true;neutral=(-not $distorted);performanceDistorted=$distorted;performanceEpoch=7;physicalStateKnown=$true;reason=$(if ($distorted) {'intrusive-temporal-probe-active'} else {'intrusive-temporal-probe-disarmed'})}
     $data.performanceGuard = $guard
-    $data.performanceWindow = [pscustomobject]@{valid=$true;applicable=$true;sameEpoch=$true;before=$guard;after=$guard;reason='performance-window-neutral'}
+    $data.performanceWindow = [pscustomobject]@{valid=(-not $distorted);applicable=$true;sameEpoch=$true;before=$guard;after=$guard;reason=$(if ($distorted) {'performance-probe-distorted'} else {'performance-window-neutral'})}
 }
 [pscustomobject]@{ok=$true;runtimeIdentity=[pscustomobject]@{complete=$true;verified=$true;listenerPid=$listenerPid;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");data=[pscustomobject]$data;errors=@()} | ConvertTo-Json -Depth 20 -Compress
 '@, [Text.UTF8Encoding]::new($false))
@@ -187,6 +188,15 @@ if ($RequirePerformanceNeutral) {
     Assert-Test ($driftError -match 'runtime identity changed' -and -not $driftFinalState.enabled) 'measurement rejects a replacement runtime and restores state only through the original identity'
 
     [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
+    $env:CSX_PROFILER_TEST_DISTORT_ACTION = 'status'
+    $distortionError = $null
+    try { & $measure -Label performance-distortion -EvidenceDirectory (Join-Path $resolvedTestRoot 'distortion') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | Out-Null }
+    catch { $distortionError = $_.Exception.Message }
+    Remove-Item Env:CSX_PROFILER_TEST_DISTORT_ACTION -ErrorAction SilentlyContinue
+    $distortionFinalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Assert-Test ($distortionError -match 'performance-neutrality window' -and -not $distortionFinalState.enabled) 'measurement fails closed on a distorted performance probe and restores profiler state'
+
+    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0}', [Text.UTF8Encoding]::new($false))
     $deadlineWatch = [Diagnostics.Stopwatch]::StartNew()
     $deadlineError = $null
     try { & $measure -Label deadline -EvidenceDirectory (Join-Path $resolvedTestRoot 'deadline') -ContextJson $contextJson -Samples 3 -WarmupSamples 100 -IntervalMs 50 -TotalTimeoutSeconds 5 -RestoreReserveSeconds 2 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | Out-Null }
@@ -210,29 +220,27 @@ if ($RequirePerformanceNeutral) {
     Assert-Test ($measureText -match '-RequirePerformanceNeutral:\(-not \$ForRestore\)') 'capture guards measurement calls while preserving the restoration path'
     Assert-Test ($measureText -match '\$expectedPerformanceEpoch') 'capture pins the performance ownership epoch across samples'
     Assert-Test ($measureText -match 'schemaVersion = 3') 'capture stores performance guard evidence under schema 3'
-    Assert-Test ($measureText.Contains(
+    Assert-Test ($measureText.IndexOf(
         'Get-DevBenchRenderScalePreparationTelemetry',
         [StringComparison]::Ordinal
-    )) 'profiler capture retains render-scale preparation telemetry'
-    Assert-Test ($measureText.Contains(
-        'preparation = [pscustomobject][ordered]@{',
-        [StringComparison]::Ordinal
-    )) 'profiler summary exposes before and after preparation traces'
+    ) -ge 0) 'profiler capture retains render-scale preparation telemetry'
+    Assert-Test ($null -ne $measurement.summary.preparation.before -and
+        $null -ne $measurement.summary.preparation.after) 'profiler summary exposes before and after preparation traces'
 
     $profilerSkill = Get-Content -LiteralPath (Join-Path $PSScriptRoot `
         '..\..\skills\profiler-control\SKILL.md') -Raw
-    Assert-Test ($profilerSkill.Contains(
+    Assert-Test ($profilerSkill.IndexOf(
         '`set_enabled` with `enabled: true`',
         [StringComparison]::Ordinal
-    )) 'profiler contract enables the versioned API before capture'
-    Assert-Test ($profilerSkill.Contains(
+    ) -ge 0) 'profiler contract enables the versioned API before capture'
+    Assert-Test ($profilerSkill.IndexOf(
         'Treat `disabled` from `start_capture` as a failed capture',
         [StringComparison]::Ordinal
-    )) 'profiler contract fails closed on a disabled capture'
-    Assert-Test ($profilerSkill.Contains(
+    ) -ge 0) 'profiler contract fails closed on a disabled capture'
+    Assert-Test ($profilerSkill.IndexOf(
         'Restore the initial enabled state',
         [StringComparison]::Ordinal
-    )) 'profiler contract restores caller-owned state'
+    ) -ge 0) 'profiler contract restores caller-owned state'
 }
 finally {
     Remove-Item Env:CSX_PROFILER_TEST_STATE -ErrorAction SilentlyContinue

@@ -18,6 +18,7 @@ client.
 .\Invoke-DevBenchControl.ps1 wait -Condition upscalingStable `
   -ExpectedCell WindhelmExterior01 -TimeoutSeconds 120 `
   -StableSamples 2 -MinimumStableFrameAdvance 5
+.\Invoke-DevBenchControl.ps1 wait -Condition mainMenuReady -TimeoutSeconds 30
 .\Invoke-DevBenchControl.ps1 wait -Condition toolAvailable `
   -Tool communityshaders.profiler_api -TimeoutSeconds 600 `
   -ProgressLogPath C:\Evidence\CommunityShaders.log
@@ -113,6 +114,11 @@ closed, with `-MaxMenuDismissals` bounding each menu and
 `-MinimumMenuStableSeconds` requiring a continuous clear interval afterward.
 Message boxes and any unlisted blocking menu always prevent dismissal. This is
 an explicit unattended-recovery action, not a background menu monitor.
+
+`mainMenuReady` instead requires `Main Menu` to be open and rejects every menu
+outside `-AllowedMainMenuMenus` (HUD and Main Menu by default). It represents a
+usable front-end state without pretending that Skyrim's persistent menus have
+closed.
 
 `toolAvailable` repeatedly refreshes the authoritative tool inventory rather
 than freezing the initial list. `serviceReady` additionally calls a controller-
