@@ -28,7 +28,7 @@ try {
             '-NoProfile',
             '-NonInteractive',
             '-Command',
-            'Start-Sleep -Seconds 30')
+            'Start-Sleep -Seconds 120')
         WindowStyle = 'Hidden'
         PassThru = $true
     }
