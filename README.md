@@ -41,6 +41,9 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/shader-cache-control` — provider discovery, physical cache
   snapshot/restore transactions, compatibility-ranked known-working cache
   catalogs, task seeding/restoration/promotion, and comparison reports.
+- `tools/capture-interaction-control` — correlated full-state recording, latest
+  committed stereo-frame observations, named atomic actions, direct DevBench
+  passthrough, and UTC-safe save-boundary waits.
 - `tools/process-control` — bounded exact-process execution with classified,
   evidence-backed retries for known transient failures.
 - `tools/coc-evidence-control` — exception-triggered crash coverage plus an
@@ -58,7 +61,7 @@ versioned shared-memory pose contract, but it is not the bootstrap provider.
 ## Codex plugin
 
 The repository publishes a Codex marketplace plugin. It registers the
-loopback `devbench_vr` MCP server directly and its fourteen skills connect a
+loopback `devbench_vr` MCP server directly and its seventeen skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
@@ -97,6 +100,8 @@ new task to the bundled implementations and their operational contracts:
   by SHA-256.
 - `$perftune-upscaling` runs the server-owned NVIDIA or AMD Upscaling cost
   sweep, including raw cooldown telemetry and None-relative results.
+- `$capture-interaction-control` provides a current-frame observation/action
+  loop over correlated DevBench state, stereo screenshots, and input receipts.
 
 Install from the public Git marketplace:
 

@@ -8,6 +8,20 @@ All notable changes are documented here. Versions follow Semantic Versioning.
   `backup` path into each task-owned MO2 runtime output, reject stale or missing
   shadows before launch, permit only isolated task-output growth on retained
   game cycles, and preserve the complete trees when the workspace retires.
+- Add a correlated capture/interaction framework with latest committed frame
+  selection, continuous or on-demand stereo capture, full-state recording,
+  pose-preserving named actions, direct DevBench passthrough, orderly
+  finalization, and UTC-safe stable-save waits.
+- Add read-only physical HMD/controller observation and correlation IDs to the
+  DevBench input/recording contracts used by the framework.
+- Add `mainMenuReady`, a real `validate-closed` alias, approval-compatible
+  multi-path files, exact configuration-resolution provenance, and guarded
+  workspace reuse through the current task-resume contract.
+- Treat SteamVR physical, SteamVR null-HMD, and OpenComposite execution routes
+  as provenance within one explicit Skyrim VR D3D11 bytecode compatibility
+  class while retaining the exact feature-set compatibility gate.
+- Add bounded whole-runtime Skyrim quiet-window capture and informational
+  comparison reports alongside the existing CSX timer profiler.
 - Let MO2 access requests retain an explicit stable task identity, complete
   asynchronous `-StartOnly` opens from proven main-window state, retry transient
   UI Automation enumeration once, and clean late failure dialogs after the

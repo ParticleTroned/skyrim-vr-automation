@@ -27,8 +27,8 @@ recovery.
 `Invoke-CSXShaderCacheCatalog.ps1` composes those primitives into reusable task
 cache management. It stores immutable, content-addressed cache objects and
 separate snapshot manifests carrying the cache ABI, game runtime, render path,
-shader-source hash, optional build, preset, and effective feature-set hashes,
-normalized tags, status,
+shader-source hash, explicit bytecode compatibility class, optional build,
+preset, and effective feature-set hashes, normalized tags, status,
 and receipt provenance. There is no mutable index to repair: `list` validates
 the manifests and derives the catalog view from disk.
 
@@ -81,15 +81,18 @@ Configure a permanent catalog outside MO2 and the checkout:
 `CSX_SHADER_CACHE_CATALOG_ROOT`, the configured path, `CODEX_HOME`, and the
 user-local application-data fallback. A catalog candidate is never accepted
 from its label alone. The hard compatibility gates are known-working status,
-exact shader-cache ABI, game runtime, render family, required tags, and—by
-default—exact shader-source SHA-256. `vr-steamvr-physical` and
-`vr-steamvr-null` share the `vr-steamvr` render family because the display
-driver does not alter CSX shader bytecode. Other render paths remain distinct.
-Supply `-FeatureSetSha256` whenever an effective feature-set fingerprint is
-available; then an absent or different fingerprint is a hard exclusion. Among
-compatible candidates, exact source, feature-set, build, preset, and observed
-render-path matches rank first, followed by broader verified coverage and
+exact shader-cache ABI, game runtime, bytecode compatibility class, required
+tags, and—by default—exact shader-source SHA-256. Supply
+`-FeatureSetSha256` whenever an effective feature-set fingerprint is available;
+then an absent or different fingerprint is a hard exclusion. Among compatible
+candidates, exact source, feature-set, build, preset, and observed render-path
+matches rank first, followed by broader verified coverage and
 recency. `select` returns both the ranking and explicit exclusion reasons.
+
+The exact render path remains immutable provenance and an exact-match ranking
+signal. The default `skyrimvr-d3d11` class deliberately permits reuse across
+SteamVR physical, SteamVR null-HMD, and OpenComposite when every bytecode input
+matches; use a different explicit class when a route is proven bytecode-affecting.
 
 First admit a receipt-proven snapshot:
 
@@ -113,7 +116,10 @@ Prepare a closed task cache immediately before launching MO2:
 
 ```powershell
 .\Invoke-CSXShaderCacheCatalog.ps1 prepare `
-  -CachePath 'D:\MO2\mods\Task Cache\ShaderCache' `
+  -CachePath 'D:\MO2\overwrite\ShaderCache' `
+  -ProfilePath 'D:\MO2\profiles\Codex Task - Example\modlist.txt' `
+  -ModsPath 'D:\MO2\mods' `
+  -BindToOverwrite `
   -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
   -ShaderCacheAbi '<exact ABI>' `
   -ShaderSourceSha256 '<exact source-tree SHA-256>' `
@@ -121,6 +127,7 @@ Prepare a closed task cache immediately before launching MO2:
   -BuildId '<build identity>' `
   -PresetSha256 '<preset SHA-256>' `
   -RequiredTags quality,full-render `
+  -RequireMaterializedOutput `
   -Confirm:$false
 ```
 
@@ -130,6 +137,25 @@ different. With no match it safely leaves the current tree in use; add
 `-RequireMatch` when a task must not proceed without a catalog baseline.
 Repeating `prepare` with the same immutable cache, evidence, and catalog
 identities reconciles and returns the existing prepared plan.
+
+With `-BindToOverwrite`, `prepare` binds the exact profile hash, mods root, and
+physical `overwrite\ShaderCache` path. After optional seeding it inventories
+all enabled providers in exact modlist priority order and copies every missing
+provider path into Overwrite. Existing Overwrite or seed files remain
+authoritative. Every copied source is checked for stability and the target is
+SHA-256 verified; complete path coverage is then written to
+`shader-cache-provider-shadow.receipt.json` together with the final prepared
+inventory and `preparedTreeSha256`. This full shadow is required because MO2
+writes modifications to the original provider of an existing virtual path;
+new paths naturally use Overwrite, but existing mod paths must first be made
+Overwrite winners. `-CacheModName` remains available for older explicitly
+bound loose-mod workflows and cannot be combined with `-BindToOverwrite`.
+
+MO2 session authorization reads this receipt and independently inventories the
+current providers. Before the first launch, the live Overwrite cache must match
+`preparedTreeSha256` exactly. A retained game cycle may add or update files in
+Overwrite, but every relaunch still requires all current provider paths to
+remain shadowed.
 
 After the game and MO2 are closed, complete the cache transaction:
 
@@ -148,7 +174,7 @@ caller explicitly classifies the task result as `known-working`. An unverified
 or failed task result is still preserved as evidence but is not added to the
 catalog. A shader-source mismatch remains excluded unless
 `-AllowSourceMismatch` is accompanied by a concrete `-CompatibilityReason`;
-this exception does not bypass ABI, runtime, render-family, feature-set, status,
+this exception does not bypass ABI, runtime, bytecode-class, feature-set, status,
 or tag gates.
 Repeated `complete` calls return the immutable existing completion. A retry
 after restoration but before completion publication accepts only one committed
