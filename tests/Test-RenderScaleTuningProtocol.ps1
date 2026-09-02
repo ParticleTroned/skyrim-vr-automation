@@ -48,6 +48,9 @@ Assert-True (Test-Path -LiteralPath $fastStartPlugin -PathType Leaf) 'Missing pa
 Assert-True ((Get-FileHash -LiteralPath $fastStartSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $fastStartPlugin -Algorithm SHA256).Hash) 'Shared tuning fast-start source/package parity failed.'
 $fastStart = Get-Content -LiteralPath $fastStartSource -Raw
+Assert-Contains $fastStart 'Pass the positioning receipt unchanged' 'Shared tuning fast-start contract'
+Assert-Contains $fastStart 'The client does not search, normalize, or validate positioning' 'Shared tuning fast-start contract'
+Assert-True (-not $fastStart.Contains('Pass the initial boundary already decoded during positioning', [StringComparison]::Ordinal)) 'Shared tuning fast-start still delegates boundary decoding to the client.'
 $runnerRelative = 'tools\renderscale-tuning-live\runner.js'
 $runnerSource = Join-Path $repositoryRoot $runnerRelative
 $runnerPlugin = Join-Path $repositoryRoot "plugins\skyrim-vr-automation\$runnerRelative"
@@ -78,7 +81,8 @@ foreach ($token in @(
     'phaseCounterAuthorityStatus', 'reportedTask2Violations',
     'producer_invalid_evidence', 'deploymentVerification',
     'deployment-verification.json', 'artifact-path', 'manifest-path',
-    'nonStableNote', 'stabilityNotes', 'stability_presentation_disposition'
+    'nonStableNote', 'stabilityNotes', 'stability_presentation_disposition',
+    'recoveryStatus', 'recovery_receipt_key', 'source_recovery_receipt_key'
 )) {
     Assert-Contains $finalizer $token 'Shared tuning finalizer'
 }
@@ -86,14 +90,16 @@ foreach ($token in @(
     'async function runRenderScaleTuningLive',
     'mcp__devbench_vr__scenario',
     'mcp__devbench_vr__communityshaders_renderscale',
-    'initialBoundary', 'capabilities',
+    'positioningRoot', 'positioningInputs', 'capabilities',
+    'positioning_tool_result_missing', 'positioning_scene_mismatch',
+    'Object.prototype.hasOwnProperty.call(entry, "result")',
     'waiter.upscalingSnapshot', 'snapshot.effective',
     'snapshot.profiles && snapshot.profiles.effective',
     'enumName(profile.method)', 'enumName(profile.qualityMode, qualityName)',
     'enumName(profile.dlssProfile)', 'enumName(profile.fsrRuntime)',
     'matrix.pacingMilliseconds', 'matrix.completionTimeoutMilliseconds',
     'startPerformanceTelemetry: firstRow',
-    'retain(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`',
+    'const retainedKey =', 'retain(retainedKey, retained)',
     'action: "dlss_trace_read"', 'traceReset:', 'traceStart:', 'traceRead:',
     'retainAmdTraceCapability', 'amd:dlss-trace-capability',
     'transitionProjection', 'waiter.cleanupDrained === true',
@@ -106,25 +112,26 @@ foreach ($token in @(
     '"physicalMutationClear"', 'facts.terminalClear === true',
     'waitArgs.foveation = foveation',
     'for (const row of matrix.transitions)', 'notify({',
-    'function nonStableNote', 'status: "not_stable"'
+    'function nonStableNote', 'status: "not_stable"',
+    'restoreBaseline', 'recovery-profile-apply',
+    'transition_recovery_failed', 'recoveryReceiptKey'
 )) {
     Assert-Contains $runner $token 'Deterministic tuning runner'
 }
 foreach ($forbidden in @(
     'Get-ChildItem', 'Invoke-RestMethod', '127.0.0.1',
     'mcp__devbench_vr__communityshaders_upscaling_api',
-    'sourceDescribe', 'artifactSha256', 'positionBoundary',
-    'position-snapshot'
+    'sourceDescribe', 'artifactSha256', 'positionBoundary'
 )) {
     Assert-True (-not $runner.Contains($forbidden, [StringComparison]::Ordinal)) "Deterministic tuning runner adds an unnecessary live gate: $forbidden"
 }
 foreach ($token in @(
     'detailed contract', 'packaged deterministic runner and matrix',
     'only after a pass has', 'finalization-only', 'synchronous',
-    '`stepsRun: 8`', '`position-health`', '`position-state`',
+    '`position-health`', '`position-state`',
     '`position-scene`', '`position-capabilities`', '`position-snapshot`',
-    '`position-renderscale`', '`cell.editorId: WhiterunDragonsreach`', '`0x10DE`/4318',
-    '`0x1002`/4098', 'reports positioning as soon as it returns',
+    '`position-renderscale`', '`cell.editorId: WhiterunDragonsreach`',
+    'reports positioning as soon as it admits the response',
     'create an evidence directory', 'decode Base64',
     '`content[0].text`', 'recursively search',
     'without another model handoff',
@@ -341,16 +348,22 @@ foreach ($variant in $variants) {
     }
     Assert-Contains $skill 'No other `before` or `after`' $variant.Name
     Assert-Contains $skill 'do not infer aliases' $variant.Name
-    Assert-Contains $skill 'compact `notify()`' $variant.Name
-    Assert-Contains $skill 'do not decode or gate on its adapter subshape' $variant.Name
+    Assert-Contains $skill 'compact positioning `notify()`' $variant.Name
+    Assert-Contains $skill '`position-renderscale.result` is an opaque payload' $variant.Name
+    Assert-Contains $skill 'no nested `result` or adapter field is required' $variant.Name
     Assert-Contains $skill 'not by another client-side adapter-shape admission gate' $variant.Name
     Assert-True (-not $skill.Contains("Require the structured positioning receipt's bound adapter", [StringComparison]::Ordinal)) "$($variant.Name) still blocks startup on an adapter receipt shape."
     Assert-Contains $skill 'Do not end the positioning `functions.exec`' $variant.Name
     Assert-Contains $skill 'tools/renderscale-tuning-live/runner.js' $variant.Name
     Assert-Contains $skill 'The runner is the executable live contract' $variant.Name
     Assert-Contains $skill 'Do not translate the matrix' $variant.Name
-    Assert-Contains $skill 'initialBoundary' $variant.Name
-    Assert-Contains $skill 'capabilities' $variant.Name
+    Assert-Contains $skill 'positioningRoot' $variant.Name
+    Assert-Contains $skill 'the runner exclusively owns positioning admission' $variant.Name
+    Assert-True (-not $skill.Contains('positioningAdmitted', [StringComparison]::Ordinal)) "$($variant.Name) still calculates client-side positioning admission."
+    Assert-True (-not $skill.Contains('hasOwnProperty.call(', [StringComparison]::Ordinal)) "$($variant.Name) still checks positioning payload shape in the client."
+    Assert-True (-not $skill.Contains('const initialSnapshot', [StringComparison]::Ordinal)) "$($variant.Name) still decodes the positioning snapshot in the client."
+    Assert-True (-not $skill.Contains('const initialBoundary', [StringComparison]::Ordinal)) "$($variant.Name) still constructs a client-side boundary."
+    Assert-True (-not $skill.Contains('const capabilities = positioningResults', [StringComparison]::Ordinal)) "$($variant.Name) still inspects capability shape in the client."
     Assert-Contains $skill 'qualification-wait.upscalingSnapshot' $variant.Name
     Assert-Contains $live '`tools/renderscale-tuning-live/runner.js` executes this path' $variant.Name
     Assert-Contains $live 'not read or translated during live measurement' $variant.Name
@@ -404,7 +417,10 @@ foreach ($variant in $variants) {
         'do not call `qualification_cancel` after any terminal waiter receipt',
         'in the terminal snapshot',
         'recorded transition `FAIL` or `INCONCLUSIVE`',
-        'qualification owner closed', 'Otherwise stop future mutations',
+        'qualification owner closed',
+        "lane's existing", 'starting profile',
+        'does not retry or revise the failed destination',
+        'single reset described above is the only exception',
         'vendor_native', 'same-frame', 'nativeVendorExecution',
         'observation.nativeVendorExecution', 'older producer',
         '`sameFrameBothEyesValid: true`', '`actualBackend`',
@@ -538,6 +554,20 @@ foreach ($token in @(
 )) {
     Assert-Contains $nvidiaProtocol $token 'NVIDIA adversarial guard'
 }
+$nvidiaSkill = Get-Content -LiteralPath (Join-Path $repositoryRoot `
+    'skills\renderscale-tuning-nvidia\SKILL.md') -Raw
+foreach ($token in @(
+    'Explicit failed-recovery replay',
+    '`transition_recovery_failed`',
+    'close only the identified stale non-HUD menu',
+    'complete NVIDIA assay with a fresh run ID',
+    'at most one replacement attempt'
+)) {
+    Assert-Contains "$nvidiaSkill`n$nvidiaProtocol" $token 'NVIDIA operator replay guard'
+}
+Assert-Contains $fastStart `
+    'A variant protocol may permit a separate replacement attempt' `
+    'Shared operator replay boundary'
 
 $amd = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-amd\references\matrix.v1.json') -Raw | ConvertFrom-Json -Depth 30
 Assert-True ($amd.adapterVendor -eq 'amd') 'AMD matrix vendor is wrong.'
@@ -577,7 +607,7 @@ foreach ($protocol in @(
         'without changing the shared 20-second measurement deadline',
         '`qualification_status`',
         'Never replay the',
-        'terminal receipt cannot be recovered',
+        'missing terminal evidence',
         'does not by itself make control unsafe',
         'must remain `PASS`',
         '`nativeGenerationEvidence: INCONCLUSIVE`',

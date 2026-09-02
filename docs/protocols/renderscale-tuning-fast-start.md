@@ -13,40 +13,43 @@ described below.
 
 ## Validate the one positioning response
 
-Require top-level `ok: true`, `aborted: false`, and `stepsRun: 8`. Use the
-labeled results already returned by that scenario; do not issue confirmation
-reads. Require:
+The packaged live runner exclusively validates the decoded positioning root.
+The client passes it unchanged and does not calculate an admission result or
+inspect any tool payload. The runner requires a successful, complete scenario
+and these labeled results already returned by it; it issues no confirmation
+reads:
 
-- `position-health`: one live `SkyrimVR.exe` PID with `vr: true`;
-- `position-state`: `playerLoaded: true` with the same PID and an advancing
-  frame;
+- `position-coc`, `position-health`, and `position-state`: an outer `result`
+  field retained for finalization; their payloads do not add startup gates;
 - `position-scene`: `playerLoaded: true` and
   `cell.editorId: WhiterunDragonsreach`. This scene receipt alone owns exact
   cell identity; never require it from `position-state`;
-- `position-capabilities`: success, the fixture's exact producer/Build ID, and
-  every method, quality, and runtime required by the selected matrix;
-- `position-snapshot`: the same Build ID, a complete authoritative public
-  snapshot, and no active operation;
-- `position-renderscale`: the same Build ID, no terminal or unresolved
-  physical failure, an available adapter, and vendor ID `0x10DE`/4318 for
-  NVIDIA or `0x1002`/4098 for AMD.
+- `position-capabilities`: an outer `result`; AMD additionally requires its
+  capabilities payload to select runnable lanes;
+- `position-snapshot`: an authoritative public snapshot used as the initial
+  measurement boundary;
+- `position-renderscale`: an outer `result` field. Its payload is preserved as
+  opaque evidence and no nested `result`, adapter shape, or vendor field gates
+  startup.
 
 The positioning scenario owns one 60,000 ms `position-settle` wait immediately
 after the COC and before these observations. This startup stabilization is
 separate from each mutation's 20,000 ms strict waiter.
 
 The synchronous response is the positioning observation. The live skill
-decodes the MCP envelope exactly once from `content[0].text`, validates the
-fixed labeled paths, and reports positioning as soon as it returns. It must not
-create an evidence directory, decode Base64, hash files, recursively search
-the response, or read this contract first. A failed scenario or required field
-stops without replaying the COC.
+decodes the MCP envelope exactly once from `content[0].text` and passes the
+root unchanged to the runner in the same orchestration cell. The runner owns
+the fixed checks and reports positioning as soon as it admits the response.
+The client must not create an evidence directory, decode Base64, hash files,
+recursively search the response, or read this contract first. A failed
+scenario or required field stops without replaying the COC.
 
-After positioning, the same orchestration cell loads the packaged deterministic
-runner and matrix in parallel and starts the baseline without another model
-handoff. Pass the initial boundary already decoded during positioning; the
-runner reads only each strict waiter's documented qualification snapshot after
-that. It does not search, normalize, or revalidate positioning. Do not load
+After the positioning response, the same orchestration cell loads the packaged
+deterministic runner and matrix in parallel and starts the baseline without
+another model handoff. Pass the positioning receipt unchanged; the runner
+admits it and decodes its snapshot once, then reads only each strict waiter's
+documented qualification snapshot. The client does not search, normalize, or
+validate positioning. Do not load
 Simple COC/CSM, enumerate tools, inspect schemas, or run another
 admission/reset scenario. Vendor live-path, protocol, and this detailed
 contract are finalization-only reads.
@@ -264,6 +267,23 @@ next synchronous scenario. The next scenario owns its initial five-second
 wait. Use `yield_control()` when a user update is due while the cell continues;
 never return to model reasoning, local commands, or evidence processing between
 safe rows. Stop the loop in the cell on an unsafe terminal receipt.
+
+When a terminal row proves the game remains loaded in the exact scene but its
+operation or physical mutation is stuck, preserve that failed row and make one
+runner-owned reset to the lane's existing starting profile. Use a fresh
+qualification owner and the render-scale iteration `apply` action so the reset
+can supersede the stuck public request. This reset is not a matrix row and must
+not retry or revise the failed destination. Continue with the next row only
+after the reset's strict waiter is satisfied and safe. Device loss, OOM, lost
+scene/ownership/build or transport, missing terminal evidence, or a
+rejected/unstable reset stops future mutations.
+
+That stop is terminal for the current attempt. A variant protocol may permit a
+separate replacement attempt only after the runner returns, retained cleanup is
+complete, and the user explicitly authorizes replay after a named obstruction
+is cleared. Such a replacement must repeat normal admission with a fresh run
+ID and must not splice evidence from the interrupted attempt. Without that
+variant-specific authorization, do not replay.
 
 Start the next row's one synchronous scenario immediately. Its first step is
 the sole server-owned `wait` of exactly 5,000 ms, followed by that row's
