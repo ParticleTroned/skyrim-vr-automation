@@ -123,18 +123,23 @@ async function runRenderScaleTuningLive(context) {
         return resultMap(root);
     }
 
-    // A terminal qualification receipt uses the flat qualification snapshot.
+    // Qualification producers have used flat profiles and wrapped public
+    // snapshots. Decode either shape without changing the measured sequence.
     function terminalBoundary(waiter) {
         const snapshot = waiter.upscalingSnapshot;
-        const profile = snapshot.effective;
+        const profile = snapshot.effective ||
+            (snapshot.profiles && snapshot.profiles.effective);
+        const enumName = (value, names = null) =>
+            value && typeof value === "object" ? value.name :
+                names && Number.isSafeInteger(value) ? names[value] : value;
         return {
             revision: snapshot.stateRevision,
             profile: {
-                method: profile.method,
-                qualityMode: qualityName[profile.qualityMode],
+                method: enumName(profile.method),
+                qualityMode: enumName(profile.qualityMode, qualityName),
                 renderScaleMode: profile.renderScaleMode,
-                dlssProfile: profile.dlssProfile,
-                fsrRuntime: profile.fsrRuntime,
+                dlssProfile: enumName(profile.dlssProfile),
+                fsrRuntime: enumName(profile.fsrRuntime),
             },
         };
     }
@@ -279,7 +284,7 @@ async function runRenderScaleTuningLive(context) {
             commandId: identifiers.commandId,
             reason: baseline ? "render-scale tuning baseline" : "render-scale tuning transition",
         }));
-        steps.push(toolStep("qualification-wait", "communityshaders.renderscale", {
+        const waitArgs = {
             action: "qualification_wait",
             transitionId: identifiers.transitionId,
             ownerId: identifiers.ownerId,
@@ -287,9 +292,13 @@ async function runRenderScaleTuningLive(context) {
             timeoutMs: matrix.completionTimeoutMilliseconds,
             milestone: "strict",
             target: waiterTarget(target),
-            foveation,
             expectedBuildId: buildId,
-        }));
+        };
+        // None and TAA have no live vendor path; their configured fixture remains telemetry.
+        if (target.method === "dlss" || target.method === "fsr") {
+            waitArgs.foveation = foveation;
+        }
+        steps.push(toolStep("qualification-wait", "communityshaders.renderscale", waitArgs));
         if (!baseline && variant === "nvidia" && target.method === "dlss") {
             steps.push(toolStep("dlss-trace-stop", "communityshaders.renderscale", {
                 action: "dlss_trace_stop", expectedBuildId: buildId,
@@ -302,6 +311,12 @@ async function runRenderScaleTuningLive(context) {
         return steps;
     }
 
+    function optionalSafetyFactClear(facts, name) {
+        // Older producers may omit diagnostics; an explicit non-true value still fails closed.
+        return !Object.prototype.hasOwnProperty.call(facts, name) ||
+            facts[name] === true;
+    }
+
     function safeTerminal(waiter, identifiers) {
         const facts = waiter && waiter.observation && waiter.observation.facts;
         return waiter && waiter.action === "qualification_wait" &&
@@ -309,8 +324,48 @@ async function runRenderScaleTuningLive(context) {
             waiter.ownerId === identifiers.ownerId &&
             waiter.upscalingSnapshot && waiter.upscalingSnapshot.activeOperationId === 0 &&
             facts && facts.stressSession === true && facts.exactCell === true &&
-            facts.loadedInWorld === true && facts.apiOperationClear === true &&
-            facts.physicalMutationClear === true && facts.terminalClear === true;
+            facts.loadedInWorld === true && facts.terminalClear === true &&
+            optionalSafetyFactClear(facts, "apiOperationClear") &&
+            optionalSafetyFactClear(facts, "physicalMutationClear");
+    }
+
+    function nonStableNote(waiter) {
+        if (!waiter || waiter.satisfied === true) return null;
+        const timeline = waiter.replacementTimeline || {};
+        const observation = waiter.observation || {};
+        const physical = observation.physical || {};
+        const presentation = observation.replacementPresentation || {};
+        const facets = [timeline.terminal, timeline.firstNewGenerationProven,
+            timeline.firstPostMutation, timeline.firstPhysicalMutation,
+            timeline.lastPreMutation].filter((facet) => facet);
+        const dispositionFacet = facets.find((facet) =>
+            typeof facet.selectedPresentationDisposition === "string");
+        const terminal = timeline.terminal || {};
+        const proof = terminal.presentationProof || {};
+        const failureCodes = Array.isArray(waiter.failureReasons) ?
+            waiter.failureReasons.map((reason) => {
+                if (typeof reason === "string") return reason;
+                if (!reason || typeof reason !== "object") return null;
+                const category = typeof reason.category === "string" ?
+                    `${reason.category}:` : "";
+                return typeof reason.code === "string" ?
+                    `${category}${reason.code}` : null;
+            }).filter((reason) => reason) : [];
+        return {
+            status: "not_stable",
+            deadlineMilliseconds: matrix.completionTimeoutMilliseconds,
+            outcome: waiter.outcome || null,
+            timedOutMilestone: waiter.timedOutMilestone || null,
+            presentationDisposition: dispositionFacet ?
+                dispositionFacet.selectedPresentationDisposition : "not_exposed",
+            leftEyePath: presentation.leftEye && presentation.leftEye.path ||
+                proof.leftEye && proof.leftEye.path || "not_exposed",
+            rightEyePath: presentation.rightEye && presentation.rightEye.path ||
+                proof.rightEye && proof.rightEye.path || "not_exposed",
+            controllerState: physical.state || "not_exposed",
+            presentationPhase: physical.presentationPhase || "not_exposed",
+            failureCodes,
+        };
     }
 
     function facetProjection(facet) {
@@ -803,6 +858,7 @@ async function runRenderScaleTuningLive(context) {
         const task2 = task2Projection(waiter, target);
         return {
             satisfied: waiter.satisfied === true,
+            nonStableNote: nonStableNote(waiter),
             presentationStable: waiter.presentationStable === true,
             cleanupDrained: waiter.cleanupDrained === true,
             presentationStretchSelected: presentationStretchSelected === true,
@@ -881,19 +937,20 @@ async function runRenderScaleTuningLive(context) {
                     scenarioFailure && scenarioFailure.diagnostic || null);
             }
             const stressSessionId = waiter.baseline && waiter.baseline.stressSessionId;
-            if (!safeTerminal(waiter, identifiers) || waiter.satisfied !== true ||
-                !waiter.milestoneTimings || !waiter.replacementTimeline) {
+            if (!safeTerminal(waiter, identifiers) || !waiter.milestoneTimings ||
+                !waiter.replacementTimeline) {
                 throw diagnosticError("baseline_failed",
                     scenarioFailure && scenarioFailure.diagnostic || null);
             }
-            return { boundary: terminalBoundary(waiter), stressSessionId, waiter };
+            return { boundary: terminalBoundary(waiter), stressSessionId, waiter,
+                nonStableNote: nonStableNote(waiter) };
         }
         const entries = resultMap(response.root);
         const start = entries.get("baseline-stress-start");
         const stressSessionId = start && start.status && start.status.session.id;
         const waiter = entries.get("qualification-wait");
         if (!response.root.ok || !waiter || !safeTerminal(waiter, identifiers) ||
-            waiter.satisfied !== true || !waiter.milestoneTimings ||
+            !waiter.milestoneTimings ||
             !waiter.replacementTimeline) {
             await closeOpenQualification(identifiers);
             if (stressSessionId) {
@@ -905,7 +962,8 @@ async function runRenderScaleTuningLive(context) {
             throw diagnosticError("baseline_failed",
                 scenarioDiagnostic(response.root, steps, receiptKey));
         }
-        return { boundary: terminalBoundary(waiter), stressSessionId, waiter };
+        return { boundary: terminalBoundary(waiter), stressSessionId, waiter,
+            nonStableNote: nonStableNote(waiter) };
     }
 
     async function armOwners(baselineResult, lane, laneIndex, pass, resetPerformance) {
@@ -1190,6 +1248,15 @@ async function runRenderScaleTuningLive(context) {
             try {
                 const base = await baseline(boundary, lane, laneIndex + 1, pass);
                 boundary = base.boundary;
+                passSummary.baseline = {
+                    satisfied: base.waiter.satisfied === true,
+                    outcome: base.waiter.outcome || null,
+                    nonStableNote: base.nonStableNote,
+                };
+                if (base.nonStableNote) {
+                    notify({ lane: lane.id, pass, phase: "baseline",
+                        ...base.nonStableNote });
+                }
                 stressSessionId = await armOwners(
                     base, lane, laneIndex + 1, pass, passSequence > 1);
                 for (const row of matrix.transitions) {

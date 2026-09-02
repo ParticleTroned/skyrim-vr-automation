@@ -66,6 +66,16 @@ function flatProfile(target) {
     };
 }
 
+function wrappedProfile(target) {
+    return {
+        method: named(target.method),
+        qualityMode: named(target.qualityMode),
+        renderScaleMode: target.renderScaleMode,
+        dlssProfile: named(target.dlssProfile),
+        fsrRuntime: named(target.fsrRuntime),
+    };
+}
+
 function createMock(semanticFailureOrdinal, receiptTransform = null,
     scenarioTransform = null) {
     let revision = 1;
@@ -321,9 +331,11 @@ function createMock(semanticFailureOrdinal, receiptTransform = null,
                     upscalingSnapshot: {
                         stateRevision: revision,
                         activeOperationId: 0,
-                        requested: profile,
-                        effective: profile,
-                        stable: profile,
+                        profiles: {
+                            requested: wrappedProfile(target),
+                            effective: wrappedProfile(target),
+                            stable: wrappedProfile(target),
+                        },
                     },
                     observation: {
                         facts: {
@@ -395,6 +407,82 @@ function assertQualificationTimeouts(scenarioCalls, matrix, variant) {
     assert(measuredWaiters > 0, `${variant} did not execute a measured waiter.`);
 }
 
+function assertProviderTargetSeparation(scenarioCalls, variant) {
+    const mutationCalls = scenarioCalls.filter((call) =>
+        call.steps.some((step) => step.label === "profile-apply"));
+    assert(mutationCalls.length > 0, `${variant} has no profile applies.`);
+    for (const call of mutationCalls) {
+        const applyTarget = call.steps.find((step) =>
+            step.label === "profile-apply").args.target;
+        const waiterTarget = call.steps.find((step) =>
+            step.label === "qualification-wait").args.target;
+        assert(typeof applyTarget.dlssProfile === "string" &&
+            typeof applyTarget.fsrRuntime === "string",
+        `${variant} public apply target lost dormant provider state.`);
+        assert((waiterTarget.dlssProfile !== undefined) ===
+            (applyTarget.method === "dlss"),
+        `${variant} waiter did not scope dlssProfile to active DLSS.`);
+        assert((waiterTarget.fsrRuntime !== undefined) ===
+            (applyTarget.method === "fsr"),
+        `${variant} waiter did not scope fsrRuntime to active FSR.`);
+    }
+}
+
+function assertFoveationTargetScope(scenarioCalls, variant) {
+    let nativeTargets = 0;
+    let vendorTargets = 0;
+    for (const call of scenarioCalls) {
+        const apply = call.steps.find((step) => step.label === "profile-apply");
+        const waiter = call.steps.find((step) => step.label === "qualification-wait");
+        if (!apply || !waiter) continue;
+        const vendorTarget = apply.args.target.method === "dlss" ||
+            apply.args.target.method === "fsr";
+        if (vendorTarget) vendorTargets += 1;
+        else nativeTargets += 1;
+        assert(Object.prototype.hasOwnProperty.call(waiter.args, "foveation") ===
+            vendorTarget,
+        `${variant} waiter applied vendor foveation proof to the wrong target.`);
+    }
+    assert(nativeTargets > 0, `${variant} did not exercise a None/TAA waiter.`);
+    assert(vendorTargets > 0, `${variant} did not exercise a vendor waiter.`);
+}
+
+function assertRevisionFencing(scenarioCalls, variant) {
+    const mutationCalls = scenarioCalls.filter((call) =>
+        call.steps.some((step) => step.label === "profile-apply"));
+    const baselineCalls = mutationCalls.filter((call) =>
+        call.steps.some((step) => step.label === "baseline-stress-start"));
+    const measuredCalls = mutationCalls.filter((call) =>
+        !call.steps.some((step) => step.label === "baseline-stress-start"));
+    assert(baselineCalls.length > 0, `${variant} has no baseline apply.`);
+    const expectedBaselineLabels = [
+        "baseline-stress-reset",
+        "baseline-stress-start",
+        "qualification-begin",
+        "qualification-dispatch",
+        "profile-apply",
+        "qualification-wait",
+    ];
+    assert(baselineCalls.every((call) =>
+        JSON.stringify(call.steps.map((step) => step.label)) ===
+            JSON.stringify(expectedBaselineLabels)),
+    `${variant} baseline no longer uses the single six-step scenario.`);
+    assert(mutationCalls.every((call) => {
+        const args = call.steps.find((step) => step.label === "profile-apply").args;
+        return typeof args.clientId === "string" && args.clientId.length > 0 &&
+            typeof args.commandId === "string" && args.commandId.length > 0;
+    }), `${variant} apply lost its required client or command identifier.`);
+    assert(baselineCalls.every((call) => Number.isInteger(
+        call.steps.find((step) => step.label === "profile-apply").args
+            .expectedStateRevision)),
+    `${variant} baseline apply lost its state revision.`);
+    assert(measuredCalls.length > 0, `${variant} has no measured apply.`);
+    assert(measuredCalls.every((call) => Number.isInteger(
+        call.steps.find((step) => step.label === "profile-apply").args
+            .expectedStateRevision)),
+    `${variant} measured apply lost its terminal revision fence.`);
+}
+
 async function testNvidia() {
     const matrix = JSON.parse(fs.readFileSync(path.join(
         repositoryRoot, "skills", "renderscale-tuning-nvidia", "references", "matrix.v1.json")));
@@ -410,11 +498,19 @@ async function testNvidia() {
     });
     assert(result.ok === true && result.status === "COMPLETE", "NVIDIA mock run did not complete.");
     assertQualificationTimeouts(mock.scenarioCalls, matrix, "NVIDIA");
+    assertProviderTargetSeparation(mock.scenarioCalls, "NVIDIA");
+    assertFoveationTargetScope(mock.scenarioCalls, "NVIDIA");
+    assertRevisionFencing(mock.scenarioCalls, "NVIDIA");
     assert(result.lanes[0].passes.length === 2, "NVIDIA mock did not run two passes.");
     assert(result.lanes[0].passes.every((pass) => pass.rows.length === 33), "NVIDIA mock row count is wrong.");
     assert(mock.notifications.length === 66, "NVIDIA progress count is wrong.");
     assert(mock.notifications.filter((row) => row.satisfied === false).length === 2,
         "NVIDIA semantic failures did not continue through both passes.");
+    assert(mock.notifications.filter((row) => row.satisfied === false).every((row) =>
+        row.nonStableNote && row.nonStableNote.status === "not_stable" &&
+        row.nonStableNote.deadlineMilliseconds === 20000 &&
+        row.nonStableNote.presentationDisposition === "PresentationStretch"),
+    "NVIDIA semantic failures did not retain their non-stable state note.");
     assert(mock.notifications.every((row) => row.evidenceVerdict === "PASS"),
         `Complete NVIDIA Task 2 evidence was not classified PASS: ${JSON.stringify(mock.notifications[0])}`);
     assert(mock.notifications.every((row) => row.renderVerdict ===
@@ -486,6 +582,9 @@ async function testAmd() {
     });
     assert(result.ok === true && result.status === "COMPLETE", "AMD mock run did not complete.");
     assertQualificationTimeouts(mock.scenarioCalls, matrix, "AMD");
+    assertProviderTargetSeparation(mock.scenarioCalls, "AMD");
+    assertFoveationTargetScope(mock.scenarioCalls, "AMD");
+    assertRevisionFencing(mock.scenarioCalls, "AMD");
     const fsr3 = result.lanes.find((lane) => lane.id === "explicit_fsr3");
     const fallback = result.lanes.find((lane) => lane.id === "fsr4_to_fsr3_fallback");
     assert(fsr3 && fsr3.passes.length === 2, "AMD FSR3 lane did not run two passes.");
@@ -613,6 +712,126 @@ async function testInformationalReasonIsNotFailure() {
     "An informational reason fabricated a failed step.");
 }
 
+async function testFlatTerminalBoundary() {
+    for (const spec of [
+        { variant: "nvidia", capabilities: {} },
+        {
+            variant: "amd",
+            capabilities: {
+                supportedFSRRuntimeMask: 1,
+                fsrRuntimeUnavailableConditions: [{ mask: 0 }, { mask: 1 }],
+            },
+        },
+    ]) {
+        const matrix = JSON.parse(fs.readFileSync(path.join(
+            repositoryRoot, "skills", `renderscale-tuning-${spec.variant}`,
+            "references", "matrix.v1.json")));
+        const mock = createMock(0, (receipt) => {
+            const snapshot = receipt.upscalingSnapshot;
+            const flatten = (profile) => flatProfile({
+                method: profile.method.name,
+                qualityMode: profile.qualityMode.name,
+                renderScaleMode: profile.renderScaleMode,
+                dlssProfile: profile.dlssProfile.name,
+                fsrRuntime: profile.fsrRuntime.name,
+            });
+            snapshot.requested = flatten(snapshot.profiles.requested);
+            snapshot.effective = flatten(snapshot.profiles.effective);
+            snapshot.stable = flatten(snapshot.profiles.stable);
+            delete snapshot.profiles;
+            return receipt;
+        });
+        const result = await runRenderScaleTuningLive({
+            ...mock.context,
+            variant: spec.variant,
+            runId: `${spec.variant}-flat-terminal-boundary`,
+            buildId,
+            initialBoundary: initialBoundary(),
+            capabilities: spec.capabilities,
+            matrix,
+        });
+        assert(result.ok === true && result.status === "COMPLETE",
+            `${spec.variant} rejected a flat terminal profile.`);
+    }
+}
+
+async function testOptionalTerminalFacts() {
+    const matrix = JSON.parse(fs.readFileSync(path.join(
+        repositoryRoot, "skills", "renderscale-tuning-nvidia", "references",
+        "matrix.v1.json")));
+    const omitted = createMock(0, (receipt) => {
+        delete receipt.observation.facts.apiOperationClear;
+        delete receipt.observation.facts.physicalMutationClear;
+        return receipt;
+    });
+    const omittedResult = await runRenderScaleTuningLive({
+        ...omitted.context,
+        variant: "nvidia",
+        runId: "optional-terminal-facts",
+        buildId,
+        initialBoundary: initialBoundary(),
+        capabilities: {},
+        matrix,
+    });
+    assert(omittedResult.ok === true && omittedResult.status === "COMPLETE",
+        "Omitted optional terminal facts interrupted a strict successful assay.");
+
+    const explicitFailure = createMock(0, (receipt, context) => {
+        if (context.baseline) receipt.observation.facts.apiOperationClear = false;
+        return receipt;
+    });
+    const failedResult = await runRenderScaleTuningLive({
+        ...explicitFailure.context,
+        variant: "nvidia",
+        runId: "explicit-terminal-failure",
+        buildId,
+        initialBoundary: initialBoundary(),
+        capabilities: {},
+        matrix,
+    });
+    assert(failedResult.ok === false && failedResult.status === "INTERRUPTED" &&
+        failedResult.lanes[0].passes[0].error === "baseline_failed",
+    "An explicitly false optional terminal fact did not fail closed.");
+}
+
+async function testSafeUnstableBaselineContinues() {
+    const matrix = JSON.parse(fs.readFileSync(path.join(
+        repositoryRoot, "skills", "renderscale-tuning-nvidia", "references",
+        "matrix.v1.json")));
+    const mock = createMock(0, (receipt, context) => {
+        if (context.baseline) {
+            receipt.satisfied = false;
+            receipt.outcome = "timeout";
+            receipt.timedOutMilestone = "strict";
+            receipt.failureReasons = [{ category: "active",
+                code: "vendor_presentation_not_stable" }];
+        }
+        return receipt;
+    });
+    const result = await runRenderScaleTuningLive({
+        ...mock.context,
+        variant: "nvidia",
+        runId: "safe-unstable-baseline",
+        buildId,
+        initialBoundary: initialBoundary(),
+        capabilities: {},
+        matrix,
+    });
+    assert(result.ok === true && result.status === "COMPLETE" &&
+        result.lanes[0].passes.every((pass) =>
+            pass.baseline && pass.baseline.satisfied === false &&
+            pass.baseline.nonStableNote &&
+            pass.baseline.nonStableNote.presentationDisposition ===
+                "PresentationStretch"),
+    "A safely closed non-stable baseline did not continue with a state note.");
+    const baselineNotes = mock.notifications.filter((entry) =>
+        entry.phase === "baseline");
+    assert(baselineNotes.length === 2 && baselineNotes.every((entry) =>
+        entry.status === "not_stable" &&
+        entry.failureCodes.includes("active:vendor_presentation_not_stable")),
+    "Safe non-stable baseline progress notes were not emitted.");
+}
+
 async function runNvidiaProjectionTransform(receiptTransform) {
     const matrix = JSON.parse(fs.readFileSync(path.join(
         repositoryRoot, "skills", "renderscale-tuning-nvidia", "references", "matrix.v1.json")));
@@ -680,7 +899,7 @@ async function testEvidenceVerdicts() {
     const fixedNativeGenerationZero = await runNvidiaProjectionTransform(
         (receipt, context) => {
             if (!context.baseline &&
-                receipt.upscalingSnapshot.stable.renderScaleMode === false) {
+                receipt.upscalingSnapshot.profiles.stable.renderScaleMode === false) {
                 receipt.replacementTimeline.firstPhysicalMutation
                     .replacementContractGeneration = 0;
                 receipt.replacementTimeline.firstNewGenerationProven
@@ -700,7 +919,7 @@ async function testEvidenceVerdicts() {
     const scaledGenerationZero = await runNvidiaProjectionTransform(
         (receipt, context) => {
             if (!context.baseline &&
-                receipt.upscalingSnapshot.stable.renderScaleMode === true) {
+                receipt.upscalingSnapshot.profiles.stable.renderScaleMode === true) {
                 receipt.replacementTimeline.firstPhysicalMutation
                     .replacementContractGeneration = 0;
                 receipt.replacementTimeline.firstNewGenerationProven
@@ -789,7 +1008,7 @@ async function testEvidenceVerdicts() {
     const nativeNotRequiredGenerationZero = await runNvidiaProjectionTransform(
         (receipt, context) => {
             if (!context.baseline &&
-                receipt.upscalingSnapshot.stable.renderScaleMode === false) {
+                receipt.upscalingSnapshot.profiles.stable.renderScaleMode === false) {
                 receipt.replacementTimeline.mutationExpectation = "not_required";
                 receipt.replacementTimeline.mutationExpectationReason =
                     "native_contract_reuse";
@@ -1185,7 +1404,9 @@ async function testEvidenceVerdicts() {
 }
 
 Promise.all([testNvidia(), testAmd(), testEvidenceVerdicts(),
-    testScenarioFailureRetention(), testInformationalReasonIsNotFailure()]).then(() => {
+    testScenarioFailureRetention(), testInformationalReasonIsNotFailure(),
+    testOptionalTerminalFacts(), testSafeUnstableBaselineContinues(),
+    testFlatTerminalBoundary()]).then(() => {
     process.stdout.write("Render-scale tuning live runner tests passed.\n");
 }).catch((error) => {
     process.stderr.write(`${error.stack || error}\n`);

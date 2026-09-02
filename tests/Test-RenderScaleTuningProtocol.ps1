@@ -77,7 +77,8 @@ foreach ($token in @(
     'per_transition', 'dispatch_left_generation',
     'phaseCounterAuthorityStatus', 'reportedTask2Violations',
     'producer_invalid_evidence', 'deploymentVerification',
-    'deployment-verification.json', 'artifact-path', 'manifest-path'
+    'deployment-verification.json', 'artifact-path', 'manifest-path',
+    'nonStableNote', 'stabilityNotes', 'stability_presentation_disposition'
 )) {
     Assert-Contains $finalizer $token 'Shared tuning finalizer'
 }
@@ -87,6 +88,9 @@ foreach ($token in @(
     'mcp__devbench_vr__communityshaders_renderscale',
     'initialBoundary', 'capabilities',
     'waiter.upscalingSnapshot', 'snapshot.effective',
+    'snapshot.profiles && snapshot.profiles.effective',
+    'enumName(profile.method)', 'enumName(profile.qualityMode, qualityName)',
+    'enumName(profile.dlssProfile)', 'enumName(profile.fsrRuntime)',
     'matrix.pacingMilliseconds', 'matrix.completionTimeoutMilliseconds',
     'startPerformanceTelemetry: firstRow',
     'retain(`${runId}:${lane.id}:pass-${pass}:transition-${row.ordinal}`',
@@ -98,8 +102,11 @@ foreach ($token in @(
     'reportedInvariantViolations', 'violationAuthority', 'boundaryOrder',
     'transitionEvidenceComplete', 'authoritative_violation_schema',
     'retainLiveResult', 'receiptKeys',
-    'facts.physicalMutationClear === true', 'facts.terminalClear === true',
-    'for (const row of matrix.transitions)', 'notify({'
+    'optionalSafetyFactClear', '"apiOperationClear"',
+    '"physicalMutationClear"', 'facts.terminalClear === true',
+    'waitArgs.foveation = foveation',
+    'for (const row of matrix.transitions)', 'notify({',
+    'function nonStableNote', 'status: "not_stable"'
 )) {
     Assert-Contains $runner $token 'Deterministic tuning runner'
 }
@@ -129,6 +136,8 @@ foreach ($token in @(
     '`replacementTimeline`', 'Fast measured-loop contract',
     'terminal `qualification-wait` receipt is the transition boundary',
     'Do not invent another previous-transition safety gate',
+    '60,000 ms `position-settle`', '20,000 ms strict waiter',
+    'record `nonStableNote`', 'not permission to overlap mutations',
     '`store()` that exact terminal receipt', 'return only a compact', '`text()`',
     'Store the complete scenario envelope', '`failedStep`',
     '`firstUnreportedStep`', 'never invent that it failed',
@@ -137,6 +146,8 @@ foreach ($token in @(
     'sole server-owned `wait` of exactly 5,000 ms',
     "preceding terminal waiter's", 'At pass finalization', '`load()`',
     'one cumulative evidence-read batch', 'generate the receipt index',
+    '`continueOnError: true`', 'validate each labeled result independently',
+    'unsupported optional operation', 'must not suppress',
     'after every interrupted pass', '`tooling_false_positive`',
     'row was never dispatched',
     'read `qualification_status` once'
@@ -153,7 +164,7 @@ foreach ($token in @(
 )) {
     Assert-Contains $fastStart $token 'Shared post-measurement extraction contract'
 }
-foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', '"timeoutMs":30000', '`timeoutMs: 30000`', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '"action":"clear_history"', 'do not use', '`start_capture`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session', 'do not run another local command', 'never search for it', '`communityshaders.profiler_api`', '`result.status.session.id`', 'Immediately begin transition 1')) {
+foreach ($token in @('six labeled tool steps in this exact order', '`baseline-stress-reset`', '`baseline-stress-start`', '`qualification-begin`', '`qualification-dispatch`', '`profile-apply`', '`qualification-wait`', 'only pre-baseline reset', 'inside the same server-owned scenario', '"timeoutMs":20000', '`timeoutMs: 20000`', 'Do not inspect, validate, persist, or comment', '`stepsRun: 6`', '`results[]` entry `label: profile-apply`', '`result.apply.disposition.name`', '`label: qualification-wait`', '`result.action: qualification_wait`', 'Never search another wrapper location', 'containing scenario response is lost', 'do not replay the scenario, apply, or waiter', 'allow the already-running server scenario', 'at most five additional seconds', 'matching terminal `lastEvidence`', 'Never reapply the profile', 'applies to every baseline and measured waiter', 'must never invoke this handoff scenario', 'handoff scenario is never a cleanup path', 'reset then start texture-lifetime', 'reset then start load-presentation', '"action":"clear_history"', 'do not use', '`start_capture`', 'sole CPU/GPU reset/start', 'Stop only the baseline stress session', 'do not run another local command', 'never search for it', '`communityshaders.profiler_api`', '`result.status.session.id`', 'Immediately begin transition 1')) {
     Assert-Contains $fastStart $token 'Shared server-owned waiter contract'
 }
 foreach ($token in @(
@@ -349,6 +360,7 @@ foreach ($variant in $variants) {
     Assert-True ($firstLiveLine -le 20) "$($variant.Name) delays its first live instruction."
     Assert-True (-not $skill.Contains('../simple-coc/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple COC."
     Assert-True (-not $skill.Contains('../simple-csm/', [StringComparison]::Ordinal)) "$($variant.Name) still preloads Simple CSM."
+    Assert-Contains $skill '"label":"position-settle","wait":60000' $variant.Name
     Assert-True (-not $skill.Contains('"args": { "action": "health" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect health."
     Assert-True (-not $skill.Contains('"args": { "action": "state" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect state."
     Assert-True (-not $skill.Contains('"args": { "action": "scene" }', [StringComparison]::Ordinal)) "$($variant.Name) uses action instead of kind for inspect scene."
@@ -367,8 +379,8 @@ foreach ($variant in $variants) {
         'coc WhiterunDragonsreach', 'communityshaders.upscaling_api',
         '"expectedStateRevision"', '`clientId`', '`commandId`',
         '`persistence: runtime_only`', 'server-owned 5,000 ms wait',
-        '`timeoutMs: 30000`',
-        'one shared 30,000 ms monotonic deadline',
+        '`timeoutMs: 20000`',
+        'one shared 20,000 ms monotonic deadline',
         'full dispatch-relative', 'client-side remaining budget',
         'return upon its first successful receipt',
         '`async: false`', 'poll `operation`',
@@ -386,6 +398,7 @@ foreach ($variant in $variants) {
         'owner-correlated recovery rule immediately',
         'Never replay the', 'terminal `lastEvidence`',
         '`method: none`', '`method: taa`', '`qualityMode: 0`',
+        'waiter `foveation` field',
         'target-correlated server barrier', 'advancing coherent native presentation',
         '`active/active` native controller state',
         'do not call `qualification_cancel` after any terminal waiter receipt',
@@ -477,7 +490,7 @@ foreach ($variant in $variants) {
     Assert-True ($matrix.schemaVersion -eq 1) "$($variant.Name) schema version is wrong."
     Assert-True ($matrix.protocol -eq $variant.Name) "$($variant.Name) matrix identity is wrong."
     Assert-True ($matrix.pacingMilliseconds -eq 5000) "$($variant.Name) pacing is wrong."
-    Assert-True ($matrix.completionTimeoutMilliseconds -eq 30000) "$($variant.Name) timeout is wrong."
+    Assert-True ($matrix.completionTimeoutMilliseconds -eq 20000) "$($variant.Name) timeout is wrong."
     Assert-True ([int]$matrix.traceReadLimit -gt 0) "$($variant.Name) trace read limit is invalid."
     Assert-True (@($matrix.transitions).Count -eq $variant.Count) "$($variant.Name) transition count is wrong."
     $ordinals = @($matrix.transitions | ForEach-Object ordinal)
@@ -520,7 +533,8 @@ foreach ($token in @(
     'reset, start, stop, and raw', 'bounded-read',
     'eErrorDuplicatedConstants` is a transition `FAIL`',
     'continue later matrix rows to preserve the error history',
-    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`'
+    '`fsr4_runtime` is a failure', 'Include the preserved `dlssProfile.name`',
+    'The strict waiter target carries only the active provider setting'
 )) {
     Assert-Contains $nvidiaProtocol $token 'NVIDIA adversarial guard'
 }
@@ -529,6 +543,8 @@ $amd = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-t
 Assert-True ($amd.adapterVendor -eq 'amd') 'AMD matrix vendor is wrong.'
 Assert-True ($amd.initialDestination -eq 'fsr_hoshipa') 'AMD baseline is wrong.'
 Assert-Profile $amd.destinations.fsr_native_aa 'fsr' 'native_aa' $false 'AMD FSR Native AA'
+$amdProtocol = Get-Content -LiteralPath (Join-Path $repositoryRoot 'skills\renderscale-tuning-amd\references\protocol.md') -Raw
+Assert-Contains $amdProtocol 'The strict waiter target carries only active `fsrRuntime` for FSR' 'AMD provider target separation'
 $lanes = @($amd.lanes)
 Assert-True (($lanes.id -join ',') -eq 'explicit_fsr4,explicit_fsr3,fsr4_to_fsr3_fallback') 'AMD lanes are wrong.'
 Assert-True ($lanes[0].configuredFsrRuntime -eq 'fsr4' -and (@($lanes[0].expectedBackends) -join ',') -eq 'fsr4_runtime') 'Explicit FSR4 lane is wrong.'
@@ -558,7 +574,7 @@ foreach ($protocol in @(
         'audit schemas',
         '`plugin_direct_unavailable`',
         'no fallback transport',
-        'without changing the shared 30-second measurement deadline',
+        'without changing the shared 20-second measurement deadline',
         '`qualification_status`',
         'Never replay the',
         'terminal receipt cannot be recovered',

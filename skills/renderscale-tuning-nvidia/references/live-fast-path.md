@@ -6,16 +6,20 @@ during live measurement.
 
 Use the decoded positioning snapshot as the baseline boundary. Build the
 runtime-only DLSS Hoshipa target from its effective profile names, preserving
-`dlssProfile`, and set dormant `fsrRuntime: fsr3`. Run one fail-closed scenario
+`dlssProfile`, and set dormant `fsrRuntime: fsr3` in the public apply target.
+The strict DLSS waiter target includes `dlssProfile` but omits dormant
+`fsrRuntime`; waiter targets prove only the active provider. Run one
+fail-closed scenario
 in this order: render-scale `reset`, render-scale `start`,
 `qualification_begin`, `qualification_dispatch` with
 `startPerformanceTelemetry: false`, public-API `apply`, and strict
 `qualification_wait`. Use unique nonempty string owner/client/command IDs, a
 numeric transition ID, the exact state revision and Build ID, Dragonsreach,
 the `0.3/0.3/0.7` fixture, `persistence: runtime_only`, and the full
-dispatch-relative `timeoutMs: 30000`.
+dispatch-relative `timeoutMs: 20000`.
 
-On strict baseline success, immediately run one handoff scenario: stop the
+On a safe terminal baseline, immediately record a compact non-stable note when
+the strict milestone was not satisfied, then run one handoff scenario: stop the
 exact baseline stress session, start measured stress, reset/start texture
 lifetime, reset/start load presentation, and enable the profiler. Then execute
 the matrix twice in this same orchestration cell. Each row scenario starts
@@ -31,7 +35,7 @@ stored row record. Emit only a compact projection. Do not pause for model
 reasoning, read files, write evidence, hash, or issue a confirmation read
 between rows.
 
-Continue after a semantic row failure only when the terminal receipt proves
+Continue after a semantic baseline or row failure only when the terminal receipt proves
 the owner closed, zero active operation, matching PID/Build ID, and no device
 loss, OOM, producer terminal failure, or unresolved mutation. Otherwise stop
 future mutations and perform only ownership-guarded cleanup. After pass 1,

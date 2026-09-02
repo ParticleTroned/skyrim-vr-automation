@@ -53,7 +53,9 @@ and effective profiles, physical stable evidence, and no active operation.
 Clone the effective profile through its
 `name` fields, set only `method: dlss`,
 `qualityMode: hoshipa`, `renderScaleMode: true`, and dormant
-`fsrRuntime: fsr3`, and preserve `dlssProfile`. Run one synchronous
+`fsrRuntime: fsr3`, and preserve `dlssProfile` in the public apply target.
+The strict waiter target includes only the active DLSS provider setting and
+must omit dormant `fsrRuntime`. Run one synchronous
 (`async: false`), fail-closed mutation scenario: reset then start the short
 baseline-only stress session, `qualification_begin`, then
 `qualification_dispatch` with `startPerformanceTelemetry: false`, then the
@@ -64,7 +66,7 @@ snapshot's exact `stateRevision`, exact Build ID, unique baseline client and
 command IDs, `purpose: direct`, and `persistence: runtime_only`.
 
 The final waiter step uses the same owner and transition, the full
-dispatch-relative `timeoutMs: 30000`, exact target and foveation fixture, and
+dispatch-relative `timeoutMs: 20000`, exact target and foveation fixture, and
 `milestone: strict`; never calculate or pass a client-side remaining budget.
 Do not add an independent operation wait. After the complete scenario returns,
 require
@@ -74,12 +76,13 @@ terminal failure. Require `milestoneTimings` and `replacementTimeline` in this
 terminal receipt as directed by the shared contract; they are output evidence,
 not tool-description fields.
 
-Only when that labeled waiter subreceipt is strictly satisfied, use the shared
+When that labeled waiter subreceipt is terminal and safe, use the shared
 contract's one synchronous handoff scenario to stop the
 baseline-only stress owner and arm the fresh measured stress, texture lifetime,
 load presentation, and profiler owners in its short ownership sequence.
-An unsatisfied or missing waiter subreceipt bypasses handoff and permits only
-the baseline stress owner's guarded stop.
+An unsatisfied receipt records its non-stable presentation state before the
+handoff. A missing or unsafe waiter subreceipt bypasses handoff and permits
+only the baseline stress owner's guarded stop.
 Do not issue a separate CPU/GPU reset during pass 1. Transition 1 dispatch
 requires both captures inactive and atomically resets/starts them. Retain each
 stateful receipt;
@@ -134,8 +137,10 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    Construct the complete API target from the effective profile's `name`
    fields; mutate only `method`, `qualityMode`, and
    `renderScaleMode` from the destination. For FSR entries also set
-   `fsrRuntime: fsr3`. Preserve `dlssProfile` and preserve dormant
-   `fsrRuntime` on None, TAA, DLAA, and DLSS entries. Record the separate
+   `fsrRuntime: fsr3`. The public apply target preserves `dlssProfile` and
+   dormant `fsrRuntime` on None, TAA, DLAA, and DLSS entries. The strict
+   waiter target carries only the active provider setting: `dlssProfile` for
+   DLSS/DLAA, `fsrRuntime` for FSR, and neither for None/TAA. Record the separate
    render-scale controller applied/stable resource keys as physical telemetry;
    for a native target they must be inactive with backend `none` and retain
    that target's exact method.
@@ -175,8 +180,8 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    final qualification step before the owned DLSS trace stop/read described
    above. For vendor
    destinations, pass the full
-   dispatch-relative `timeoutMs: 30000`; never calculate or pass a client-side
-   remaining budget. This is the one shared 30,000 ms monotonic deadline from
+   dispatch-relative `timeoutMs: 20000`; never calculate or pass a client-side
+   remaining budget. This is the one shared 20,000 ms monotonic deadline from
    dispatch, not a second window. It must return upon its first successful
    receipt. Use the
    exact vendor target, fixed foveation fixture, and `milestone: strict`. Map
@@ -203,7 +208,7 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    two-eye native presentation remain required. A missing or mismatched native
    vendor receipt is a failure, not `INCONCLUSIVE`.
    The direct tool transport must outlive the current server waiter budget by
-   five seconds without changing the shared 30-second measurement deadline. A
+   five seconds without changing the shared 20-second measurement deadline. A
    successful waiter still returns immediately and never waits out that
    envelope.
 
@@ -224,18 +229,20 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    five-second receipt bound, preserve all task-owned session IDs, stop future
    calls, and ask the user.
 6. For None and TAA, use the same final scenario `qualification_wait` in
-   Dragonsreach with the full dispatch-relative `timeoutMs: 30000`. Pass
+   Dragonsreach with the full dispatch-relative `timeoutMs: 20000`. Pass
    `milestone: strict` and the exact native target:
    `method: none` or
    `method: taa`, `qualityMode: 0`, and `renderScaleMode: false`; omit
-   `dlssProfile` and `fsrRuntime`. This is a native target, not a manufactured
-   DLSS/FSR target. The target-correlated server barrier requires the
+   `dlssProfile`, `fsrRuntime`, and the waiter `foveation` field. This is a
+   native target, not a manufactured DLSS/FSR target. The configured fixture
+   remains telemetry, but inactive vendor execution is correct and cannot be
+   a foveation mismatch. The target-correlated server barrier requires the
    authoritative requested/effective/stable profiles to equal that target,
    render scale to remain disabled, no active operation, advancing coherent
    native presentation, and either `idle/idle` or `active/active` native
    controller state. Native TAA legitimately reports `active/active`. Its
    physical render-scale resource key remains inactive with backend `none` but
-   retains method TAA. Do not poll `operation` or start a second 30-second window.
+   retains method TAA. Do not poll `operation` or start a second 20-second window.
    Use the apply operation and final snapshot embedded in the terminal waiter;
    require its target and effective profile to match, its state to be
    `completed`, and no active operation. Do not issue a separate read. The
@@ -272,7 +279,9 @@ startup calls or changes completed row classifications.
 
 A semantic strict timeout, unsatisfied milestone, or native-stability timeout
 is a recorded transition `FAIL` or `INCONCLUSIVE`, not permission to hide the
-row or retry it. Continue with the next matrix row when the terminal waiter
+row or retry it. Record the shared `nonStableNote` with the terminal
+presentation disposition and eye/controller state. Continue with the next
+matrix row when the terminal waiter
 proves the game responsive, the qualification owner closed, no active
 operation or unresolved physical mutation, and exact PID/build ownership.
 Do not demand a second snapshot or status receipt for those same facts.
@@ -552,7 +561,11 @@ finalization. Retrieve cumulative operation/event/status/telemetry data and
 `dlss_trace_status` once, materialize the runner-retained terminal and trace
 receipts, persist stop/final-status responses under that pass's `finalization`
 directory, then invoke the packaged shared render-scale finalizer at
-`tools/renderscale-tuning-finalizer/finalizer.js`. During live finalization,
+`tools/renderscale-tuning-finalizer/finalizer.js`. Use one read-only scenario
+with `continueOnError: true` and validate each
+labeled result independently. Treat an unsupported optional operation or event
+history action as `not_exposed`; it must not abort the later status, telemetry,
+or cleanup reads. During live finalization,
 its `collectTracePages` helper obtains the maximum page size from the live
 producer schema, pages with `afterSequence` while `moreAvailable` is true, and
 rejects gaps, duplicates, overwritten requests, or build/session changes.
