@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('inspect', 'validate', 'request-access', 'access-status', 'renew-access', 'release-access', 'recover-access', 'prepare', 'open', 'launch', 'status', 'stop-game', 'terminate-game', 'close', 'recover-close', 'recover-rootbuilder', 'stop', 'terminate', 'release', 'help')]
+    [ValidateSet('inspect', 'validate', 'validate-closed', 'request-access', 'access-status', 'renew-access', 'release-access', 'recover-access', 'prepare', 'open', 'launch', 'status', 'stop-game', 'terminate-game', 'close', 'recover-close', 'recover-rootbuilder', 'stop', 'terminate', 'release', 'help')]
     [string]$Command = 'help',
 
     [string]$ConfigPath,
@@ -56,7 +56,7 @@ function New-MO2ApprovalMetadata {
     }
     $entryPoint = [IO.Path]::GetFullPath($PSCommandPath)
     $oneShotCommands = @('recover-access', 'terminate-game', 'terminate')
-    $readOnlyCommands = @('inspect', 'validate', 'access-status', 'status', 'help')
+    $readOnlyCommands = @('inspect', 'validate', 'validate-closed', 'access-status', 'status', 'help')
     return [pscustomobject][ordered]@{
         hostExecutable = $hostExecutable
         entryPoint = $entryPoint
@@ -134,6 +134,11 @@ try {
         }
         'validate' {
             Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireSKSE:$RequireSKSE -RequireClosed:$RequireClosed -OwnedAccessId $AccessId
+        }
+        'validate-closed' {
+            $validated = Invoke-MO2Validate -Config $config -Profile $Profile -Executable $Executable -RequireClosed -OwnedAccessId $AccessId
+            $validated.command = 'validate-closed'
+            $validated
         }
         'request-access' {
             Invoke-MO2RequestAccess -Config $config -Label $Label -TaskId $TaskId -EstimatedMinutes $EstimatedMinutes -WaitSeconds $WaitSeconds -WhatIf:$WhatIf
