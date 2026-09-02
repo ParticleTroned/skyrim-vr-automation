@@ -496,6 +496,12 @@ function Get-CocQualificationAnalysis {
                 cleanupElapsedMs = $null; cleanupElapsedFrames = $null
                 strictElapsedMs = $null; strictElapsedFrames = $null
                 cleanupTailMs = $null; cleanupTailFrames = $null
+                presentationStable = $null; cleanupDrained = $null
+                strictSatisfied = $null; retryCount = $null
+                sessionStretchObservations = $null
+                vendorFailures = $null; boundsMismatchFallbacks = $null
+                ooms = $null; deviceLosses = $null
+                fidelityMismatches = $null
                 resourcePublication = Get-DevBenchResourcePublicationTelemetry -Response $null
                 preparation = Get-DevBenchRenderScalePreparationTelemetry -Response $statusReceipt
             })
