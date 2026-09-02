@@ -10,7 +10,7 @@ if (-not $git) {
     throw 'git.exe was not found on PATH. Install Git for Windows.'
 }
 
-Push-Location $repositoryRoot
+Push-Location -LiteralPath $repositoryRoot
 try {
     & $git.Source -c "safe.directory=$repositoryRoot" @gitArguments
     exit $LASTEXITCODE

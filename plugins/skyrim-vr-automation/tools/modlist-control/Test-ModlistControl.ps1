@@ -31,6 +31,16 @@ try {
         session = [ordered]@{ lockFile = 'C:\sessions\active.lock.json' }
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $source -Encoding utf8
 
+    $incompleteSource = Join-Path $fixture 'incomplete-source.json'
+    [ordered]@{
+        mo2 = [ordered]@{ root = 'C:\MO2' }
+        defaults = [ordered]@{ profile = 'Stable' }
+        storage = [ordered]@{ sessionStaging = 'C:\sessions' }
+        limits = [ordered]@{ maxEnumeratedFiles = 100 }
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $incompleteSource -Encoding utf8
+    $incompleteRegister = & $entry register -Name incomplete -ConfigPath $incompleteSource -UserRoot $fixture -NoExit | ConvertFrom-Json
+    Assert-ModlistTest (-not $incompleteRegister.ok -and $incompleteRegister.errors[0] -match "missing required object 'session'") 'register rejects a configuration missing any shared required object'
+
     $main = & $entry register -Name main -ConfigPath $source -UserRoot $fixture -NoExit | ConvertFrom-Json
     $synergy = & $entry register -Name synergy -ConfigPath $source -UserRoot $fixture -NoExit | ConvertFrom-Json
     Assert-ModlistTest ($main.ok -and $synergy.ok) 'register creates two exact named configs'
@@ -42,6 +52,22 @@ try {
     $selected = & $entry select -Name main -UserRoot $fixture -NoExit | ConvertFrom-Json
     $resolved = Resolve-MO2ControlConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control') -UserConfigPath $stablePath
     Assert-ModlistTest ($selected.ok -and $resolved.exists -and $resolved.source -eq 'active-modlist' -and $resolved.modlist -eq 'main') 'persisted selection resolves one exact config'
+
+    $activePath = Get-MO2ControlActiveModlistPath -UserRoot $fixture
+    $activeBytes = [IO.File]::ReadAllBytes($activePath)
+    [ordered]@{ schemaVersion = 1; name = 'Not Safe'; selectedAtUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $activePath -Encoding utf8
+    $invalidActive = & $entry resolve -UserRoot $fixture -NoExit | ConvertFrom-Json
+    Assert-ModlistTest (-not $invalidActive.ok -and -not $invalidActive.data.exists -and $invalidActive.data.source -eq 'active-modlist-invalid') 'resolve preserves an invalid active-selection failure even when a fallback path exists'
+    [IO.File]::WriteAllBytes($activePath, $activeBytes)
+
+    $synergyPath = Get-MO2ControlNamedConfigPath -Name synergy -UserRoot $fixture
+    $synergyBytes = [IO.File]::ReadAllBytes($synergyPath)
+    $incompleteSelection = Get-Content -LiteralPath $synergyPath -Raw | ConvertFrom-Json
+    $incompleteSelection.PSObject.Properties.Remove('storage')
+    $incompleteSelection | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $synergyPath -Encoding utf8
+    $rejectedSelection = & $entry select -Name synergy -UserRoot $fixture -NoExit | ConvertFrom-Json
+    Assert-ModlistTest (-not $rejectedSelection.ok -and $rejectedSelection.errors[0] -match "missing required object 'storage'") 'select applies the same complete-configuration validator as register'
+    [IO.File]::WriteAllBytes($synergyPath, $synergyBytes)
 
     $env:SKYRIM_VR_AUTOMATION_MODLIST = 'synergy'
     $environment = Resolve-MO2ControlConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control') -UserConfigPath $stablePath

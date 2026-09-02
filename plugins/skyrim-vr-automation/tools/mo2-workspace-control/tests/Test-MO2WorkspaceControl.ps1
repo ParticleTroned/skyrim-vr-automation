@@ -44,6 +44,18 @@ try {
     'pre-task-overwrite-backup' | Set-Content -LiteralPath (Join-Path $mo2 'overwrite\backup\preexisting.bin') -Encoding utf8
     $mo2Exe = Join-Path $mo2 'ModOrganizer.exe'; $loader = Join-Path $loaderMod 'loader.exe'
     New-Item -ItemType File -Path $mo2Exe -Force | Out-Null; New-Item -ItemType File -Path $loader -Force | Out-Null
+    $communityShadersPluginPath = Join-Path $loaderMod 'SKSE\Plugins\CommunityShaders.dll'
+    $communityShadersPluginBytes = [byte[]](1, 4, 1, 5, 9, 2, 6)
+    [IO.File]::WriteAllBytes($communityShadersPluginPath, $communityShadersPluginBytes)
+    [pscustomobject]@{
+        buildId = 'workspace-build-fixture'
+        artifact = [pscustomobject]@{
+            fileName = 'CommunityShaders.dll'
+            sha256 = (Get-FileHash -LiteralPath $communityShadersPluginPath -Algorithm SHA256).Hash
+            sizeBytes = $communityShadersPluginBytes.Length
+        }
+        identity = [pscustomobject]@{ shaderCache = [pscustomobject]@{ abiId = 'fixture-v1' } }
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $loaderMod 'SKSE\Plugins\CSX.BuildManifest.json') -Encoding utf8
     $ini = Join-Path $mo2 'ModOrganizer.ini'
     [IO.File]::WriteAllText(
         $ini,
@@ -112,12 +124,19 @@ try {
     $iniAfterCas = [IO.File]::ReadAllBytes($ini)
     if ($casRejected.ok -or $casRejected.errors[0] -notmatch 'changed after planning and before replacement' -or [Convert]::ToBase64String($iniAfterCas) -ceq [Convert]::ToBase64String($iniBeforeCas) -or [Text.Encoding]::UTF8.GetString($iniAfterCas) -notmatch 'injected concurrent drift') { throw "Selected-profile mutation did not reject immediate preimage drift while preserving the live external bytes: $($casRejected | ConvertTo-Json -Depth 12 -Compress)" }
     [IO.File]::WriteAllBytes($ini, $iniBeforeCas)
+    $overwriteBeforeOwnerRace = Get-TestProfileFingerprint (Join-Path $mo2 'overwrite')
+    $ownerRace = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label owner-race -SavePolicy FreshGame -InternalTestFailurePoint owner-marker-before-claim -Confirm:$false -NoExit | ConvertFrom-Json
+    $competingMarkerPath = Join-Path $mo2 'overwrite\.codex-workspace-output-owner.json'
+    if ($ownerRace.ok -or -not (Test-Path -LiteralPath $competingMarkerPath -PathType Leaf)) { throw 'A competing Overwrite owner was not rejected by the exclusive in-lock claim.' }
+    Remove-Item -LiteralPath $competingMarkerPath -Force
+    if ((Get-TestProfileFingerprint (Join-Path $mo2 'overwrite')) -cne $overwriteBeforeOwnerRace) { throw 'The rejected competing owner mutated MO2 Overwrite before acquiring ownership.' }
     $created = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label weather -SavePolicy FreshGame -Confirm:$false | ConvertFrom-Json
     if (-not $created.ok -or $created.state -ne 'workspace-ready') { throw "Workspace creation failed: $($created | ConvertTo-Json -Depth 12 -Compress)" }
     if ($created.data.configuration.source -ne 'explicit' -or [IO.Path]::GetFullPath([string]$created.data.configuration.path) -ne [IO.Path]::GetFullPath($configPath)) { throw 'Workspace result did not expose exact configuration resolution provenance.' }
     if ($created.data.ownerTaskId -ne $taskId -or (Get-Content -LiteralPath $ini -Raw) -notmatch ('selected_profile=@ByteArray\(' + [regex]::Escape([string]$created.data.profileName) + '\)')) { throw 'Creation did not bind and select the task-owned workspace.' }
     if ($created.data.profileName -ne $created.data.profile -or $created.data.profileDirectory -ne $created.data.profilePath -or $created.data.modListPath -ne (Join-Path $created.data.profilePath 'modlist.txt')) { throw 'Workspace profile identity fields are not explicit and canonical.' }
     if ($created.data.runtimeOutput.mode -ne 'mo2-overwrite-output' -or -not (Test-Path -LiteralPath $created.data.runtimeOutput.ownerMarkerPath -PathType Leaf)) { throw 'Workspace did not bind its exact MO2 Overwrite owner marker.' }
+    if (-not $created.data.runtimeOutput.cachePathExistedBefore -or -not $created.data.runtimeOutput.backupPathExistedBefore) { throw 'Workspace did not record both pre-existing Overwrite trees.' }
     $runtimeBackupRoot = [string]$created.data.runtimeOutput.backupPath
     foreach ($relativeBackup in @('hashes', 'previous\shader.bin')) {
         $runtimeBackup = Join-Path $runtimeBackupRoot $relativeBackup
@@ -131,6 +150,14 @@ try {
     if (@(Get-Content -LiteralPath $created.data.modListPath | Where-Object { $_ -like '+Codex Runtime Output -*' }).Count -ne 0) { throw 'Workspace registered a runtime-output mod instead of using MO2 Overwrite.' }
     $initialIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId
     if (-not $initialIsolation.ok -or -not $initialIsolation.backupVerification.ok -or [int]$initialIsolation.backupVerification.requiredProviderFiles -ne 2) { throw "Fresh workspace Overwrite isolation was not valid and unprepared: $($initialIsolation | ConvertTo-Json -Depth 12 -Compress)" }
+    $workspaceManifestPath = Join-Path (Join-Path $sessions 'workspaces') ($created.data.workspaceId + '.json')
+    $workspaceManifestBytes = [IO.File]::ReadAllBytes($workspaceManifestPath)
+    $malformedWorkspaceManifest = Get-Content -LiteralPath $workspaceManifestPath -Raw | ConvertFrom-Json -Depth 40
+    $malformedWorkspaceManifest.runtimeOutput.shadowReceipt.copied = @([pscustomobject]@{ winnerClass = 'copied-provider' })
+    $malformedWorkspaceManifest | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $workspaceManifestPath -Encoding utf8
+    $malformedReceiptIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId
+    if ($malformedReceiptIsolation.ok -or @($malformedReceiptIsolation.errors | Where-Object { $_ -match 'malformed record' }).Count -ne 1) { throw 'A malformed backup shadow receipt was not reported as structured isolation evidence.' }
+    [IO.File]::WriteAllBytes($workspaceManifestPath, $workspaceManifestBytes)
     $shadowedNestedBackup = Join-Path $runtimeBackupRoot 'previous\shader.bin'
     $shadowedNestedBackupBytes = [IO.File]::ReadAllBytes($shadowedNestedBackup)
     Remove-Item -LiteralPath $shadowedNestedBackup -Force
@@ -141,7 +168,7 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $lateLowerBackup) -Force | Out-Null
     'late-lower-backup' | Set-Content -LiteralPath $lateLowerBackup -Encoding utf8
     $lateBackupIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId
-    if ($lateBackupIsolation.ok -or @($lateBackupIsolation.errors | Where-Object { $_ -match 'backup receipt no longer covers the current enabled-provider inventory' }).Count -ne 1) { throw 'MO2 backup verification did not reject provider drift.' }
+    if ($lateBackupIsolation.ok -or @($lateBackupIsolation.errors | Where-Object { $_ -match 'backup provider-shadow receipt no longer covers the complete current provider map' }).Count -ne 1) { throw 'MO2 backup verification did not reject provider drift.' }
     Remove-Item -LiteralPath $lateLowerBackup -Force
     $taskOnlyBackup = Join-Path $runtimeBackupRoot 'task-only\new-area.bin'
     New-Item -ItemType Directory -Path (Split-Path -Parent $taskOnlyBackup) -Force | Out-Null
@@ -156,19 +183,31 @@ try {
     $catalogEntry = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'shader-cache-control\Invoke-CSXShaderCacheCatalog.ps1'
     $catalogRoot = Join-Path $fixture 'shader-cache-catalog'
     $shaderSourceSha256 = [string]::new([char]'A', 64)
-    $preparedCache = & $catalogEntry prepare -CatalogRoot $catalogRoot -CachePath $created.data.runtimeOutput.cachePath -ProfilePath $created.data.modListPath -ModsPath $mods -BindToOverwrite -EvidenceDirectory $created.data.runtimeOutput.cacheEvidenceDirectory -ShaderCacheAbi fixture-v1 -ShaderSourceSha256 $shaderSourceSha256 -RequireMaterializedOutput -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
+    $preparedCache = & $catalogEntry prepare -CatalogRoot $catalogRoot -CachePath $created.data.runtimeOutput.cachePath -ProfilePath $created.data.modListPath -ModsPath $mods -BindToOverwrite -EvidenceDirectory $created.data.runtimeOutput.cacheEvidenceDirectory -BuildId $created.data.runtimeOutput.cachePrepareArguments.BuildId -ShaderCacheAbi $created.data.runtimeOutput.cachePrepareArguments.ShaderCacheAbi -WorkspaceId $created.data.workspaceId -OwnershipId $created.data.ownershipId -OwnerMarkerPath $created.data.runtimeOutput.ownerMarkerPath -OwnerMarkerSha256 $created.data.runtimeOutput.ownerMarkerSha256 -ShaderSourceSha256 $shaderSourceSha256 -RequireMaterializedOutput -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
     $preparedIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
     if (-not $preparedCache.ok -or -not $preparedIsolation.ok -or -not $preparedIsolation.cachePlan.verification.ok -or [int]$preparedIsolation.cachePlan.verification.requiredProviderFiles -ne 1) { throw "Prepared Overwrite provider-shadow verification failed. Prepare: $($preparedCache | ConvertTo-Json -Depth 20 -Compress) Isolation: $($preparedIsolation | ConvertTo-Json -Depth 20 -Compress)" }
+    $buildManifestPath = [string]$created.data.runtimeOutput.communityShadersPlugin.manifestPath
+    $buildManifestBytes = [IO.File]::ReadAllBytes($buildManifestPath)
+    Add-Content -LiteralPath $buildManifestPath -Value ' ' -Encoding utf8
+    $buildDriftIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
+    if ($buildDriftIsolation.ok -or @($buildDriftIsolation.errors | Where-Object { $_ -match 'manifest, build ID, or shader-cache ABI changed' }).Count -ne 1) { throw 'MO2 launch isolation did not reject a changed build manifest.' }
+    [IO.File]::WriteAllBytes($buildManifestPath, $buildManifestBytes)
     $shadowedLowerCache = Join-Path $created.data.runtimeOutput.cachePath 'Lighting\later-area.pso'
     $shadowedLowerBytes = [IO.File]::ReadAllBytes($shadowedLowerCache)
     Remove-Item -LiteralPath $shadowedLowerCache -Force
     $missingShadowIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
     if ($missingShadowIsolation.ok -or @($missingShadowIsolation.errors | Where-Object { $_ -match 'Overwrite ShaderCache lacks 1 enabled-provider path' }).Count -ne 1) { throw 'MO2 cache verification did not reject a missing provider shadow.' }
     [IO.File]::WriteAllBytes($shadowedLowerCache, $shadowedLowerBytes)
+    $lowerProviderPath = Join-Path $synthesisMod 'ShaderCache\Lighting\later-area.pso'
+    $lowerProviderBytes = [IO.File]::ReadAllBytes($lowerProviderPath)
+    [IO.File]::WriteAllBytes($lowerProviderPath, [byte[]](9, 8, 7, 6))
+    $changedProviderIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
+    if ($changedProviderIsolation.ok -or @($changedProviderIsolation.errors | Where-Object { $_ -match 'copied-provider identity changed' }).Count -ne 1) { throw 'MO2 cache verification did not reject same-path provider identity drift.' }
+    [IO.File]::WriteAllBytes($lowerProviderPath, $lowerProviderBytes)
     $lateLowerCache = Join-Path $synthesisMod 'ShaderCache\Lighting\second-area.pso'
     'late-lower-provider' | Set-Content -LiteralPath $lateLowerCache -Encoding utf8
     $lateLowerIsolation = Get-MO2TaskWorkspaceIsolation -Config $config -Profile $created.data.profileName -Executable Test -AccessId $accessId -RequirePreparedCache
-    if ($lateLowerIsolation.ok -or @($lateLowerIsolation.errors | Where-Object { $_ -match 'receipt no longer covers the current enabled-provider inventory' }).Count -ne 1) { throw 'MO2 cache verification did not reject provider drift after prepare.' }
+    if ($lateLowerIsolation.ok -or @($lateLowerIsolation.errors | Where-Object { $_ -match 'ShaderCache provider-shadow receipt no longer covers the complete current provider map' }).Count -ne 1) { throw 'MO2 cache verification did not reject provider drift after prepare.' }
     Remove-Item -LiteralPath $lateLowerCache -Force
     $taskOnlyCache = Join-Path $created.data.runtimeOutput.cachePath 'TaskOnly\new-area.pso'
     New-Item -ItemType Directory -Path (Split-Path -Parent $taskOnlyCache) -Force | Out-Null
@@ -183,17 +222,63 @@ try {
     'generated-in-game' | Set-Content -LiteralPath $generatedCache -Encoding utf8
     $completedCache = & $catalogEntry complete -CatalogRoot $catalogRoot -CachePath $created.data.runtimeOutput.cachePath -EvidenceDirectory $created.data.runtimeOutput.cacheEvidenceDirectory -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
     if (-not $completedCache.ok -or $completedCache.state -ne 'complete') { throw "Prepared provider-shadow transaction did not complete: $($completedCache | ConvertTo-Json -Depth 20 -Compress)" }
+    $cacheCompletionPath = [string]$created.data.runtimeOutput.cacheCompletionPath
+    $cacheCompletionBytes = [IO.File]::ReadAllBytes($cacheCompletionPath)
+    $staleCacheCompletion = Get-Content -LiteralPath $cacheCompletionPath -Raw | ConvertFrom-Json -Depth 40
+    $staleCacheCompletion.cacheBinding.workspaceId = 'stale-workspace'
+    $staleCacheCompletion | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $cacheCompletionPath -Encoding utf8
+    $rejectedCompletion = & $entry complete-output -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -Confirm:$false -NoExit | ConvertFrom-Json
+    if ($rejectedCompletion.ok -or -not (Test-Path -LiteralPath $created.data.runtimeOutput.ownerMarkerPath -PathType Leaf)) { throw 'Stale cache completion evidence did not fail closed while retaining Overwrite ownership.' }
+    [IO.File]::WriteAllBytes($cacheCompletionPath, $cacheCompletionBytes)
     $taskGeneratedBackup = Join-Path $runtimeBackupRoot 'latest-build\generated-in-game.bin'
     New-Item -ItemType Directory -Path (Split-Path -Parent $taskGeneratedBackup) -Force | Out-Null
     'generated-in-game' | Set-Content -LiteralPath $taskGeneratedBackup -Encoding utf8
     $completedOutput = & $entry complete-output -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -Confirm:$false | ConvertFrom-Json
     if (-not $completedOutput.ok -or $completedOutput.state -ne 'complete' -or (Test-Path -LiteralPath $created.data.runtimeOutput.ownerMarkerPath -PathType Leaf)) { throw "Workspace Overwrite output did not complete and release its owner marker: $($completedOutput | ConvertTo-Json -Depth 16 -Compress)" }
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeBackupRoot 'preexisting.bin') -PathType Leaf) -or (Test-Path -LiteralPath (Join-Path $runtimeBackupRoot 'hashes') -PathType Leaf)) { throw 'Backup completion did not restore the exact pre-task MO2 Overwrite tree.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $created.data.runtimeOutput.cachePath 'fixture.bin') -PathType Leaf)) { throw 'Cache completion did not retain the pre-existing ShaderCache tree.' }
     $ordinaryCopied = Join-Path $created.data.profilePath 'saves\ordinary.ess'
     if (-not (Test-Path -LiteralPath $ordinaryCopied -PathType Leaf) -or (Get-FileHash -LiteralPath $ordinaryCopied -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath (Join-Path $source 'saves\ordinary.ess') -Algorithm SHA256).Hash) { throw 'Workspace did not copy the complete stable-source saves tree.' }
     if (-not $created.data.inheritedSaves -or $created.data.sourceSaveSnapshot.sha256 -ne $created.data.profileSaveSnapshot.sha256 -or $created.data.sourceSaveSnapshot.fileCount -ne 3) { throw 'Workspace did not report a verified inherited-save snapshot.' }
     if (-not $created.data.copiedWorldEntrySave -or -not $created.data.sourceIntegrity.integrityVerified -or $created.data.sourceIntegrity.runtimeQualified -or [string]::IsNullOrWhiteSpace([string]$created.data.sourceIntegrity.cloneVerifiedUtc) -or $null -ne $created.data.sourceIntegrity.runtimeQualificationEvidence -or $created.data.worldEntryFixture.id -ne 'interior' -or $null -ne $created.data.saveFixture) { throw 'Ordinary fresh creation did not preserve the integrity-verified world-entry baseline independently of SavePolicy.' }
     $workspaceControlRoot = Join-Path $sessions 'workspaces'
+    $interruptedCachePath = Join-Path $mo2 'overwrite\ShaderCache'
+    $interruptedBackupPath = Join-Path $mo2 'overwrite\backup'
+    Remove-Item -LiteralPath $interruptedCachePath -Recurse -Force
+    Remove-Item -LiteralPath $interruptedBackupPath -Recurse -Force
+    New-Item -ItemType Directory -Path $interruptedCachePath, $interruptedBackupPath -Force | Out-Null
+    $interruptedOutputId = 'interrupted-output'
+    $interruptedOwnershipId = 'interrupted-output-owner'
+    $interruptedOutputMarker = Join-Path $mo2 'overwrite\.codex-workspace-output-owner.json'
+    [pscustomobject]@{
+        workspaceId = $interruptedOutputId; ownershipId = $interruptedOwnershipId
+        mode = 'mo2-overwrite-output'; overwritePath = (Join-Path $mo2 'overwrite')
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $interruptedOutputMarker -Encoding utf8
+    $interruptedOutputMarkerHash = (Get-FileHash -LiteralPath $interruptedOutputMarker -Algorithm SHA256).Hash
+    $interruptedBackupEvidence = Join-Path $workspaceControlRoot 'interrupted-output-backup'
+    $transactionTool = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'
+    $interruptedSnapshot = & $transactionTool snapshot -CachePath $interruptedBackupPath -RelativeCachePath backup -EvidenceDirectory $interruptedBackupEvidence -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
+    if (-not $interruptedSnapshot.ok) { throw 'Could not arrange interrupted output-recovery evidence.' }
+    'interrupted-generated-backup' | Set-Content -LiteralPath (Join-Path $interruptedBackupPath 'generated.bin') -Encoding utf8
+    $interruptedOutputProfile = Join-Path $profiles 'Codex interrupted output fixture'
+    New-Item -ItemType Directory -Path $interruptedOutputProfile -Force | Out-Null
+    $interruptedOutputManifest = Join-Path $workspaceControlRoot ($interruptedOutputId + '.json')
+    $interruptedOutputJournal = Join-Path $workspaceControlRoot ($interruptedOutputId + '.creation.journal.json')
+    [ordered]@{
+        contractVersion = '2.0.0'; operation = 'create'; phase = 'output-owner-claimed'
+        workspaceId = $interruptedOutputId; ownershipId = $interruptedOwnershipId
+        profilePath = $interruptedOutputProfile; manifestPath = $interruptedOutputManifest
+        overwriteOwnerMarkerPath = $interruptedOutputMarker; overwriteOwnerMarkerSha256 = $interruptedOutputMarkerHash
+        backupEvidenceDirectory = $interruptedBackupEvidence; cachePath = $interruptedCachePath; backupPath = $interruptedBackupPath
+        cachePathExistedBefore = $false; backupPathExistedBefore = $false
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $interruptedOutputJournal -Encoding utf8
+    $interruptedRecovery = & $entry list-task -ConfigPath $configPath -TaskId $taskId -Compact | ConvertFrom-Json
+    $interruptedOutputJournalResult = Get-Content -LiteralPath $interruptedOutputJournal -Raw | ConvertFrom-Json
+    if (-not $interruptedRecovery.ok -or $interruptedOutputJournalResult.phase -ne 'rolled-back' -or
+        (Test-Path -LiteralPath $interruptedOutputMarker) -or (Test-Path -LiteralPath $interruptedCachePath) -or
+        (Test-Path -LiteralPath $interruptedBackupPath) -or (Test-Path -LiteralPath $interruptedOutputProfile)) {
+        throw 'Startup recovery did not restore absent output trees and release exact Overwrite ownership.'
+    }
     $partialProfile = Join-Path $profiles 'Codex interrupted create fixture'
     New-Item -ItemType Directory -Path $partialProfile -Force | Out-Null
     'partial-clone' | Set-Content -LiteralPath (Join-Path $partialProfile 'modlist.txt') -Encoding utf8
@@ -211,6 +296,7 @@ try {
     Remove-Item -LiteralPath $selectionReceiptPath -Force
     $verified = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label verified -SavePolicy VerifiedFixture -Confirm:$false | ConvertFrom-Json
     if (-not $verified.ok -or -not $verified.data.copiedVerifiedSaves -or $verified.data.saveFixture.id -ne 'interior') { throw 'Verified fixture workspace was not created from the configured default.' }
+    if ($verified.data.runtimeOutput.cachePathExistedBefore -or $verified.data.runtimeOutput.backupPathExistedBefore) { throw 'Workspace did not record both originally absent Overwrite trees.' }
     $recoveredSelection = Get-Content -LiteralPath $selectionJournalPath -Raw | ConvertFrom-Json
     if ($recoveredSelection.phase -ne 'recovered-committed' -or -not (Test-Path -LiteralPath $selectionReceiptPath -PathType Leaf)) { throw 'A subsequent transaction did not discover and finalize the interrupted selected-profile journal.' }
     foreach ($name in @('Save2_KnownGood.ess', 'Save2_KnownGood.skse')) {
@@ -219,10 +305,47 @@ try {
         if (-not (Test-Path -LiteralPath $copied -PathType Leaf) -or (Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $sourceSave -Algorithm SHA256).Hash) { throw "Verified fixture did not copy exact save file: $name" }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $verified.data.profilePath 'saves\ordinary.ess') -PathType Leaf)) { throw 'Verified fixture workspace did not retain the complete source save set.' }
-    $verifiedPreparedCache = & $catalogEntry prepare -CatalogRoot $catalogRoot -CachePath $verified.data.runtimeOutput.cachePath -ProfilePath $verified.data.modListPath -ModsPath $mods -BindToOverwrite -EvidenceDirectory $verified.data.runtimeOutput.cacheEvidenceDirectory -ShaderCacheAbi fixture-v1 -ShaderSourceSha256 $shaderSourceSha256 -RequireMaterializedOutput -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
+    $verifiedPreparedCache = & $catalogEntry prepare -CatalogRoot $catalogRoot -CachePath $verified.data.runtimeOutput.cachePath -ProfilePath $verified.data.modListPath -ModsPath $mods -BindToOverwrite -EvidenceDirectory $verified.data.runtimeOutput.cacheEvidenceDirectory -BuildId $verified.data.runtimeOutput.cachePrepareArguments.BuildId -ShaderCacheAbi $verified.data.runtimeOutput.cachePrepareArguments.ShaderCacheAbi -WorkspaceId $verified.data.workspaceId -OwnershipId $verified.data.ownershipId -OwnerMarkerPath $verified.data.runtimeOutput.ownerMarkerPath -OwnerMarkerSha256 $verified.data.runtimeOutput.ownerMarkerSha256 -ShaderSourceSha256 $shaderSourceSha256 -RequireMaterializedOutput -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
+    'verified-generated-cache' | Set-Content -LiteralPath (Join-Path $verified.data.runtimeOutput.cachePath 'verified-generated.pso') -Encoding utf8
     $verifiedCompletedCache = & $catalogEntry complete -CatalogRoot $catalogRoot -CachePath $verified.data.runtimeOutput.cachePath -EvidenceDirectory $verified.data.runtimeOutput.cacheEvidenceDirectory -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
     $verifiedCompletedOutput = & $entry complete-output -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $verified.data.workspaceId -Confirm:$false | ConvertFrom-Json
     if (-not $verifiedPreparedCache.ok -or -not $verifiedCompletedCache.ok -or -not $verifiedCompletedOutput.ok) { throw 'Verified fixture workspace output transactions did not complete.' }
+    if ((Test-Path -LiteralPath $verified.data.runtimeOutput.cachePath) -or (Test-Path -LiteralPath $verified.data.runtimeOutput.backupPath)) { throw 'Completion did not restore both originally absent Overwrite trees to absence.' }
+    foreach ($mixedCase in @(
+        [pscustomobject]@{ label = 'cache-present'; cachePresent = $true; backupPresent = $false },
+        [pscustomobject]@{ label = 'backup-present'; cachePresent = $false; backupPresent = $true }
+    )) {
+        $mixedCachePath = Join-Path $mo2 'overwrite\ShaderCache'
+        $mixedBackupPath = Join-Path $mo2 'overwrite\backup'
+        foreach ($outputPath in @($mixedCachePath, $mixedBackupPath)) {
+            if (Test-Path -LiteralPath $outputPath) { Remove-Item -LiteralPath $outputPath -Recurse -Force }
+        }
+        if ($mixedCase.cachePresent) {
+            New-Item -ItemType Directory -Path $mixedCachePath -Force | Out-Null
+            'mixed-cache-baseline' | Set-Content -LiteralPath (Join-Path $mixedCachePath 'baseline.bin') -Encoding utf8
+        }
+        if ($mixedCase.backupPresent) {
+            New-Item -ItemType Directory -Path $mixedBackupPath -Force | Out-Null
+            'mixed-backup-baseline' | Set-Content -LiteralPath (Join-Path $mixedBackupPath 'baseline.bin') -Encoding utf8
+        }
+        $mixedWorkspace = & $entry create -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -Label $mixedCase.label -SavePolicy FreshGame -Confirm:$false | ConvertFrom-Json
+        if (-not $mixedWorkspace.ok -or [bool]$mixedWorkspace.data.runtimeOutput.cachePathExistedBefore -ne [bool]$mixedCase.cachePresent -or
+            [bool]$mixedWorkspace.data.runtimeOutput.backupPathExistedBefore -ne [bool]$mixedCase.backupPresent) {
+            throw "Mixed Overwrite prestate was not recorded for $($mixedCase.label)."
+        }
+        $mixedPreparedCache = & $catalogEntry prepare -CatalogRoot $catalogRoot -CachePath $mixedWorkspace.data.runtimeOutput.cachePath -ProfilePath $mixedWorkspace.data.modListPath -ModsPath $mods -BindToOverwrite -EvidenceDirectory $mixedWorkspace.data.runtimeOutput.cacheEvidenceDirectory -BuildId $mixedWorkspace.data.runtimeOutput.cachePrepareArguments.BuildId -ShaderCacheAbi $mixedWorkspace.data.runtimeOutput.cachePrepareArguments.ShaderCacheAbi -WorkspaceId $mixedWorkspace.data.workspaceId -OwnershipId $mixedWorkspace.data.ownershipId -OwnerMarkerPath $mixedWorkspace.data.runtimeOutput.ownerMarkerPath -OwnerMarkerSha256 $mixedWorkspace.data.runtimeOutput.ownerMarkerSha256 -ShaderSourceSha256 $shaderSourceSha256 -RequireMaterializedOutput -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
+        'mixed-generated-cache' | Set-Content -LiteralPath (Join-Path $mixedWorkspace.data.runtimeOutput.cachePath 'mixed-generated.pso') -Encoding utf8
+        'mixed-generated-backup' | Set-Content -LiteralPath (Join-Path $mixedWorkspace.data.runtimeOutput.backupPath 'mixed-generated.bin') -Encoding utf8
+        $mixedCompletedCache = & $catalogEntry complete -CatalogRoot $catalogRoot -CachePath $mixedWorkspace.data.runtimeOutput.cachePath -EvidenceDirectory $mixedWorkspace.data.runtimeOutput.cacheEvidenceDirectory -BlockingProcessNames MO2WorkspaceImpossibleFixtureProcess -NoExit -Confirm:$false | ConvertFrom-Json
+        $mixedCompletedOutput = & $entry complete-output -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $mixedWorkspace.data.workspaceId -Confirm:$false | ConvertFrom-Json
+        if (-not $mixedPreparedCache.ok -or -not $mixedCompletedCache.ok -or -not $mixedCompletedOutput.ok) { throw "Mixed Overwrite completion failed for $($mixedCase.label)." }
+        if ([bool](Test-Path -LiteralPath $mixedCachePath -PathType Container) -ne [bool]$mixedCase.cachePresent -or
+            [bool](Test-Path -LiteralPath $mixedBackupPath -PathType Container) -ne [bool]$mixedCase.backupPresent) {
+            throw "Mixed Overwrite completion did not restore path existence for $($mixedCase.label)."
+        }
+        $mixedRetired = & $entry retire -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $mixedWorkspace.data.workspaceId -Confirm:$false | ConvertFrom-Json
+        if (-not $mixedRetired.ok -or (Test-Path -LiteralPath $mixedWorkspace.data.profilePath)) { throw "Mixed-case workspace retirement failed for $($mixedCase.label)." }
+    }
     $createdMod = & $entry create-mod -ConfigPath $configPath -AccessId $accessId -TaskId $taskId -WorkspaceId $created.data.workspaceId -ModName 'Owned Test Mod' -Confirm:$false | ConvertFrom-Json
     if (-not $createdMod.ok -or $createdMod.state -ne 'mod-created') { throw 'Workspace did not create a separately owned mod directory.' }
     $newMod = [string]$createdMod.data.modDirectory

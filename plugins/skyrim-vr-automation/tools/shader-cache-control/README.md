@@ -161,7 +161,7 @@ After the game and MO2 are closed, complete the cache transaction:
 
 ```powershell
 .\Invoke-CSXShaderCacheCatalog.ps1 complete `
-  -CachePath 'D:\MO2\mods\Task Cache\ShaderCache' `
+  -CachePath 'D:\MO2\overwrite\ShaderCache' `
   -EvidenceDirectory 'D:\Evidence\task-id\shader-cache' `
   -WorkingSetStatus known-working `
   -Promote -Label 'verified task result' `
