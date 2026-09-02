@@ -595,9 +595,26 @@ receipts, persist stop/final-status responses under that pass's `finalization`
 directory, then invoke the packaged shared render-scale finalizer at
 `tools/renderscale-tuning-finalizer/finalizer.js`. Use one read-only scenario
 with `continueOnError: true` and validate each
-labeled result independently. Treat an unsupported optional operation or event
-history action as `not_exposed`; it must not abort the later status, telemetry,
-or cleanup reads. During live finalization,
+labeled result independently. Every tool step in that scenario must place its
+tool input in `args`; never use `arguments`. Before dispatch, reject a batch
+unless every tool step has an `args` object containing its explicit `action`,
+for example:
+
+```json
+{
+  "label": "renderscale-status",
+  "tool": "communityshaders.renderscale",
+  "args": {
+    "action": "status",
+    "expectedBuildId": "<exact-build-id>"
+  }
+}
+```
+
+This validation is finalization-only and must not insert another read, wait,
+or gate between measured rows or passes. Treat an unsupported optional
+operation or event history action as `not_exposed`; it must not abort the later
+status, telemetry, or cleanup reads. During live finalization,
 its `collectTracePages` helper obtains the maximum page size from the live
 producer schema, pages with `afterSequence` while `moreAvailable` is true, and
 rejects gaps, duplicates, overwritten requests, or build/session changes.
