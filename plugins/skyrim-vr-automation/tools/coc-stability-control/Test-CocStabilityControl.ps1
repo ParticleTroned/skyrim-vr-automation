@@ -157,6 +157,33 @@ if (-not $analysis.available -or $analysis.transitions.Count -ne 20 -or
     throw 'Strict milestone analysis did not retain the required timing and failure evidence.'
 }
 
+$missingLabelAnalysis = Get-CocQualificationAnalysis -Scenario (
+    [pscustomobject]@{
+        results = @([pscustomobject]@{
+                label = 'unrelated-record'
+                result = [pscustomobject]@{}
+            })
+    }
+) -ProtocolConfig $config
+if (-not $missingLabelAnalysis.available -or
+    $missingLabelAnalysis.transitions.Count -ne 20 -or
+    @($missingLabelAnalysis.transitions | Where-Object receiptPresent).Count -ne 0) {
+    throw 'Missing scenario labels did not remain absent receipt evidence.'
+}
+
+$moduleScript = Get-Content -LiteralPath $modulePath -Raw
+foreach ($required in @(
+    "Get-CocPropertyValue -Value `$scene -Name 'cell'",
+    "Get-CocPropertyValue -Value `$cell -Name 'editorId'",
+    "Get-CocPropertyValue -Value `$state -Name 'playerLoaded'",
+    'ConvertTo-CocBoolean',
+    'if ($matches.Count -eq 0) { return $null }'
+)) {
+    if (-not $moduleScript.Contains($required, [StringComparison]::Ordinal)) {
+        throw "COC stability module is missing safe optional-field handling: $required"
+    }
+}
+
 $script = Get-Content -LiteralPath $scriptPath -Raw
 foreach ($required in @(
     '[Diagnostics.Stopwatch]::GetTimestamp()',
@@ -179,4 +206,6 @@ foreach ($required in @(
     atomicPerformanceOrigin = $true
     monotonicIndependentWatchdog = $true
     exactlyOnceDispatchClaim = $true
+    missingBaselineFieldsRemainAnomalies = $true
+    missingScenarioLabelsRemainAbsent = $true
 } | ConvertTo-Json

@@ -89,8 +89,11 @@ $selectedProject = if (-not (Test-Path -LiteralPath $statePath)) {
     $ProjectName
 }
 $starting = Test-Path -LiteralPath $statePath
+$receiptOk = -not (Test-Path -LiteralPath (
+    Join-Path $PSScriptRoot 'fail-starting-receipt.txt'
+))
 [pscustomobject][ordered]@{
-    ok = $true
+    ok = $receiptOk
     state = $(if ($starting) { 'starting' } else { 'ready' })
     managed = $true
     project = [pscustomobject][ordered]@{
@@ -134,6 +137,16 @@ $starting = Test-Path -LiteralPath $statePath
         $prepared.projectSwitch.to -ceq $expectedProject
     ) 'The stale generic project was not switched exactly once.'
 
+    'fail' | Set-Content -LiteralPath (
+        Join-Path $csxRoot 'tools\fail-starting-receipt.txt'
+    ) -Encoding ascii
+    $failedStarting = & $scriptPath @common -UserAuthorized `
+        -AuthorizationStatement 'frozen Ghidra' | ConvertFrom-Json -Depth 30
+    Assert-Test (
+        -not $failedStarting.ok -and $failedStarting.state -ceq 'blocked' -and
+        $failedStarting.errors[0] -like '*receipt does not match*'
+    ) 'An unsuccessful starting receipt was accepted as a managed launch.'
+
     $unauthorized = & $scriptPath @common | ConvertFrom-Json -Depth 30
     Assert-Test (
         -not $unauthorized.ok -and
@@ -164,6 +177,7 @@ $starting = Test-Path -LiteralPath $statePath
         provenanceBound = $true
         buildSpecificProject = $expectedProject
         staleProjectSwitched = $true
+        unsuccessfulStartingReceiptFailsClosed = $true
         identityMismatchFailsClosed = $true
     } | ConvertTo-Json
 }
