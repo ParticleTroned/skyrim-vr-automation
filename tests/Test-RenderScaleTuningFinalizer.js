@@ -456,6 +456,17 @@ function testPartialInterruptedFinalization() {
             reportedError: "profiler_timeout",
             failedStep: "profiler-clear-history",
             firstUnreportedStep: "qualification-dispatch",
+            recovery: {
+                decision: {
+                    satisfied: false,
+                    reasons: ["waiter_not_satisfied",
+                        "safe_terminal:active_operation_not_clear"],
+                },
+                apply: { present: true, accepted: true },
+                waiter: { present: true, satisfied: false },
+                safeTerminal: { satisfied: false,
+                    reasons: ["active_operation_not_clear"] },
+            },
         };
         writeJson(path.join(root, "raw", "live-result.json"), {
             ok: false, status: "INTERRUPTED", variant: "nvidia", runId,
@@ -493,13 +504,21 @@ function testPartialInterruptedFinalization() {
             result.summary.assayExecution.interruption
                 .undispatchedTransitionReceipts.length === 1,
         "The failed scenario diagnostic was not retained in the offline summary.");
+        assert(result.summary.assayExecution.interruption.error ===
+            "transition_scenario_failed" &&
+            result.summary.assayExecution.interruption.failure.recovery
+                .decision.reasons.includes("waiter_not_satisfied"),
+        "The interrupted pass error or compact recovery decision was lost.");
         assert(result.index.files.some((entry) =>
             entry.path.endsWith("pass-2/transitions/01/scenario.json")),
         "The raw failed scenario was omitted from the receipt index.");
         const reportText = fs.readFileSync(path.join(root, "report.md"), "utf8");
-        assert(reportText.includes("profiler-clear-history") &&
-            reportText.includes(failure.receiptKey),
-        "The interrupted report omitted the exact failed step or receipt key.");
+        assert(reportText.includes("transition_scenario_failed") &&
+            reportText.includes("profiler-clear-history") &&
+            reportText.includes(failure.receiptKey) &&
+            reportText.includes("waiter_not_satisfied") &&
+            reportText.includes("safe_terminal:active_operation_not_clear"),
+        "The interrupted report omitted the exact error, step, receipt, or recovery reason.");
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

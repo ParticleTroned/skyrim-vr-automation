@@ -937,6 +937,29 @@ async function testFailedRecoveryStopsLaterTransitions() {
         "matrix.v1.json")));
     let injected = false;
     const mock = createMock(0, (receipt, context) => {
+        if (context.recovery) {
+            receipt.satisfied = false;
+            receipt.outcome = "timeout";
+            receipt.timedOutMilestone = "strict";
+            receipt.presentationStable = true;
+            receipt.presentationFailureMask = 0;
+            receipt.presentationFailureReasons = [];
+            receipt.cleanupDrained = true;
+            receipt.cleanupFailureMask = 0;
+            receipt.cleanupFailureReasons = [];
+            receipt.strictSatisfied = false;
+            receipt.strictFailureMask = 64;
+            receipt.strictFailureReasons = [
+                { category: "lifecycle", code: "epoch_mismatch" },
+            ];
+            receipt.upscalingSnapshot.activeOperationId = 27;
+            receipt.upscalingSnapshot.transitionState = named("Stabilizing", 4);
+            receipt.observation.physical = { state: "Stabilizing" };
+            receipt.observation.replacementPresentation = {
+                phase: "awaiting_stereo",
+            };
+            return receipt;
+        }
         if (!injected && !context.baseline && !context.recovery) {
             injected = true;
             receipt.ok = false;
@@ -953,13 +976,7 @@ async function testFailedRecoveryStopsLaterTransitions() {
     }, (root, args, state) => {
         const waiter = root.results.find((entry) =>
             entry.label === "qualification-wait");
-        if (state.recovery) {
-            const apply = root.results.find((entry) =>
-                entry.label === "recovery-profile-apply");
-            apply.result.accepted = false;
-            root.ok = false;
-            root.aborted = true;
-        } else if (waiter && waiter.result && waiter.result.ok === false) {
+        if (!state.recovery && waiter && waiter.result && waiter.result.ok === false) {
             root.ok = false;
             root.aborted = true;
         }
@@ -976,6 +993,44 @@ async function testFailedRecoveryStopsLaterTransitions() {
     assert(result.ok === false && result.status === "INTERRUPTED" &&
         result.lanes[0].passes[0].error === "transition_recovery_failed",
     "A failed reset did not stop the assay explicitly.");
+    const failure = result.lanes[0].passes[0].failure;
+    assert(failure && failure.ok === true && failure.aborted === false &&
+        failure.stepsRun === 4 && failure.failedStep === null &&
+        failure.firstUnreportedStep === null,
+    "The successful outer recovery scenario was not distinguished from its semantic failure.");
+    const recovery = failure.recovery;
+    assert(recovery && recovery.scenarioOk === true &&
+        recovery.apply.present === true && recovery.apply.accepted === true &&
+        recovery.apply.disposition === "queued" &&
+        recovery.waiter.present === true && recovery.waiter.satisfied === false &&
+        recovery.waiter.outcome === "timeout" &&
+        recovery.waiter.timedOutMilestone === "strict",
+    "The recovery apply or waiter result was not preserved compactly.");
+    assert(recovery.milestones.presentationStable === true &&
+        recovery.milestones.cleanupDrained === true &&
+        recovery.milestones.strictSatisfied === false &&
+        recovery.failures.presentation.mask === 0 &&
+        recovery.failures.cleanup.mask === 0 &&
+        recovery.failures.strict.mask === 64 &&
+        recovery.failures.strict.reasons.values.includes(
+            "lifecycle:epoch_mismatch"),
+    "The recovery milestone failure was not retained.");
+    assert(recovery.safeTerminal.satisfied === false &&
+        recovery.safeTerminal.reasons.includes("active_operation_not_clear") &&
+        recovery.controller.activeOperationId === 27 &&
+        recovery.controller.transitionState === "Stabilizing" &&
+        recovery.controller.physicalState === "Stabilizing" &&
+        recovery.controller.presentationPhase === "awaiting_stereo",
+    "The recovery terminal/controller state was not retained.");
+    assert(recovery.evidence.milestoneTimingsPresent === true &&
+        recovery.evidence.replacementTimelinePresent === true &&
+        recovery.evidence.terminalTimelinePresent === true &&
+        recovery.terminalIdentity.proof.contractGeneration === 9 &&
+        recovery.terminalIdentity.proof.transitionEpoch === 9 &&
+        recovery.decision.reasons.includes("waiter_not_satisfied") &&
+        recovery.decision.reasons.includes(
+            "safe_terminal:active_operation_not_clear"),
+    "The recovery proof identity or exact rejection reasons were not retained.");
     const measuredApplies = mock.scenarioCalls.flatMap((call) => call.steps)
         .filter((step) => step.label === "profile-apply");
     assert(measuredApplies.length === 2,
@@ -985,6 +1040,11 @@ async function testFailedRecoveryStopsLaterTransitions() {
     assert(retained.recovery.status === "FAILED" &&
         typeof retained.recoveryReceiptKey === "string",
     "The failed recovery was not linked from the interrupted row.");
+    const recoveryEvidence = mock.stores.get(retained.recoveryReceiptKey);
+    assert(recoveryEvidence.failureSnapshot &&
+        recoveryEvidence.failureSnapshot.decision.reasons.includes(
+            "waiter_not_satisfied"),
+    "The recovery receipt did not retain the same bounded failure snapshot.");
 }
 
 async function testDeviceLossNeverAttemptsRecovery() {

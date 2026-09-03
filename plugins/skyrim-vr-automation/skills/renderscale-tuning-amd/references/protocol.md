@@ -240,6 +240,13 @@ begin, dispatch, wait, and any cancellation; never reuse either pair.
    The interrupted live result must enumerate the retained receipt keys and
    preserve every earlier completed row/pass for offline materialization.
 
+   When baseline recovery is semantically rejected after its scenario returns,
+   embed the runner's bounded recovery assessment in the interruption. Preserve
+   apply acceptance, waiter and milestone states, decoded failure masks/reasons,
+   safe-terminal blockers, controller state, evidence presence, and terminal
+   generation/epoch identity. This projection is diagnostic only: it must not
+   add calls, waits, gates, retries, or change the recovery decision.
+
    If the mutation-and-wait scenario response is lost, apply the shared
    contract's owner-correlated recovery rule immediately. Never replay the
    scenario, apply, or waiter. Recover matching terminal `lastEvidence` from

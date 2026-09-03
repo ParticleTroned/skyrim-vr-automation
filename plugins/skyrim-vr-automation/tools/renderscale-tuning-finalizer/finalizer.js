@@ -810,6 +810,10 @@ function report(summary) {
     }).join("\n");
     const interruption = summary.assayExecution.interruption;
     const failure = interruption && interruption.failure;
+    const recovery = failure && failure.recovery;
+    const recoveryDecision = recovery && recovery.decision;
+    const recoveryReasons = recoveryDecision &&
+        Array.isArray(recoveryDecision.reasons) ? recoveryDecision.reasons : [];
     const stretchRows = summary.presentationStretchAnomalies.transitions
         .map((entry) => `| ${entry.lane || "default"} | ${entry.pass} | ` +
             `${entry.ordinal} | ${JSON.stringify(entry.from)} | ` +
@@ -835,6 +839,15 @@ function report(summary) {
             `- Failed scenario step: **${failure.failedStep || "not_exposed"}** ` +
             `(first unreported: ${failure.firstUnreportedStep || "none"}; ` +
             `receipt: ${failure.receiptKey || "not_exposed"})\n` : "") +
+        (recovery ?
+            `- Recovery decision: **${recoveryDecision &&
+                recoveryDecision.satisfied === true ? "SATISFIED" : "FAILED"}** ` +
+            `(apply accepted: ${recovery.apply && recovery.apply.accepted}; ` +
+            `waiter satisfied: ${recovery.waiter && recovery.waiter.satisfied}; ` +
+            `safe terminal: ${recovery.safeTerminal &&
+                recovery.safeTerminal.satisfied})\n` : "") +
+        (recoveryReasons.length > 0 ?
+            `- Recovery blockers: **${recoveryReasons.join("; ")}**\n` : "") +
         (summary.memoryConfirmation ?
             `- Memory confirmation: **${summary.memoryConfirmation.verdict}**\n` : "") +
         `- Presentation stretch: **` +
@@ -915,6 +928,9 @@ function finalizeEvidence(options) {
     }
     const interrupted = interruptedLiveResult(
         root, variant, runIds[0]);
+    const interruptedPass = interrupted && interrupted.lanes && interrupted.lanes
+        .flatMap((lane) => lane.passes || [])
+        .find((pass) => pass.status === "INTERRUPTED");
     const expectedRows = options.expectedRows ??
         (existing.assayExecution &&
             existing.assayExecution.expectedTerminalReceipts) ??
@@ -987,11 +1003,10 @@ function finalizeEvidence(options) {
             transitionsDispatched: rows.length,
             expectedTransitions: expectedRows,
             interruption: interrupted ? {
-                error: interrupted.error || null,
+                error: interrupted.error || interruptedPass &&
+                    interruptedPass.error || null,
                 failure: interrupted.failure ||
-                    interrupted.lanes && interrupted.lanes
-                        .flatMap((lane) => lane.passes || [])
-                        .find((pass) => pass.status === "INTERRUPTED")?.failure || null,
+                    interruptedPass && interruptedPass.failure || null,
                 undispatchedTransitionReceipts: undispatchedFailures.map((entry) =>
                     relative(root, entry.file)),
             } : null },
