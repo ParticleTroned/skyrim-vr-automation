@@ -482,6 +482,15 @@ or overflowed evidence. Missing `firstPhysicalMutation` is valid only when
 `mutationExpectation` is explicitly `not_required`; otherwise it is
 `INCONCLUSIVE`. Do not synthesize a missing facet from terminal status.
 
+For None and TAA, correlate the nonzero replacement transaction generation at
+the physical-mutation boundary with an exact native presentation whose contract
+and provider generations are both zero. Require the same request, transition
+epoch, device, dimensions, positive publication generation and resource
+revision, plus coherent matching left/right eye identity. Do not require the
+transaction generation to equal native generation zero. DLSS and FSR proofs
+retain the published vendor-generation rule, and all post-mutation
+old-generation rejection remains strict.
+
 
 Report phase-counter authority separately as `MATCHED`, `MISMATCHED`, or
 `INCOMPLETE`. Keep every nonzero counter visible as a reported pipeline

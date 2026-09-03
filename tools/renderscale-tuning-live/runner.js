@@ -716,15 +716,49 @@ async function runRenderScaleTuningLive(context) {
         return Number.isSafeInteger(value) && value >= 0;
     }
 
-    function matchesMutationBoundaryGeneration(boundaryGeneration, proofGeneration) {
-        return nonNegativeInteger(boundaryGeneration) &&
-            nonNegativeInteger(proofGeneration) &&
-            (boundaryGeneration === 0 || boundaryGeneration === proofGeneration);
+    function isVendorTarget(target) {
+        return target && (target.method === "dlss" || target.method === "fsr");
+    }
+
+    function matchesMutationBoundaryGeneration(boundaryGeneration, proofGeneration, target) {
+        if (!nonNegativeInteger(boundaryGeneration) ||
+            !nonNegativeInteger(proofGeneration) || !target) {
+            return false;
+        }
+        return isVendorTarget(target) ?
+            boundaryGeneration === 0 || boundaryGeneration === proofGeneration :
+            proofGeneration === 0;
+    }
+
+    function exactNativeStereoProof(proof, target) {
+        const exactEye = (eye) => eye &&
+            positiveInteger(eye.frame) && eye.frame === proof.frame &&
+            positiveInteger(eye.qpcTick) &&
+            positiveInteger(eye.compositorCycleToken) &&
+            eye.compositorCycleToken === proof.compositorCycleToken &&
+            positiveInteger(eye.transitionEpoch) &&
+            eye.transitionEpoch === proof.transitionEpoch &&
+            eye.method === target.method && eye.backend === "none" &&
+            eye.generation === 0 && eye.deviceIdentity === proof.deviceIdentity &&
+            eye.resourceRevision === proof.resourceRevision &&
+            eye.renderWidth === proof.renderWidth &&
+            eye.renderHeight === proof.renderHeight &&
+            eye.displayWidth === proof.displayWidth &&
+            eye.displayHeight === proof.displayHeight &&
+            eye.vendorDispatchFrame === 0 && eye.vendorDispatchSerial === 0 &&
+            eye.vendorRuntimeFallback === false;
+        return positiveInteger(proof.frame) && positiveInteger(proof.qpcTick) &&
+            positiveInteger(proof.compositorCycleToken) && proof.backend === "none" &&
+            proof.contractGeneration === 0 &&
+            proof.providerRuntimeGeneration === 0 &&
+            proof.sharedVendorDispatchRequired === false &&
+            proof.vendorDispatchProven === false &&
+            exactEye(proof.leftEye) && exactEye(proof.rightEye);
     }
 
     function exactTargetProof(proof, target) {
         if (!proof || proof.proven !== true || !target) return false;
-        const vendorTarget = target.method === "dlss" || target.method === "fsr";
+        const vendorTarget = isVendorTarget(target);
         const expectedKind = vendorTarget ?
             "exact_vendor_evaluation" : "exact_native_presentation";
         if (proof.kind !== expectedKind || proof.method !== target.method ||
@@ -744,12 +778,9 @@ async function runRenderScaleTuningLive(context) {
             proof.displayHeight,
         ];
         if (!identifiers.every(positiveInteger)) return false;
-        const generationValidator = target.renderScaleMode ?
-            positiveInteger : nonNegativeInteger;
-        if (!generationValidator(proof.contractGeneration)) return false;
-        if (vendorTarget && !generationValidator(proof.providerRuntimeGeneration)) {
-            return false;
-        }
+        if (vendorTarget && (!positiveInteger(proof.contractGeneration) ||
+            !positiveInteger(proof.providerRuntimeGeneration))) return false;
+        if (!vendorTarget && !exactNativeStereoProof(proof, target)) return false;
         return target.renderScaleMode ?
             proof.renderWidth < proof.displayWidth &&
                 proof.renderHeight < proof.displayHeight :
@@ -806,7 +837,7 @@ async function runRenderScaleTuningLive(context) {
                 notRequiredEvidence.replacementTransitionEpoch &&
             matchesMutationBoundaryGeneration(
                 notRequiredEvidence.replacementContractGeneration,
-                notRequiredProof.contractGeneration) &&
+                notRequiredProof.contractGeneration, target) &&
             positiveInteger(notRequiredEvidence.replacementDeviceIdentity) &&
             notRequiredProof.deviceIdentity ===
                 notRequiredEvidence.replacementDeviceIdentity;
@@ -1061,7 +1092,7 @@ async function runRenderScaleTuningLive(context) {
                     boundary.replacementTransitionEpoch ||
                 !matchesMutationBoundaryGeneration(
                     boundary.replacementContractGeneration,
-                    firstNewProof.contractGeneration) ||
+                    firstNewProof.contractGeneration, target) ||
                 firstNewProof.deviceIdentity !==
                     boundary.replacementDeviceIdentity) {
                 producerInvalid.push("first_new_generation_owner_mismatch");
