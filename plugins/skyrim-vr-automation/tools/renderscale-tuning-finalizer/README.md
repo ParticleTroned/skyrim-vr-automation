@@ -97,3 +97,8 @@ physical native/scaled backend and required fallback proof. Failed or
 missing qualification prevents a supported comparison assessment; it does
 not rewrite terminal render results. Blocked-lane memory is inapplicable
 only with retained capability proof and no contradictory execution evidence.
+
+Ledger CSV reads admit complete JSON detail cells up to the file byte length
+and restore the caller's parser limit afterward. Numeric audits and
+historical-cell validation share this reader; no caller-side CSV override
+or truncation is needed.
