@@ -14,6 +14,7 @@ const opaque = value => value === null || typeof value === "string" &&
     /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) <= 0xffffffffffffffffn;
 const optionalTick = value => value === null || positive(value);
 const masks = value => nonnegative(value) && value <= 0xffffffff;
+const guardReleaseObligations = 1 | 2 | 4 | 8;
 
 function validOwnedReleasePayload(event) {
     const proof = event.ownedRelease;
@@ -27,6 +28,10 @@ function validOwnedReleasePayload(event) {
         !["guard_exemption", "presentation"].includes(proof.eligibilityScope) ||
         !["oldProofConsumed", "targetPublished", "providerPrepared", "eligible"].every(key => typeof proof[key] === "boolean")) return false;
     if (proof.eligible && ((proof.satisfiedObligations & proof.requiredObligations) >>> 0) !== proof.requiredObligations) return false;
+    if (proof.eligible && (!proof.oldProofConsumed || !proof.targetPublished ||
+        proof.targetFSRRevision === null || proof.targetDLSSRevision === null)) return false;
+    if (proof.eligible && proof.eligibilityScope === "guard_exemption" &&
+        (proof.requiredObligations & guardReleaseObligations) !== guardReleaseObligations) return false;
     if (proof.requiredProviders === 0 && (proof.oldProofConsumed || proof.eligible)) return false;
     return [proof.requestQueuedQpc, proof.blockingCleanupReadyQpc].every(tick => tick === null || tick <= event.timestampQpc);
 }
@@ -110,9 +115,17 @@ function ownedReleaseTelemetry(events, clock, retained, owner) {
     for (const event of events) {
         if (ownedReleaseEvents.has(event.event) && !validOwnedReleasePayload(event)) continue;
         if (event.event === "OwnedReleaseConsumed") {
-            if (active && !active.promotion) active.closure = "replaced";
+            if (active && !active.promotion && !active.closure) active.closure = "replaced";
             active = { consumed: event, identity: certificateIdentity(event), events: [], reasons: [], promotion: null };
             attempts.push(active);
+        }
+        if (active?.failure) {
+            active.followingEvents.push(event);
+            if (event.event === "Promoted") {
+                active.recoveryPromotion = event;
+                active = null;
+            }
+            continue;
         }
         if (ownedReleaseEvents.has(event.event)) {
             if (!active) {
@@ -123,7 +136,11 @@ function ownedReleaseTelemetry(events, clock, retained, owner) {
             active.events.push(event);
         } else if (active && ["ProofRevoked", "Failure"].includes(event.event)) {
             active.events.push(event);
-            if (event.event === "Failure") active.closure = "failed";
+            if (event.event === "Failure") {
+                active.closure = "failed";
+                active.failure = event;
+                active.followingEvents = [];
+            }
         } else if (active && event.event === "Promoted") {
             active.promotion = event;
             active.events.push(event);
@@ -167,7 +184,7 @@ function ownedReleaseTelemetry(events, clock, retained, owner) {
         }
         if (publication && !publication.ownedRelease.targetPublished) reasons.push("target_publication_not_confirmed");
         if (prepared && !prepared.ownedRelease.providerPrepared) reasons.push("target_preparation_not_confirmed");
-        const certificateRevoked = Boolean(revoked && (!eligibility || revoked.sequence > eligibility.sequence));
+        const certificateRevoked = Boolean(attempt.failure || revoked && (!eligibility || revoked.sequence > eligibility.sequence));
         const guardExemptionClaimed = eligibility?.ownedRelease.eligible === true &&
             eligibility.ownedRelease.eligibilityScope === "guard_exemption" && !certificateRevoked;
         if (attempt.promotion && !eligibility) reasons.push("promotion_eligibility_endpoint_missing");
@@ -202,7 +219,7 @@ function ownedReleaseTelemetry(events, clock, retained, owner) {
                 beginFrame: begin?.frame ?? null, endFrame: end?.frame ?? null,
                 frames: result.status === "complete" && end.frame >= begin.frame ? end.frame - begin.frame : null };
         };
-        return { status: !valid ? "incomplete" : certificateRevoked ? "revoked" : !consumptionClaimed ? "not_consumed" : eligibility?.ownedRelease.eligible === false ? "denied" :
+        return { status: !valid ? "incomplete" : attempt.failure ? "failed" : certificateRevoked ? "revoked" : !consumptionClaimed ? "not_consumed" : eligibility?.ownedRelease.eligible === false ? "denied" :
             readyReasons.length ? "unproven" : attempt.promotion ? "complete" : "observed", reasons: [...new Set(reasons)], identity: attempt.identity,
             identityReasons, closure: attempt.closure ?? null,
             eligibilityScope: eligibility?.ownedRelease.eligibilityScope ?? null,
@@ -213,9 +230,11 @@ function ownedReleaseTelemetry(events, clock, retained, owner) {
             consumedSequence: attempt.consumed?.sequence ?? null, publicationSequence: publication?.sequence ?? null,
             preparedSequence: prepared?.sequence ?? null, eligibilitySequence: eligibility?.sequence ?? null,
             promotionSequence: attempt.promotion?.sequence ?? null,
+            failureSequence: attempt.failure?.sequence ?? null, recoveryPromotionSequence: attempt.recoveryPromotion?.sequence ?? null,
+            recoveryPromotionCorrelation: attempt.recoveryPromotion ? "same_request_epoch_after_failure_no_certificate_attribution" : null,
             promotionCorrelation: attempt.promotion ? certificateRevoked ? "request_epoch_after_revoked_certificate" :
                 "request_epoch_and_open_certificate_sequence" : null,
-            events: attempt.events,
+            events: attempt.events, followingEvents: attempt.followingEvents ?? [],
             intervals: { readyToConsumed: readyReasons.length ?
                     { ...tickInterval(null, attempt.consumed?.timestampQpc, clock.qpcFrequency, readyReasons[0]), reasons: readyReasons } : interval(ready, attempt.consumed),
                 consumedToTargetPublished: interval(attempt.consumed, publication),
@@ -223,11 +242,15 @@ function ownedReleaseTelemetry(events, clock, retained, owner) {
                 targetPublishedToEligibility: interval(publication, eligibility),
                 eligibilityToProviderPrepared: eligibility?.ownedRelease.eligibilityScope === "presentation" ?
                     tickInterval(null, null, clock.qpcFrequency, "presentation_eligibility_follows_provider_preparation") : interval(eligibility, prepared),
-                providerPreparedToPromotion: interval(prepared, attempt.promotion),
-                eligibilityToPromotion: interval(eligibility, attempt.promotion),
-                consumedToBlockingCleanupReady: tickInterval(attempt.consumed?.timestampQpc,
+                providerPreparedToPromotion: attempt.failure ? tickInterval(null, null, clock.qpcFrequency,
+                    "certificate_failed_before_promotion") : interval(prepared, attempt.promotion),
+                eligibilityToPromotion: attempt.failure ? tickInterval(null, null, clock.qpcFrequency,
+                    "certificate_failed_before_promotion") : interval(eligibility, attempt.promotion),
+                failureToRecoveryPromotion: interval(attempt.failure, attempt.recoveryPromotion),
+                consumedToBlockingCleanupReady: { ...tickInterval(attempt.consumed?.timestampQpc,
                     eligibility?.ownedRelease.blockingCleanupReadyQpc, clock.qpcFrequency,
-                    valid ? null : "certificate_evidence_invalid") } };
+                    valid ? null : "certificate_evidence_invalid"),
+                    definition: "consumed_to_observed_cleanup_ownership_ready_not_fence_completion" } } };
     });
     const reasons = [...new Set(analyzed.flatMap(attempt => attempt.reasons))];
     if (stages.some(event => !validOwnedReleasePayload(event))) reasons.push("invalid_stage_payload");
@@ -258,6 +281,7 @@ function ownedReleaseReport(transitions) {
         "Guard exemption does not enable vendor dispatch. Provider preparation and coherent stereo still gate promotion. " +
         "Denied, revoked and unproven receipts do not establish proof-driven release. " +
         "Intervals use producer CPU observations; fence readiness is not the exact GPU completion time. " +
+        "blockingCleanupReadyQpc observes cleanup-ownership readiness, not completion of detached retirement fences. " +
         "Displayed milliseconds are rounded to two decimals; exact QPC, frame endpoints and full precision remain in summary.json and transitions.csv.\n\n" +
         "| Lane | Pass | Row | Certificate | Guard exempt | Request to admission ms | All ready to consumed ms | Consumed to published ms | Published to provider prepared ms | Provider prepared to promoted ms | Gaps |\n" +
         "| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n" + rows.join("\n") + "\n\n" +

@@ -164,6 +164,14 @@ promotion; retain that outcome without claiming proof-driven release.
 Missing preparation after revocation remains explicitly unavailable.
 An explicit unconsumed receipt with denied eligibility is `not_consumed`;
 a missing consumption event for a receipt that claims consumption is a gap.
+An eligible receipt must confirm consumption and target publication, with
+both target provider revisions present; target queue/fence identities may
+be null for a host-only route. Guard eligibility must require and satisfy
+obligation bits 1, 2, 4 and 8, while permitting additive higher bits.
+Eligibility does not require providerPrepared.
+A same-owner Failure closes the certificate as failed and clears the derived
+guard-exempt flag. Preserve subsequent events and any recovery promotion
+separately; never attribute that promotion to the failed certificate.
 
 The request-to-admission interval uses the unique same-owner, same-clock
 `preparation.events` request_queued observation, never the API dispatch
@@ -173,7 +181,10 @@ measure CPU observation times, not the exact instant GPU execution ended.
 Report each fence interval and ready-to-consumed, consumed-to-publication,
 publication-to-provider-preparation, publication-to-eligibility, and
 provider-preparation/eligibility-to-promotion intervals with exact QPC
-endpoints. Missing blocking-cleanup completion remains null. A legacy
+endpoints. `blockingCleanupReadyQpc` observes when blocking-cleanup ownership
+obligations are satisfied; it does not observe detached retirement fence
+completion or isolate cleanup execution cost. The corresponding elapsed
+interval carries that definition, and an unobserved endpoint remains null. A legacy
 Promoted event with generation zero is correlated by owner and the open
 certificate sequence, with target-generation proof explicitly unavailable.
 Old runs remain `ownedRelease.status=not_exposed`; do not infer these stages

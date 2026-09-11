@@ -209,6 +209,55 @@ function testOwnedReleaseTelemetry() {
     event(zeroProviders, "OwnedReleaseConsumed").ownedRelease.requiredProviders = 0;
     assert.equal(retryTelemetry(zeroProviders).status, "incomplete");
 
+    for (const [position, tick, frame] of [[11, 165, 16], [12, 180, 18]]) {
+        const failed = fixture();
+        failed.waiter.status.retryTelemetry.events.splice(position, 0,
+            { event: "Failure", timestampQpc: tick, frame, reason: "provider_failure" });
+        const failedResult = retryTelemetry(resequence(failed));
+        const failedAttempt = failedResult.ownedRelease.attempts[0];
+        assert.equal(failedResult.status, "complete", "Observed runtime failure is not a reporting failure.");
+        assert.equal(failedAttempt.status, "failed");
+        assert.equal(failedAttempt.guardExempt, false);
+        assert.equal(failedAttempt.closure, "failed");
+        assert.equal(failedAttempt.promotionSequence, null);
+        assert.equal(failedAttempt.promotionCorrelation, null);
+        assert.equal(failedAttempt.intervals.eligibilityToPromotion.milliseconds, null);
+        assert.equal(failedAttempt.intervals.failureToRecoveryPromotion.milliseconds, 190 - tick);
+        assert.equal(failedAttempt.recoveryPromotionCorrelation, "same_request_epoch_after_failure_no_certificate_attribution");
+        assert.ok(failedAttempt.followingEvents.some(entry => entry.event === "Promoted"));
+        if (position === 11) assert.equal(failedAttempt.preparedSequence, null,
+            "Preparation after failure cannot restore the failed certificate.");
+    }
+
+    for (const corrupt of [proof => { proof.targetPublished = false; },
+        proof => { proof.oldProofConsumed = false; }, proof => { proof.targetFSRRevision = null; },
+        proof => { proof.targetDLSSRevision = null; }, proof => { proof.requiredObligations = 0; },
+        proof => { proof.requiredObligations = 8; }]) {
+        const invalidEligibility = fixture();
+        corrupt(event(invalidEligibility, "OwnedReleaseEligibility").ownedRelease);
+        const result = retryTelemetry(invalidEligibility);
+        assert.equal(result.status, "incomplete");
+        assert.equal(result.retryCount, null);
+        assert.equal(result.ownedRelease.attempts[0].guardExempt, false);
+    }
+
+    const hostOnly = fixture();
+    for (const entry of hostOnly.waiter.status.retryTelemetry.events.filter(entry => entry.ownedRelease)) {
+        entry.ownedRelease.targetQueueIdentity = null;
+        entry.ownedRelease.targetFenceIdentity = null;
+    }
+    const hostOnlyResult = retryTelemetry(hostOnly);
+    assert.equal(hostOnlyResult.status, "complete");
+    assert.equal(hostOnlyResult.ownedRelease.attempts[0].guardExempt, true);
+    assert.equal(event(hostOnly, "OwnedReleaseEligibility").ownedRelease.providerPrepared, false,
+        "Guard eligibility precedes actual provider preparation.");
+
+    const cleanupOwnership = fixture();
+    event(cleanupOwnership, "OwnedReleaseEligibility").ownedRelease.blockingCleanupReadyQpc = 151;
+    const ownershipInterval = retryTelemetry(cleanupOwnership).ownedRelease.attempts[0].intervals.consumedToBlockingCleanupReady;
+    assert.equal(ownershipInterval.milliseconds, 13);
+    assert.equal(ownershipInterval.definition, "consumed_to_observed_cleanup_ownership_ready_not_fence_completion");
+
 }
 
 if (require.main === module) {
