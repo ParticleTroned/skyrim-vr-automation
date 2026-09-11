@@ -61,7 +61,9 @@ foreach ($required in @(
 foreach ($required in @(
     '`prepare_coc` exactly once as the first stateful call',
     'Before the unmeasured positioning COC',
-    'Do not query the profiler service or',
+    'Dispatch positioning immediately',
+    'do not repeat successful verification',
+    'invalid-request or stop-on-error probe',
     'After exact-cell positioning',
     'complete measurement',
     'reset each supported lane once in serialized order',
@@ -105,8 +107,9 @@ foreach ($required in @(
     'Do not repeat the positioning COC',
     'capture.requiresEnabled: true',
     '`contractMajor: 1`',
-    'but omits only the required `frameCount`',
-    '`invalid_field`',
+    'Reuse an already successful identity binding',
+    'immediately dispatch the positioning COC',
+    'Do not run a deliberate invalid-request or stop-on-error probe',
     'stop before the',
     '`set_enabled`',
     '`enabled: true`',
@@ -134,6 +137,9 @@ foreach ($required in @(
     }
 }
 foreach ($forbidden in @(
+    'but omits only the required `frameCount`',
+    'After the negative proof passes',
+    'preflight negative probe proved',
     'bounded setup fan-out',
     'reset CPU/GPU telemetry',
     'refresh the live schema inventory exactly once',

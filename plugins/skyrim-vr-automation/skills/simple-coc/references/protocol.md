@@ -15,35 +15,40 @@
 - Qualification: one strict waiter per transition, 30,000 ms timeout, no
   target profile. VR FPS Stabilizer owns profile selection.
 - Scenario: one async DevBench scenario with `continueOnError: false`.
-- Setup: `prepare_coc` first and alone; position after core readiness; perform
-  profiler proof, telemetry reset, and capture arming only after exact-cell
-  positioning; never repeat successful setup.
-- Profiler: when `communityshaders.profiler_api` is exposed, prove embedded
-  errors abort a scenario, preserve its initial enabled state, and enable it
-  before the measured scenario. A `disabled` arm receipt is fatal, but
-  profiler readiness never gates the unmeasured positioning COC.
+- Setup: reuse successful binding/setup for the same live PID/session;
+  otherwise bind once and call `prepare_coc` first and alone. Immediately
+  position, then reset telemetry and arm captures after exact-cell verification.
+- Profiler: when `communityshaders.profiler_api` is exposed, preserve its
+  initial enabled state and enable it before the measured scenario. A
+  `disabled` arm receipt is fatal, but profiler readiness never gates the unmeasured positioning COC.
 - Output: append one commit-headed column to
   `docs/development/vr-render-scale-comparison-ledger.csv`.
 
 ## 1. Bind DevBench and the build
 
-Call DevBench health and require `SkyrimVR.exe`, `vr: true`, a live PID, and a
-loaded player. Read the producer through `communityshaders.upscaling_api`
-`snapshot`. Preserve the full Build ID, full source commit, source description,
+Reuse an already successful identity binding from this same live PID/session
+when available. Do not repeat completed build verification or physical DLL
+hashing before positioning. A restart, reconnection, deployment, or observed
+identity change invalidates reuse. Otherwise call DevBench health once and
+require `SkyrimVR.exe`, `vr: true`, a live PID, and a loaded player; read the
+producer once through `communityshaders.upscaling_api` `snapshot`. Preserve
+the full Build ID, full source commit, source description,
 dirty flag, configuration, shader-cache ABI, compiler identity, PID, and port.
 Also retain the deployment-bound artifact SHA-256 when runtime metadata exposes
 it. Its absence does not block the assay, but it blocks later Ghidra artifact
 selection rather than permitting a guess.
 
-As soon as health and the exact Build ID are bound, start one direct
-`communityshaders.menu` call with
+As soon as health and the exact Build ID are bound, reuse the successful
+fixture receipt for this same live session if already prepared. Otherwise
+start one direct `communityshaders.menu` call with
 `{"action":"prepare_coc","expectedBuildId":"<exact Build ID>"}` as the first
 stateful call. Require its successful, fully valid receipt before making
-another stateful call. Then refresh only the live scenario, console, menu,
-inspect, and selected-assay public-API contracts needed to position safely.
-Only independent read-only calls may run concurrently in this core group. Do
-not call the profiler service, run its negative scenario, or reset, start, or
-arm telemetry before positioning. A telemetry-only 503 must not block the unmeasured
+another stateful call. Use the already exposed scenario, console, and
+selected-assay tool contracts and immediately dispatch the positioning COC.
+Do not add registry/menu discovery, evidence-file writes, or unrelated
+repository inspection between successful binding/fixture setup and positioning.
+Do not call the profiler service or reset, start, or arm telemetry before
+positioning. A telemetry-only 503 must not block the unmeasured
 positioning COC.
 
 Require `ready: true`, `promptRequired: false`, and `persisted: false`. The
@@ -88,9 +93,9 @@ switch transport lanes during the run. The bundled controller may be the sole li
 direct MCP was unavailable before the first live call.
 
 After exact-cell verification, query each required or optional telemetry lane
-once through the selected transport. Only independent read-only calls may run
-concurrently. Do not repeat core discovery that already returned a complete
-receipt and do not perform a global schema refresh.
+once through the selected transport.
+Only independent read-only calls may run concurrently. Do not repeat core
+discovery that already returned a complete receipt and do not perform a global schema refresh.
 
 Do not generate or edit task-local orchestration scripts during live preflight
 or baseline setup. Load the installed protocol once, use its fixed actions
@@ -100,20 +105,16 @@ files are not orchestration scripts.
 When `communityshaders.profiler_api` is exposed, prefer it over the legacy
 profiler tool and complete this measurement-admission gate:
 
-1. Call `registry` and `snapshot` with `contractMajor: 1`, unique
-   `clientId`/`commandId` values, and the exact Build ID. Require registry
-   `capture.requiresEnabled: true`, snapshot `ok: true`,
-   `result.status: "success"`, and `result.available: true`. Preserve
-   `result.enabled` as the initial state. These two read-only calls may run
-   concurrently.
-2. After both reads pass, run one synchronous, one-step scenario alone with
-   `continueOnError: false` whose
-   only step calls `communityshaders.profiler_api` `start_capture` with
-   `contractMajor: 1`, unique client/command identity, and the exact Build ID,
-   but omits only the required `frameCount`. Require scenario `ok: false`,
-   `aborted: true`, `stepsRun: 1`, step `ok: false`, and embedded error code
-   `invalid_field`. This non-mutating proof must pass before any baseline,
-   upscaling apply, or measured transition.
+Call `registry` and `snapshot` with `contractMajor: 1`, unique
+`clientId`/`commandId` values, and the exact Build ID. Require registry
+`capture.requiresEnabled: true`, snapshot `ok: true`,
+`result.status: "success"`, and `result.available: true`. Preserve
+`result.enabled` as the initial state. These two read-only calls may run
+concurrently; reuse successful admission receipts from this run.
+
+Do not run a deliberate invalid-request or stop-on-error probe in the live
+assay. Validate runner error semantics in toolkit tests instead. The measured
+scenario still uses `continueOnError: false` and stops on actual tool failures.
 
 Do not perform any profiler readiness wait before positioning. If the first
 post-positioning profiler `registry` or `snapshot` read is transient, retry only
@@ -132,13 +133,12 @@ wait or classify the assay as blocked. If the selected lane itself remains
 unavailable, stop before the first baseline, apply, or measured transition and ask
 the user. Do not repeat the positioning COC or begin another readiness wait.
 
-Do not call `set_enabled` or `start_capture` during discovery or the negative
-proof. When the versioned API is absent, read the legacy profiler status once
-and preserve its initial enabled state.
+Do not call `set_enabled` or `start_capture` during discovery. When the
+versioned API is absent, read the legacy profiler status once and preserve
+its initial enabled state.
 
-After the negative proof passes, or immediately after discovery when the
-versioned API is absent, reset each supported telemetry lane whose contract
-defines a reset. Run those stateful reset calls one at a time, require and keep
+After discovery, reset each supported telemetry lane whose contract defines
+a reset. Run those stateful reset calls one at a time, require and keep
 each receipt, and do not retry a reset that succeeded. Do not start a capture
 during reset; CPU and GPU counters start only from transition 1's atomic
 dispatch.
@@ -216,8 +216,7 @@ Build ID and UTC time. For transition IDs 1 through 20, append this block:
 
 The profiler API step is omitted when that API was absent. Its `disabled` or
 other `ok: false` result must abort the scenario before
-`qualification_dispatch`; the preflight negative probe proved that this
-installed DevBench honors that boundary. Never reinterpret exposed-but-
+`qualification_dispatch`. Never reinterpret exposed-but-
 disabled as `unsupported` and never dispatch transition 1 after a failed
 profiler step.
 
