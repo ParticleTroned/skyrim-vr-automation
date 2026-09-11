@@ -129,15 +129,59 @@ cleanup cost. The producer's `pendingObservations` counts polls, including
 ready polls; expose it as `pollObservations` without changing the raw field.
 
 Keep missing or ambiguous interval endpoints null with specific reasons;
-do not infer cancellation from an unterminated attempt. Source generation,
-device identity, required-provider set and resource revisions are not in
-these events and must remain explicitly unavailable. This limits ownership
+do not infer cancellation from an unterminated attempt. Older producers do
+not expose source generation, device identity, required-provider set or
+resource revisions; keep those fields explicitly unavailable. This limits ownership
 verification without erasing valid observed timing. An invalid individual
 attempt must not erase an independently verified retry count. Keep the
 six-frame guard and its overlap with stereo qualification separate.
 
+New producers add `ownedRelease` schema 1 and `drainFences` observations.
+`OwnedReleaseConsumed`, `OwnedTargetPublished`, `OwnedProviderPrepared` and
+`OwnedReleaseEligibility` identify successful old-ticket consumption/reset,
+physical target publication, actual target provider preparation, and release
+eligibility respectively. Analyze these in `retryTelemetry.ownedRelease`,
+separately from the old drain attempt that closes at `Applied`. Correlate
+the exact owner, source/target generations, required providers, old provider
+revisions and tickets, and opaque device/context/queue identities. Keep
+target provider revisions and queue/fence identities separate from the old
+drain identities. Opaque values and resource revisions are decimal strings,
+not JavaScript numbers; absent optional observations are null.
+The all-ready endpoint requires the latest Ready for every required provider,
+matching its own ticket/revision and the shared certificate identity before
+consumption, with no intervening invalidation. Missing or stale readiness
+leaves that interval unavailable and the derived guard-exempt flag false;
+the producer's original eligibility claim remains in the retained event.
+
+`eligibilityScope=guard_exemption` permits omission of the settle guard;
+it does not enable vendor dispatch. Target preparation and coherent stereo
+still gate final promotion. Required/satisfied obligation bits mean old
+provider drained (1), reset completed (2), detached retirement owned (4),
+physical target published (8), target provider prepared (16), and coherent
+stereo (32). Detached retirement ownership is not observed completion of
+its fences. A denied or revoked exemption can end in ordinary conservative
+promotion; retain that outcome without claiming proof-driven release.
+Missing preparation after revocation remains explicitly unavailable.
+An explicit unconsumed receipt with denied eligibility is `not_consumed`;
+a missing consumption event for a receipt that claims consumption is a gap.
+
+The request-to-admission interval uses the unique same-owner, same-clock
+`preparation.events` request_queued observation, never the API dispatch
+timestamp as a substitute. Fence issue/observed-ready QPC values come from
+existing End/Signal and readiness polls, without additional GPU work. They
+measure CPU observation times, not the exact instant GPU execution ended.
+Report each fence interval and ready-to-consumed, consumed-to-publication,
+publication-to-provider-preparation, publication-to-eligibility, and
+provider-preparation/eligibility-to-promotion intervals with exact QPC
+endpoints. Missing blocking-cleanup completion remains null. A legacy
+Promoted event with generation zero is correlated by owner and the open
+certificate sequence, with target-generation proof explicitly unavailable.
+Old runs remain `ownedRelease.status=not_exposed`; do not infer these stages
+from their aggregate stretch or shared-cleanup markers.
+
 When producer telemetry changes, update its offline interpretation and
-fixtures together. Run `node tests/Test-RenderScaleRetryTelemetry.js`,
+fixtures together. Run `node tests/Test-OwnedReleaseTelemetry.js`,
+`node tests/Test-RenderScaleRetryTelemetry.js`,
 `node tests/Test-RenderScaleTuningFinalizer.js` and
 `node tests/Test-RenderScaleSwitchComparison.js`, including valid additive
 events in a previous cumulative window, malformed events, missing endpoints

@@ -2,6 +2,8 @@
 
 "use strict";
 
+const { ownedReleaseReport } = require("./owned-release-telemetry.js");
+
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -648,7 +650,7 @@ function csv(rows) {
     const columns = [
         "lane", "pass", "ordinal", "strict_ms", "presentation_ms", "cleanup_ms",
         "cleanup_tail_ms", "switch_health", "switch_timings", "retry_telemetry_status", "retry_outcome", "retry_count",
-        "retry_reasons", "viewport_waits", "retry_stabilization", "retry_compatibility", "owned_drain",
+        "retry_reasons", "viewport_waits", "retry_stabilization", "retry_compatibility", "owned_drain", "owned_release",
         "method", "quality_mode", "render_scale_mode",
         "actual_backend", "lane_qualification", "render_verdict", "stability_status",
         "stability_presentation_disposition",
@@ -693,7 +695,7 @@ function csv(rows) {
             row.retryTelemetry.status, row.retryTelemetry.outcome, row.retryTelemetry.retryCount ?? "n.d.",
             row.retryTelemetry.retryReasons, JSON.stringify(row.retryTelemetry.waits),
             JSON.stringify(row.retryTelemetry.stabilization), row.retryTelemetry.compatibility,
-            row.retryTelemetry.ownedDrain, row.target.method,
+            row.retryTelemetry.ownedDrain, row.retryTelemetry.ownedRelease, row.target.method,
             row.target.qualityMode, row.target.renderScaleMode, row.actualBackend, JSON.stringify(row.laneQualification),
             row.renderVerdict,
             note ? note.status : "stable",
@@ -878,6 +880,7 @@ function report(summary) {
         healthReport(summary.switchHealth) +
         memoryReport(summary.memoryConfirmation) +
         ownedDrainReport(summary.transitions) +
+        ownedReleaseReport(summary.transitions) +
         `## Transitions\n\n` +
         `Retry waits end at the first observed preparation-ready result. ` +
         `Ready-to-candidate includes stereo qualification and the settling guard; ` +

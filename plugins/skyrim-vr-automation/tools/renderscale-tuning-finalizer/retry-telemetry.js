@@ -2,12 +2,13 @@
 "use strict";
 
 const { ownedDrainEvents, observedInterval, ownedDrainTelemetry } = require("./owned-drain-telemetry.js");
+const { ownedReleaseEvents, validOwnedReleasePayload, validFenceObservations, ownedReleaseTelemetry } = require("./owned-release-telemetry.js");
 
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 const eventTypes = new Set(["Retry", "RelatchAdmitted", "Applied", "Stable", "Failure",
     "ViewportReady", "ViewportWaitBegin", "ViewportWaitEnd", "GuardArmed", "ProofRevoked",
-    "SettleGuardSatisfied", "PromotionCandidate", "Promoted", "GuardCleared", ...ownedDrainEvents]);
+    "SettleGuardSatisfied", "PromotionCandidate", "Promoted", "GuardCleared", ...ownedDrainEvents, ...ownedReleaseEvents]);
 const viewportRoles = new Set(["FullEye", "FoveatedCenter", "SubmitStageFoveatedCenter"]);
 const viewportEvents = new Set(["ViewportReady", "ViewportWaitBegin", "ViewportWaitEnd"]);
 const eventName = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -23,7 +24,8 @@ function retryTelemetry(retained) {
         stabilization: [], events: [],
         compatibility: { status: reason, unknownEventTypes: [], unknownEventCount: 0,
             ownerUnknownEventTypes: [], ownerUnknownEventCount: 0 },
-        ownedDrain: { schemaVersion: 1, status: reason, reasons: [reason], attempts: [] } });
+        ownedDrain: { schemaVersion: 1, status: reason, reasons: [reason], attempts: [] },
+        ownedRelease: { schemaVersion: 1, status: reason, reasons: [reason], attempts: [] } });
     if (!capture) return unavailable("not_exposed");
     if (capture.schemaVersion !== 1 || capture.devBenchOnly !== true ||
         !Array.isArray(capture.events)) return unavailable("unsupported_schema");
@@ -71,7 +73,9 @@ function retryTelemetry(retained) {
                 !positive(event.beginFrame) || event.beginFrame > event.frame ||
                 !nonnegative(event.pendingObservations) ||
                 event.event === "RelatchDrainBegin" &&
-                    (event.beginFrame !== event.frame || event.pendingObservations !== 0)))) {
+                    (event.beginFrame !== event.frame || event.pendingObservations !== 0))) ||
+            (ownedReleaseEvents.has(event.event) && !validOwnedReleasePayload(event)) ||
+            (eventTypes.has(event.event) && !validFenceObservations(event))) {
             reasons.push("invalid_event");
         }
         if (validEnvelope && !eventTypes.has(event.event)) unknownEvents.push(event);
@@ -201,6 +205,9 @@ function retryTelemetry(retained) {
     });
     const ownedDrain = ownedDrainTelemetry(events, intervalClock);
     reasons.push(...ownedDrain.reasons.map(reason => `owned_drain_${reason}`));
+    const ownedRelease = ownedReleaseTelemetry(events, intervalClock, retained,
+        { sessionId, requestId, transitionEpoch: epoch, qpcFrequency: capture.qpcFrequency });
+    reasons.push(...ownedRelease.reasons.map(reason => `owned_release_${reason}`));
     const ownerUnknown = unknownEvents.filter(event => events.includes(event));
     return { schemaVersion: 1, status: reasons.length ? "incomplete" : "complete",
         outcome: reasons.length ? "n/a" : "available",
@@ -208,7 +215,7 @@ function retryTelemetry(retained) {
         qpcFrequency: capture.qpcFrequency, overwrittenEvents: capture.overwrittenEvents,
         retryCount: windowComplete ? retries.length : null,
         observedRetryCount: retries.length, retryReasons: [...new Set(retries.map(event => event.reason))],
-        retries, waits, stabilization, events, ownedDrain,
+        retries, waits, stabilization, events, ownedDrain, ownedRelease,
         compatibility: { status: unknownEvents.length ? "additive_events_preserved" : "known_events",
             unknownEventTypes: [...new Set(unknownEvents.map(event => event.event))],
             unknownEventCount: unknownEvents.length,
