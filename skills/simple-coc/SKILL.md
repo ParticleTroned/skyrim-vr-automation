@@ -22,15 +22,20 @@ authorization from a freeze, timeout, or the original `simple coc` command.
 As soon as DevBench health and the exact producer Build ID are bound, call
 `communityshaders.menu` `prepare_coc` exactly once as the first stateful call
 and validate its receipt before making another stateful call.
-Before the unmeasured positioning COC, verify only the core control and public-API
-contract needed by the selected assay. Do not query the profiler service or
-reset telemetry there.
+Reuse a successful build binding and fixture receipt from this same live
+PID/session when already available; do not repeat successful verification or
+setup. Otherwise bind health and producer once and prepare the fixture once.
+Before the unmeasured positioning COC, use the already exposed core tool
+contracts. Dispatch positioning immediately after binding and fixture readiness;
+do not add registry, menu, or other discovery round trips. Do not query the
+profiler service or reset telemetry there.
 
 Use exactly one live DevBench transport, with plugin-provided direct MCP tools
 mandatory when callable. After exact-cell positioning, reuse that lane's schema
-inventory and complete measurement admission: query telemetry lanes, prove
-scenario semantic fail-closed behavior when `communityshaders.profiler_api` is
-exposed, and reset each supported lane once in serialized order. Then arm
+inventory and complete measurement admission: query telemetry lanes and
+reset each supported lane once in serialized order. Do not run a deliberate
+invalid-request or stop-on-error probe during a live COC assay; runner error
+semantics belong in toolkit validation. Then arm
 captures serially. Only independent read-only calls may run concurrently. Never
 repeat a successful setup action. Do not start CPU or GPU counters;
 transition 1's atomic dispatch remains their sole timing origin. Explicitly enable and
