@@ -193,8 +193,10 @@ runtime controllers can enforce it without inference. Retain the
 `accessId` privately. `-TaskId` (alias `-ReporterTaskId`) records an optional
 stable task identity; when omitted it resolves `CODEX_THREAD_ID` or
 `CODEX_TASK_ID` if available. If another task owns the lock, `access-busy`
-reports only the public lease identity, owner label/state, and advisory release
-estimate; it never discloses or echoes an access credential. `-WaitSeconds` can
+reports the public lease identity, owner label, session status, observed owner
+PID/liveness/identity match, session/controller paths, and advisory release
+estimate; it never discloses or echoes an access credential. These observations
+do not authorize taking over the lease. `-WaitSeconds` can
 perform a bounded retry, but no task is queued indefinitely.
 
 `prepare` and every launch revalidate the exact selected profile against the
@@ -276,6 +278,17 @@ MO2's structured `File` → `Exit` path and visible modal chain, including the V
 resolver. `release` ends only the exactly owned session after proving MO2 and
 the game are closed, while retaining the evidence directory. It returns the
 explicit lease to access-only state. All mutation commands have `-WhatIf`.
+
+`close` and `recover-close` write `closedUtc` only after MO2 is confirmed
+closed; incomplete attempts write `closeAttemptedUtc`. Full-chain `stop`
+writes `stoppedUtc` only after both MO2 and the game are confirmed closed;
+incomplete attempts write `stopAttemptedUtc`. Both the lock and session
+manifest retain the resulting status and timestamp. Historical completion
+timestamps are preserved, so use the current status and exact process
+observations when assessing recovery. An incomplete close retains ownership
+and evidence; an invisible window or an overdue estimate is not proof that
+the owner is gone.
+
 Evidence
 collection, archive verification, profile mutation, cache management, and
 recovery remain deferred until separately bounded.

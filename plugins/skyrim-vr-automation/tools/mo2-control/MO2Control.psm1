@@ -2737,6 +2737,12 @@ function Get-MO2AccessLeaseSummary {
         lockPath = $Lock.path
         leaseId = $(if (-not [string]::IsNullOrWhiteSpace([string]$Lock.leaseId)) { $Lock.leaseId } else { 'legacy-access-lease' })
         sessionId = $Lock.sessionId
+        sessionStatus = $Lock.status
+        ownerPid = $Lock.ownerPid
+        ownerRunning = $Lock.ownerRunning
+        ownerIdentityMatched = $Lock.ownerIdentityMatched
+        sessionPath = $(if ($Lock.data.PSObject.Properties['sessionPath']) { [string]$Lock.data.sessionPath } else { $null })
+        controllerPath = $(if ($Lock.data.PSObject.Properties['controllerPath']) { [string]$Lock.data.controllerPath } else { $null })
         label = $(if ($Lock.data.PSObject.Properties['label']) { [string]$Lock.data.label } else { $null })
         ownerTaskId = $(if ($Lock.data.PSObject.Properties['ownerTaskId']) { [string]$Lock.data.ownerTaskId } else { $null })
         acquisitionMode = $Lock.acquisitionMode
@@ -4311,7 +4317,7 @@ function Invoke-MO2Close {
 
     $close = Invoke-MO2CooperativeClose -Config $Config -InitialProcesses $targets -EvidenceDirectory ([string]$owned.data.sessionPath) -TimeoutSeconds $TimeoutSeconds
     $status = if ($close.closed) { 'mo2-closed' } else { 'close-incomplete' }
-    Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty 'closedUtc'
+    Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty $(if ($close.closed) { 'closedUtc' } else { 'closeAttemptedUtc' })
     Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-close.json') -Value $close
     return New-MO2ActionResult -Config $Config -Command 'close' -Ok $close.closed -State $status -Data @{ sessionId = $SessionId; ownershipResolution = $resolution; close = $close; sessionPath = $owned.data.sessionPath } -Errors $(if ($close.closed) { @() } else { @('MO2 still owns one or more exact target processes after cooperative dialogue resolution; no force termination was attempted.') })
 }
@@ -4450,7 +4456,7 @@ function Invoke-MO2RecoverClose {
     $close = Invoke-MO2CooperativeClose -Config $Config -InitialProcesses $targets -EvidenceDirectory $sessionPath -TimeoutSeconds $TimeoutSeconds
     $owned = Get-MO2OwnedSession -Config $Config -SessionId $sessionId
     $status = if ($close.closed) { 'mo2-closed' } else { 'close-incomplete' }
-    Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty 'closedUtc'
+    Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty $(if ($close.closed) { 'closedUtc' } else { 'closeAttemptedUtc' })
     Write-MO2JsonAtomic -Path (Join-Path $sessionPath 'mo2-close.json') -Value $close
     return New-MO2ActionResult -Config $Config -Command 'recover-close' -Ok $close.closed -State $status -Data @{ sessionId = $sessionId; accessId = $AccessId; explicitAccess = $explicitAccess; lockPath = $lockPath; sessionPath = $sessionPath; controller = $controller; controllerPath = [string]$controller.controllerPath; close = $close; releaseRequired = $close.closed } -Errors $(if ($close.closed) { @() } else { @('MO2 remains after cooperative recovery close. The recovery lock and evidence were retained; no force termination was attempted.') })
 }
@@ -4669,7 +4675,7 @@ function Invoke-MO2Stop {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     if ($after.processes.game.Count -gt 0) {
-        Set-MO2OwnedSessionStatus -Owned $owned -Status 'game-stop-incomplete' -TimestampProperty 'stoppedUtc'
+        Set-MO2OwnedSessionStatus -Owned $owned -Status 'game-stop-incomplete' -TimestampProperty 'stopAttemptedUtc'
         return New-MO2ActionResult -Config $Config -Command 'stop' -Ok $false -State 'game-stop-incomplete' -Data @{ before = $before.processes; after = $after.processes; mo2CloseAttempted = $false; forceTermination = $false; unrelatedProcessesTouched = @(); sessionPath = $owned.data.sessionPath } -Errors @('The game did not accept a graceful close request, so MO2 cooperative close was not attempted.')
     }
 
@@ -4684,7 +4690,7 @@ function Invoke-MO2Stop {
     $final = Get-MO2InspectionData -Config $Config -RequestedProfile ([string]$owned.data.profile) -RequestedExecutable ([string]$owned.data.executable)
     $closed = $final.processes.game.Count -eq 0 -and $final.processes.mo2.Count -eq 0 -and $close.closed
     $status = if ($closed) { 'stopped' } else { 'stop-incomplete' }
-    Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty 'stoppedUtc'
+    Set-MO2OwnedSessionStatus -Owned $owned -Status $status -TimestampProperty $(if ($closed) { 'stoppedUtc' } else { 'stopAttemptedUtc' })
     Write-MO2JsonAtomic -Path (Join-Path ([string]$owned.data.sessionPath) 'mo2-stop.json') -Value $close
 
     return New-MO2ActionResult -Config $Config -Command 'stop' -Ok $closed -State $status -Data @{ before = $before.processes; afterGameClose = $after.processes; after = $final.processes; mo2Close = $close; forceTermination = $false; unrelatedProcessesTouched = @(); sessionPath = $owned.data.sessionPath } -Errors $(if ($closed) { @() } else { @('One or more exact owned processes remained after graceful game close and cooperative MO2 dialogue resolution; no force termination was attempted.') })
