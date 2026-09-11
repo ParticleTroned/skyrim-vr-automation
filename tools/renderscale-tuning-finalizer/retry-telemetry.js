@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 "use strict";
 
+const { ownedDrainEvents, observedInterval, ownedDrainTelemetry } = require("./owned-drain-telemetry.js");
+
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 const eventTypes = new Set(["Retry", "RelatchAdmitted", "Applied", "Stable", "Failure",
     "ViewportReady", "ViewportWaitBegin", "ViewportWaitEnd", "GuardArmed", "ProofRevoked",
-    "SettleGuardSatisfied", "PromotionCandidate", "Promoted", "GuardCleared"]);
+    "SettleGuardSatisfied", "PromotionCandidate", "Promoted", "GuardCleared", ...ownedDrainEvents]);
 const viewportRoles = new Set(["FullEye", "FoveatedCenter", "SubmitStageFoveatedCenter"]);
+const viewportEvents = new Set(["ViewportReady", "ViewportWaitBegin", "ViewportWaitEnd"]);
+const eventName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 // Cumulative snapshots are read only after measurement, from the owned waiter.
 function retryTelemetry(retained) {
@@ -16,7 +20,10 @@ function retryTelemetry(retained) {
             waiter.observation.status.retryTelemetry || retained?.retryTelemetry;
     const unavailable = reason => ({ status: reason, outcome: "n/a", reasons: [reason],
         retryCount: null, retryReasons: [], retries: [], waits: [],
-        stabilization: [], events: [] });
+        stabilization: [], events: [],
+        compatibility: { status: reason, unknownEventTypes: [], unknownEventCount: 0,
+            ownerUnknownEventTypes: [], ownerUnknownEventCount: 0 },
+        ownedDrain: { schemaVersion: 1, status: reason, reasons: [reason], attempts: [] } });
     if (!capture) return unavailable("not_exposed");
     if (capture.schemaVersion !== 1 || capture.devBenchOnly !== true ||
         !Array.isArray(capture.events)) return unavailable("unsupported_schema");
@@ -46,18 +53,28 @@ function retryTelemetry(retained) {
         capture.overwrittenEvents > 0 && capture.events.length !== capture.capacity ||
         capture.coalescedEvents !== 0) reasons.push("invalid_retention_metadata");
     let sequence = capture.overwrittenEvents, lastTick = 0;
+    const unknownEvents = [];
     for (const event of capture.events) {
-        if (!event || event.sessionId !== sessionId || !positive(event.requestId) ||
-            !positive(event.transitionEpoch) || !positive(event.sequence) ||
-            event.sequence !== sequence + 1 || !positive(event.timestampQpc) || !nonnegative(event.frame) ||
-            !eventTypes.has(event.event) || typeof event.reason !== "string" || event.reason.length === 0 ||
+        const validEnvelope = event && typeof event === "object" && !Array.isArray(event) &&
+            event.sessionId === sessionId && positive(event.requestId) &&
+            positive(event.transitionEpoch) && positive(event.sequence) && event.sequence === sequence + 1 &&
+            positive(event.timestampQpc) && nonnegative(event.frame) &&
+            typeof event.event === "string" && eventName.test(event.event) &&
+            typeof event.reason === "string" && event.reason.trim().length > 0;
+        if (!validEnvelope ||
             (event.event === "Retry" && (typeof event.sourceFile !== "string" ||
                 !event.sourceFile.length || !positive(event.sourceLine) ||
                 typeof event.retryKind !== "string" || !event.retryKind.length)) ||
-            (event.event.startsWith("Viewport") && (!viewportRoles.has(event.viewport?.role) ||
-                !nonnegative(event.generation)))) {
+            (viewportEvents.has(event.event) && (!viewportRoles.has(event.viewport?.role) ||
+                !nonnegative(event.generation))) ||
+            (ownedDrainEvents.has(event.event) && (!positive(event.generation) ||
+                !positive(event.beginFrame) || event.beginFrame > event.frame ||
+                !nonnegative(event.pendingObservations) ||
+                event.event === "RelatchDrainBegin" &&
+                    (event.beginFrame !== event.frame || event.pendingObservations !== 0)))) {
             reasons.push("invalid_event");
         }
+        if (validEnvelope && !eventTypes.has(event.event)) unknownEvents.push(event);
         if (event?.timestampQpc < lastTick) reasons.push("event_clock_regression");
         sequence = event?.sequence;
         lastTick = event?.timestampQpc;
@@ -71,6 +88,7 @@ function retryTelemetry(retained) {
         event.timestampQpc >= timing.dispatchTick && event.timestampQpc <= endTick);
     if (events.length === 0) reasons.push("owner_events_missing");
     const windowComplete = reasons.length === 0;
+    const intervalClock = { windowComplete, qpcFrequency: capture.qpcFrequency };
     const milliseconds = (begin, end) => windowComplete && positive(begin) && positive(end) && end >= begin ?
         (end - begin) * 1000 / capture.qpcFrequency : null;
     const waits = [];
@@ -111,10 +129,20 @@ function retryTelemetry(retained) {
         const stable = events.find(next => next.sequence > event.sequence && next.event === "Stable");
         const admitted = event.reason === "render_target_relatch_requeued" &&
             events.find(next => next.sequence > event.sequence && next.event === "RelatchAdmitted");
-        return { sequence: event.sequence, reason: event.reason, kind: event.retryKind,
+        const retryToStable = observedInterval(event, stable, intervalClock);
+        const requeueToAdmission = observedInterval(event, admitted, intervalClock,
+            event.reason !== "render_target_relatch_requeued" ? "retry_does_not_requeue_relatch" : null);
+        if (!stable) reasons.push("retry_stable_endpoint_missing");
+        if (event.reason === "render_target_relatch_requeued" && !admitted) reasons.push("requeue_admission_endpoint_missing");
+        if ([retryToStable, requeueToAdmission].some(interval => interval.reasons.includes("invalid_interval_order"))) {
+            reasons.push("retry_interval_order_invalid");
+        }
+        return { sequence: event.sequence, timestampQpc: event.timestampQpc, frame: event.frame,
+            reason: event.reason, kind: event.retryKind,
             sourceFile: event.sourceFile, sourceLine: event.sourceLine,
-            retryToStableMs: stable ? milliseconds(event.timestampQpc, stable.timestampQpc) : null,
-            requeueToAdmissionMs: admitted ? milliseconds(event.timestampQpc, admitted.timestampQpc) : null };
+            retryToStableMs: retryToStable.milliseconds,
+            requeueToAdmissionMs: requeueToAdmission.milliseconds,
+            intervals: { retryToStable, requeueToAdmission } };
     });
     const stabilization = events.filter(event => event.event === "PromotionCandidate").map(candidate => {
         const boundary = events.filter(event => ["GuardArmed", "GuardCleared"].includes(event.event) &&
@@ -123,7 +151,9 @@ function retryTelemetry(retained) {
         const segment = events.filter(event => guard && event.sequence > guard.sequence &&
             event.sequence < candidate.sequence);
         const viewportStates = new Map();
-        for (const event of segment.filter(event => event.viewport)) viewportStates.set(event.viewport.role, event);
+        for (const event of segment.filter(event => viewportEvents.has(event.event) && event.viewport)) {
+            viewportStates.set(event.viewport.role, event);
+        }
         const readiness = [...viewportStates.values()];
         const ready = readiness.length && readiness.every(event => event.event === "ViewportReady" ||
             waits.some(wait => wait.endSequence === event.sequence && wait.status === "ready")) ?
@@ -169,13 +199,21 @@ function retryTelemetry(retained) {
             guardSatisfiedToCandidateMs: settled ? duration(settled.timestampQpc, candidate.timestampQpc) : null,
             candidateToPromotionMs: promoted ? duration(candidate.timestampQpc, promoted.timestampQpc) : null };
     });
+    const ownedDrain = ownedDrainTelemetry(events, intervalClock);
+    reasons.push(...ownedDrain.reasons.map(reason => `owned_drain_${reason}`));
+    const ownerUnknown = unknownEvents.filter(event => events.includes(event));
     return { schemaVersion: 1, status: reasons.length ? "incomplete" : "complete",
         outcome: reasons.length ? "n/a" : "available",
         reasons: [...new Set(reasons)], sessionId, requestId, transitionEpoch: epoch,
         qpcFrequency: capture.qpcFrequency, overwrittenEvents: capture.overwrittenEvents,
         retryCount: windowComplete ? retries.length : null,
         observedRetryCount: retries.length, retryReasons: [...new Set(retries.map(event => event.reason))],
-        retries, waits, stabilization, events };
+        retries, waits, stabilization, events, ownedDrain,
+        compatibility: { status: unknownEvents.length ? "additive_events_preserved" : "known_events",
+            unknownEventTypes: [...new Set(unknownEvents.map(event => event.event))],
+            unknownEventCount: unknownEvents.length,
+            ownerUnknownEventTypes: [...new Set(ownerUnknown.map(event => event.event))],
+            ownerUnknownEventCount: ownerUnknown.length } };
 }
 
 module.exports = { retryTelemetry };

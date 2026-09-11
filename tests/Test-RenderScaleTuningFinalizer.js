@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { fixture: retryFixture, testRetryTelemetry } = require("./Test-RenderScaleRetryTelemetry.js");
+const { fixture: retryFixture, ownedDrainFixture, testRetryTelemetry } = require("./Test-RenderScaleRetryTelemetry.js");
 const { writeMemoryFixture, testMemoryConfirmation } = require("./Test-RenderScaleMemoryConfirmation.js");
 const {
     collectTracePages,
@@ -1295,6 +1295,40 @@ function testRetryReportingGaps() {
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+function testOwnedDrainReportingFromRetainedEvents() {
+    const root = createEvidenceRoot();
+    try {
+        const file = path.join(root, "raw/pass-1/transitions/01/retained.json");
+        const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+        const diagnostic = ownedDrainFixture({ providers: ["DLSS", "FSR"], earlyProvider: "DLSS" }).waiter;
+        Object.assign(receipt.waiter, diagnostic);
+        writeJson(file, receipt);
+        const original = sha(file);
+        const options = { root, variant: "nvidia", runId: "nvidia-test-run",
+            buildId: "e".repeat(64), expectedRows: 2 };
+        const { summary } = finalizeEvidence(options);
+        const retry = summary.transitions[0].retryTelemetry;
+        assert(retry.status === "complete" && retry.retryCount === 1,
+            "Owned drain events invalidated the known retry evidence.");
+        const attempt = retry.ownedDrain.attempts[0];
+        assert(attempt.intervals.pendingToReady.milliseconds === 30 &&
+            attempt.intervals.pendingToReady.frames === 3 &&
+            attempt.intervals.readyToCommit.milliseconds === 10,
+        "Finalizer did not use the final provider's readiness endpoint.");
+        const csvText = fs.readFileSync(path.join(root, "transitions.csv"), "utf8");
+        assert(csvText.split("\n")[0].includes("retry_compatibility,owned_drain") &&
+            csvText.includes('""pendingToReady""') && csvText.includes('""milliseconds"":30'),
+        "CSV omitted the calculated owned drain intervals.");
+        const reportText = fs.readFileSync(path.join(root, "report.md"), "utf8");
+        assert(reportText.includes("3 / 30.0000") && reportText.includes("1 / 10.0000"),
+            "Human-readable report omitted the calculated frames and milliseconds.");
+        assert(sha(file) === original, "Offline repair modified raw retry evidence.");
+        const repeated = finalizeEvidence(options).summary.transitions[0].retryTelemetry;
+        assert(JSON.stringify(repeated) === JSON.stringify(retry),
+            "Repeated offline finalization changed derived retry evidence.");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 function testMemoryFinalizationWithoutExistingSummary() {
     const root = createEvidenceRoot();
     try {
@@ -1373,6 +1407,7 @@ function testRecoveredHealthKeepsCompletedTest() {
 
 Promise.resolve().then(testBoundedPaging).then(testPagingValidation)
     .then(testRetryReportingGaps)
+    .then(testOwnedDrainReportingFromRetainedEvents)
     .then(testRetryTelemetry)
     .then(testRecoveredHealthKeepsCompletedTest)
     .then(testMemoryConfirmation).then(testMemoryFinalizationWithoutExistingSummary)

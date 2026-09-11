@@ -183,8 +183,10 @@ failed cleanup retains explicit ownership and its lock independently of the
 flushed evidence journal.
 
 After measurement, follow the [completion and retry-reporting rules](references/protocol.md#5-completion-and-evidence-rules).
-The finalizer reads retry causes, viewport-wait intervals and stabilization
-milestones from the retained terminal receipts. Missing telemetry remains a
+The finalizer reads retry causes, viewport waits, owned provider drain and
+commit intervals, and stabilization milestones from retained terminal receipts.
+Follow the shared [event compatibility and raw-journal repair contract](../../tools/renderscale-tuning-finalizer/README.md#retry-event-compatibility-and-owned-drain-timing)
+when a producer adds event types. Missing telemetry remains a
 reporting gap and never authorizes another live call or measurement replay.
 
 After measurement, use the shared

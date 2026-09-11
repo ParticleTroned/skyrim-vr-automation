@@ -71,6 +71,12 @@ Assert-True (Test-Path -LiteralPath $finalizerSource -PathType Leaf) 'Missing sh
 Assert-True (Test-Path -LiteralPath $finalizerPlugin -PathType Leaf) 'Missing packaged shared tuning finalizer.'
 Assert-True ((Get-FileHash -LiteralPath $finalizerSource -Algorithm SHA256).Hash -eq
     (Get-FileHash -LiteralPath $finalizerPlugin -Algorithm SHA256).Hash) 'Shared tuning finalizer source/package parity failed.'
+foreach ($module in Get-ChildItem -LiteralPath (Split-Path -Parent $finalizerSource) -File -Filter '*.js') {
+    $packagedModule = Join-Path (Split-Path -Parent $finalizerPlugin) $module.Name
+    Assert-True (Test-Path -LiteralPath $packagedModule -PathType Leaf) "Missing packaged finalizer module: $($module.Name)"
+    Assert-True ((Get-FileHash -LiteralPath $module.FullName).Hash -eq
+        (Get-FileHash -LiteralPath $packagedModule).Hash) "Finalizer module package parity failed: $($module.Name)"
+}
 $finalizer = Get-Content -LiteralPath $finalizerSource -Raw
 foreach ($token in @(
     'function finalizeEvidence',

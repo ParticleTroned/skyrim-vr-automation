@@ -102,3 +102,52 @@ Ledger CSV reads admit complete JSON detail cells up to the file byte length
 and restore the caller's parser limit afterward. Numeric audits and
 historical-cell validation share this reader; no caller-side CSV override
 or truncation is needed.
+
+## Retry event compatibility and owned drain timing
+
+Retry schema 1 permits additive event names. Validate every event's common
+envelope, session, sequence and QPC ordering across the retained ring; apply
+event-specific validation only to known kinds. Preserve unknown kinds with
+explicit `compatibility` diagnostics, excluding them from known counts and
+intervals. An additive event in an earlier transition must not invalidate
+the current transition's verified retry count. Unsupported schema versions,
+malformed envelopes and overwritten transition windows remain reporting
+gaps. An unknown event cannot substitute for a missing known endpoint.
+
+`ownedDrain` interprets `RelatchDrainBegin`, `RelatchDrainPending`,
+`RelatchDrainReady`, `RelatchDrainInvalidated`, `RelatchCommitBegin` and
+`RelatchSharedCleanup`. Match attempts by session, request, epoch, target
+generation, begin frame and begin sequence. Never pair across a new begin or
+invalidation. Retain ordered commit attempts and provider-specific ready
+events; a provider may become ready before another reports pending. The
+last observed provider readiness before commit supplies the ready endpoint,
+not the first provider's readiness. Report begin-to-first-pending,
+pending-to-ready, ready-to-commit, commit-to-shared-cleanup and
+commit-to-applied in frames and milliseconds with their exact endpoints.
+Commit-to-shared-cleanup is elapsed time to a phase marker, not an isolated
+cleanup cost. The producer's `pendingObservations` counts polls, including
+ready polls; expose it as `pollObservations` without changing the raw field.
+
+Keep missing or ambiguous interval endpoints null with specific reasons;
+do not infer cancellation from an unterminated attempt. Source generation,
+device identity, required-provider set and resource revisions are not in
+these events and must remain explicitly unavailable. This limits ownership
+verification without erasing valid observed timing. An invalid individual
+attempt must not erase an independently verified retry count. Keep the
+six-frame guard and its overlap with stereo qualification separate.
+
+When producer telemetry changes, update its offline interpretation and
+fixtures together. Run `node tests/Test-RenderScaleRetryTelemetry.js`,
+`node tests/Test-RenderScaleTuningFinalizer.js` and
+`node tests/Test-RenderScaleSwitchComparison.js`, including valid additive
+events in a previous cumulative window, malformed events, missing endpoints
+and multi-provider drain sequences. Keep source and packaged tools and
+protocol references identical.
+
+A reporter compatibility failure is repaired from the immutable journal.
+Preserve the earlier incomplete outputs, record the corrected reporter
+revision, then re-finalize the same run and refresh its existing ledger
+column, comparisons and reports. Verify the raw hash, every numeric timing
+and complete summary/comparison reconstruction; preserve historical run
+cells. Do not replay measurements or change the startup/settling protocol
+to repair an offline reporting failure.
