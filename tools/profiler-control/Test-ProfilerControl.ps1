@@ -117,6 +117,38 @@ try {
     Assert-Test ([Math]::Abs([double]$volumetricA.weightedMeanMs - 1.5) -lt 0.000001) 'weighted feature mean aggregates multiple samples'
     Assert-Test ([int]$upscalingB.timerCount -eq 0 -and [double]$upscalingB.weightedMeanMs -eq 0.0) 'unloaded feature emits an explicit zero row'
 
+    $legacyComparison = Get-Content -LiteralPath $result.jsonPath -Raw | ConvertFrom-Json
+    Assert-Test ($legacyComparison.timingSemantics -eq 'legacy_unspecified') 'old raw captures retain unspecified timing semantics'
+    $selfAPath = Join-Path $resolvedTestRoot 'self-a.raw.json'
+    $selfBPath = Join-Path $resolvedTestRoot 'self-b.raw.json'
+    foreach ($pair in @(@($stateAPath, $selfAPath), @($stateBPath, $selfBPath))) {
+        $tagged = @(Get-Content -LiteralPath $pair[0] -Raw | ConvertFrom-Json)
+        foreach ($record in $tagged) { $record | Add-Member -NotePropertyName timingSemantics -NotePropertyValue 'gpu_cpu_self_time' }
+        $tagged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pair[1] -Encoding utf8
+    }
+    $selfComparison = & $compare -InputPath @($selfAPath, $selfBPath) -OutputDirectory (Join-Path $resolvedTestRoot 'self-comparison') | ConvertFrom-Json
+    $selfJson = Get-Content -LiteralPath $selfComparison.jsonPath -Raw | ConvertFrom-Json
+    Assert-Test ($selfJson.schemaVersion -eq 2 -and $selfJson.timingSemantics -eq 'gpu_cpu_self_time') 'self-time comparisons advertise their schema and semantics'
+    Assert-Test (@(Import-Csv -LiteralPath $selfComparison.featureCsvPath | Where-Object timingSemantics -ne 'gpu_cpu_self_time').Count -eq 0) 'feature comparison CSV preserves self-time semantics'
+    $mixedError = $null
+    try { & $compare -InputPath @($selfAPath, $stateBPath) -OutputDirectory (Join-Path $resolvedTestRoot 'mixed-comparison') | Out-Null }
+    catch { $mixedError = $_.Exception.Message }
+    Assert-Test ($mixedError -match 'different timing semantics') 'comparison rejects self-time versus legacy inputs'
+    $mixedRecords = @(Get-Content -LiteralPath $selfAPath -Raw | ConvertFrom-Json)
+    $mixedRecords[0].PSObject.Properties.Remove('timingSemantics')
+    $mixedRecords | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $selfAPath -Encoding utf8
+    $mixedError = $null
+    try { & $compare -InputPath @($selfAPath, $selfBPath) -OutputDirectory (Join-Path $resolvedTestRoot 'mixed-samples') | Out-Null }
+    catch { $mixedError = $_.Exception.Message }
+    Assert-Test ($mixedError -match 'mixes timing semantics') 'comparison rejects semantic drift inside one raw capture'
+    . (Join-Path $PSScriptRoot 'ProfilerTimingSemantics.ps1')
+    foreach ($invalid in @($null, '', 1, 'GPU_CPU_SELF_TIME', 'unknown_future_domain')) {
+        $invalidError = $null
+        try { Get-ProfilerTimingSemantics ([pscustomobject]@{ timingSemantics = $invalid }) | Out-Null }
+        catch { $invalidError = $_.Exception.Message }
+        Assert-Test ($invalidError -match 'malformed or unsupported') 'malformed or unknown timing marker fails closed'
+    }
+
     $schemaError = $null
     try {
         & $compare -InputPath $summaryPath -OutputDirectory (Join-Path $resolvedTestRoot 'invalid-output') | Out-Null
@@ -162,6 +194,10 @@ if ($action -eq 'enable' -and $env:CSX_PROFILER_TEST_BREAK_MIRROR -eq '1') {
 }
 $timer = [pscustomobject]@{name='Synthetic';activeGpu=$true;activeCpu=$true;hasGpu=$true;hasCpu=$true;gpuMs=1.0;topLevelMs=1.0;cpuMs=0.1}
 $status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.1;acquiredSlots=1;slotRefusals=0;timers=@($timer)}
+if ($env:CSX_PROFILER_TEST_LEGACY_TIMING -ne '1') {
+    $semantics = if ($env:CSX_PROFILER_TEST_TIMING_DRIFT -eq '1' -and $state.calls -ge 3) { 'legacy_unspecified' } else { 'gpu_cpu_self_time' }
+    $status | Add-Member -NotePropertyName timingSemantics -NotePropertyValue $semantics
+}
 $data = [ordered]@{content=@([pscustomobject]@{ok=$true;status=$status})}
 if ($RequirePerformanceNeutral) {
     $distorted = (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DISTORT_ACTION) -and $env:CSX_PROFILER_TEST_DISTORT_ACTION -eq $action) -or (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DISTORT_LABEL) -and $env:CSX_PROFILER_TEST_DISTORT_LABEL -eq $EvidenceLabel)
@@ -186,10 +222,25 @@ $semantic = if ($optionalUnavailable) { [pscustomobject]@{known=$true;ok=$false;
     $measuredRecords = @(Get-Content -LiteralPath $measurement.rawPath -Raw | ConvertFrom-Json)
     $measurementReceipt = Get-Content -LiteralPath $measurement.receiptPath -Raw | ConvertFrom-Json
     Assert-Test (@($measuredRecords.runtimeIdentityFingerprint | Sort-Object -Unique).Count -eq 1 -and @($measurementReceipt.runtimeIdentityObservations).Count -ge 7) 'measurement binds every accepted response and sample to one verified runtime identity'
-    Assert-Test ($measurement.summary.schemaVersion -eq 3 -and @($measurement.summary.performanceObservations).Count -ge 7) 'measurement preserves performance-neutrality evidence in summary schema 3'
+    Assert-Test ($measurement.summary.schemaVersion -eq 4 -and @($measurement.summary.performanceObservations).Count -ge 7) 'measurement preserves performance-neutrality evidence in summary schema 4'
+    Assert-Test ($measurement.summary.timingSemantics -eq 'gpu_cpu_self_time' -and $measurementReceipt.timingSemantics -eq 'gpu_cpu_self_time' -and @($measuredRecords | Where-Object timingSemantics -ne 'gpu_cpu_self_time').Count -eq 0) 'measurement preserves self-time semantics in receipt, summary, and every raw sample'
     Assert-Test (@($measurement.summary.performanceObservations | Where-Object { -not $_.window.valid -or $_.guard.performanceEpoch -ne 7 }).Count -eq 0) 'measurement retains one valid performance epoch across the capture'
     Assert-Test (@($measurement.summary.performanceObservations | Where-Object { $_.action -in @('renderscale-before', 'renderscale-after') }).Count -eq 2) 'capture-wide performance evidence includes both render-scale snapshots'
     Assert-Test (@($measurement.summary.performanceObservations | Where-Object { -not $_.sessionCleanup.ok }).Count -eq 0) 'measurement preserves final MCP cleanup evidence for every guarded profiler call'
+
+    $env:CSX_PROFILER_TEST_LEGACY_TIMING = '1'
+    try {
+        $legacyMeasurement = & $measure -Label legacy -EvidenceDirectory (Join-Path $resolvedTestRoot 'legacy') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | ConvertFrom-Json
+        Assert-Test ($legacyMeasurement.summary.timingSemantics -eq 'legacy_unspecified') 'legacy collection remains supported with explicit unspecified semantics'
+    } finally { Remove-Item Env:CSX_PROFILER_TEST_LEGACY_TIMING -ErrorAction SilentlyContinue }
+    $env:CSX_PROFILER_TEST_TIMING_DRIFT = '1'
+    [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0,"renderScaleCalls":0}', [Text.UTF8Encoding]::new($false))
+    $timingError = $null
+    try { & $measure -Label semantic-drift -EvidenceDirectory (Join-Path $resolvedTestRoot 'semantic-drift') -ContextJson $contextJson -Samples 3 -WarmupSamples 0 -IntervalMs 50 -RuntimePath $runtimePath -DevBenchControlPath $fakeControl | Out-Null }
+    catch { $timingError = $_.Exception.Message }
+    finally { Remove-Item Env:CSX_PROFILER_TEST_TIMING_DRIFT -ErrorAction SilentlyContinue }
+    $timingFinalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    Assert-Test ($timingError -match 'timing semantics changed' -and -not $timingFinalState.enabled) 'semantic drift rejects capture and restores the prior profiler state'
 
     [IO.File]::WriteAllText($statePath, '{"enabled":false,"frame":0,"calls":0,"renderScaleCalls":0}', [Text.UTF8Encoding]::new($false))
     $env:CSX_PROFILER_TEST_RENDER_SCALE_EPOCH_AFTER = '1'
@@ -289,7 +340,7 @@ $semantic = if ($optionalUnavailable) { [pscustomobject]@{known=$true;ok=$false;
     $measureText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Measure-CSXProfiler.ps1') -Raw
     Assert-Test ($measureText -match '-RequirePerformanceNeutral:\(-not \$ForRestore\)') 'capture guards measurement calls while preserving the restoration path'
     Assert-Test ($measureText -match '\$expectedPerformanceEpoch') 'capture pins the performance ownership epoch across samples'
-    Assert-Test ($measureText -match 'schemaVersion = 3') 'capture stores performance guard evidence under schema 3'
+    Assert-Test ($measureText -match 'schemaVersion = 4') 'capture stores performance guard evidence under schema 4'
     Assert-Test ($measureText.IndexOf(
         'Get-DevBenchRenderScalePreparationTelemetry',
         [StringComparison]::Ordinal
