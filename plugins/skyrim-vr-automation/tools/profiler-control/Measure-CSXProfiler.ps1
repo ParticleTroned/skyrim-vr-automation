@@ -18,6 +18,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ProfilerTimingSemantics.ps1')
 $devBenchControlModule = Import-Module (Join-Path $PSScriptRoot '..\devbench-control\DevBenchControl.psm1') -Force -PassThru
 
 function Invoke-DevBenchNormalizer([string]$Name, $Response) {
@@ -145,7 +146,7 @@ $runDirectory = Join-Path ([IO.Path]::GetFullPath($EvidenceDirectory)) "profiler
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
 $receiptPath = Join-Path $runDirectory 'capture.receipt.json'
 $receipt = [ordered]@{
-    schemaVersion = 3; operation = 'measure-profiler'; transactionId = $transactionId; state = 'prepared'
+    schemaVersion = 4; operation = 'measure-profiler'; transactionId = $transactionId; state = 'prepared'
     label = $Label; runtimePath = [IO.Path]::GetFullPath($RuntimePath); context = $context
     preparedUtc = [DateTime]::UtcNow.ToString('o'); priorEnabled = $null; finalEnabled = $null
     totalTimeoutSeconds = $TotalTimeoutSeconds; restoreReserveSeconds = $RestoreReserveSeconds
@@ -400,6 +401,8 @@ try {
     $initialStatus = Get-ProfilerStatus $initialEnvelope
     $runtimeIdentity = $initialEnvelope.runtimeIdentity
     $priorEnabled = Get-ProfilerEnabled $initialStatus
+    $timingSemantics = Get-ProfilerTimingSemantics $initialStatus
+    $receipt.timingSemantics = $timingSemantics
     $stableRuntimeIdentity = $initialEnvelope.stableRuntimeIdentity
     $receipt.priorEnabled = $priorEnabled
     $receipt.runtimeIdentity = $runtimeIdentity
@@ -443,6 +446,9 @@ try {
             Start-ProfilerDelay -RequestedMilliseconds ([Math]::Min(50, $IntervalMs))
         } while ([DateTime]::UtcNow -lt $freshDeadline)
         if ($frame -le $lastFrame) { throw "Profiler did not advance beyond frame $lastFrame within $FreshFrameTimeoutSeconds seconds." }
+        if ((Get-ProfilerTimingSemantics $status) -cne $timingSemantics) {
+            throw 'Profiler timing semantics changed during capture.'
+        }
         $resolvedTotal = [double]$status.resolvedTotalMs
         $resolvedCpuTotal = [double]$status.resolvedCpuTotalMs
         Assert-Finite $resolvedTotal 'resolvedTotalMs'
@@ -455,6 +461,7 @@ try {
         $records.Add([pscustomobject][ordered]@{
             sample = $sampleIndex; timestampUtc = [DateTime]::UtcNow.ToString('o'); frame = $frame
             capturedFrame = [long]$status.capturedFrameCount; resolvedTotalMs = $resolvedTotal; resolvedCpuTotalMs = $resolvedCpuTotal
+            timingSemantics = $timingSemantics
             acquiredSlots = [int]$status.acquiredSlots; slotRefusals = [int]$status.slotRefusals; timers = @($status.timers)
             invocationEvidencePath = $envelope.evidencePath
             runtimeIdentityFingerprint = $envelope.runtimeIdentityFingerprint
@@ -551,7 +558,8 @@ $resourcePublicationSummaryAfter = if ($null -eq $resourcePublicationAfter) {
     $resourcePublicationAfter | Select-Object -Property * -ExcludeProperty preparation
 }
 $summary = [pscustomobject][ordered]@{
-    schemaVersion = 3; transactionId = $transactionId; label = $Label; startedUtc = $startedUtc.ToString('o'); endedUtc = $endedUtc.ToString('o')
+    schemaVersion = 4; transactionId = $transactionId; label = $Label; startedUtc = $startedUtc.ToString('o'); endedUtc = $endedUtc.ToString('o')
+    timingSemantics = $timingSemantics
     durationSeconds = ($endedUtc - $startedUtc).TotalSeconds; requestedSamples = $Samples; warmupSamples = $WarmupSamples; collectedSamples = $records.Count
     uniqueFreshFrames = @($records.frame | Sort-Object -Unique).Count; intervalMs = $IntervalMs; totalTimeoutSeconds = $TotalTimeoutSeconds
     runtimeIdentity = $runtimeIdentity; runtimeIdentityFingerprint = $expectedRuntimeIdentityFingerprint
@@ -575,7 +583,7 @@ $csvPath = Join-Path $runDirectory "$safeLabel.timers.csv"
 Write-JsonAtomic $rawPath @($records)
 Write-JsonAtomic $summaryPath $summary
 $timerSummaries | ForEach-Object {
-    [pscustomobject][ordered]@{ name = $_.name; observedSamples = $_.observedSamples; activeGpuSamples = $_.activeGpuSamples; gpuMeanMs = $_.gpuMs.mean; gpuMedianMs = $_.gpuMs.median; gpuP95Ms = $_.gpuMs.p95; gpuP99Ms = $_.gpuMs.p99; gpuMaxMs = $_.gpuMs.max; topLevelMeanMs = $_.topLevelMs.mean; cpuMeanMs = $_.cpuMs.mean }
+    [pscustomobject][ordered]@{ name = $_.name; timingSemantics = $timingSemantics; observedSamples = $_.observedSamples; activeGpuSamples = $_.activeGpuSamples; gpuMeanMs = $_.gpuMs.mean; gpuMedianMs = $_.gpuMs.median; gpuP95Ms = $_.gpuMs.p95; gpuP99Ms = $_.gpuMs.p99; gpuMaxMs = $_.gpuMs.max; topLevelMeanMs = $_.topLevelMs.mean; cpuMeanMs = $_.cpuMs.mean }
 } | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
 
 [pscustomobject][ordered]@{ ok = $true; label = $Label; transactionId = $transactionId; rawPath = $rawPath; summaryPath = $summaryPath; csvPath = $csvPath; receiptPath = $receiptPath; summary = $summary } | ConvertTo-Json -Depth 80

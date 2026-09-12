@@ -25,7 +25,7 @@ ownership epoch before and after dispatch. The capture also pins that epoch
 across all warm-up and measured samples. Registration or epoch drift invalidates
 the run, while the reserved restoration path remains available to restore the
 profiler's prior state. Guard observations are retained in receipt and summary
-schema 3; the collector never disarms the probe.
+schema 4; the collector never disarms the probe.
 
 The collector also retains central-controller, read-only resource-publication
 snapshots immediately before and after the measured interval: current,
@@ -76,6 +76,21 @@ features receive explicit zero rows, distinguishing absence from a lost row.
 Aggregated `*.summary.json` input is rejected with a specific schema error.
 Every input needs at least three unique fresh frames, finite metrics, and the
 same environment/runtime fingerprint.
+
+CSX profiler API 1.1 / schema 2 reports GPU and CPU **self time**, excluding
+profiled descendants. The collector preserves the provider's
+`timingSemantics: gpu_cpu_self_time` marker in raw samples, receipt, summary
+(schema 4), and timer CSV. Legacy responses without the marker are labeled
+`legacy_unspecified`; the collector never infers their meaning from values.
+Changing semantics during a capture fails through the normal restoration
+path. Comparisons reject mixed semantics within or between captures and retain
+the marker in JSON (schema 2), CSV, and report explanations. Legacy-to-legacy
+comparisons remain available with an explicit warning that sums may overlap.
+
+DevBench transport still uses `contractMajor: 1`; no minor pin changes are
+needed in this toolkit. Native consumers outside this toolkit must accept
+minor version 1 in CSX service discovery. See the shader repository's
+`docs/development/api-profiler-v1.md` for the migration contract.
 
 ```powershell
 .\Compare-CSXProfiler.ps1 `
