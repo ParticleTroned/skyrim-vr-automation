@@ -52,10 +52,13 @@ function fixture(name, speed = 100, failures = 0, native = false) {
         if (native) gates.push({ name: "presentation_recovered", passed: false, limit: { path: "VendorEvaluated" },
             observed: { leftPath: "NativeOriginal", rightPath: "NativeOriginal" } });
         if (failures) gates.push({ name: "fidelity_invariants", passed: false, observed: failures, limit: 0 });
-        const record = { producer: { buildId }, session: { active: false, id: pass, overwrittenEvents: 0 },
-            acceptance: { accepted: false, gates, failureReasons: gates.map(gate => gate.name) },
+        const record = { schema: "community-shaders.vr-render-scale.iteration", schemaVersion: 13,
+            producer: { buildId }, session: { active: false, id: pass, overwrittenEvents: 0 },
+            acceptance: { verdict: "fail", accepted: false, gates, failureReasons: gates.map(gate => gate.name) },
             presentationPath: { allowedPresentationStretch: { completedEpisodes: 1, completedFrames: 6,
-                completedMilliseconds: 60, maximumCompletedMilliseconds: 60 } },
+                completedMilliseconds: 60, maximumCompletedMilliseconds: 60, maximumObservedFrames: 6,
+                maximumAcceptedFrames: 2, activeAtStop: false, incompleteStereoCycleAtStop: false,
+                incompleteStereoEyeMaskAtStop: 0 } },
             metrics: [{ requestID: pass, transitionEpoch: pass, fidelityMismatches: failures,
                 retries: 1, requestedFrame: 21, appliedFrame: 25, displayEyeWidth: 1512,
                 displayEyeHeight: 1680, renderEyeWidth: 1284, renderEyeHeight: 1428 }],
@@ -85,6 +88,120 @@ try {
     assert.equal(b.health.passes[0].cumulativeAcceptance.accepted, false);
     assert.equal(b.health.passes[0].healthStandard, "MET");
     assert.equal(b.health.passes[0].failedGates[0].assessmentRole, "DIAGNOSTIC_ONLY");
+    const classified = fixture("classified"), classifiedFile = path.join(classified.root,
+        "raw/lane-nvidia/pass-1/finalization/cleanup.json");
+    const classifiedReceipt = read(classifiedFile), classifiedRecord = classifiedReceipt.results[0].result.record;
+    classifiedRecord.acceptance.gates[0].classification = "diagnostic_only";
+    classifiedRecord.presentationPath.allowedPresentationStretch.diagnosticThresholdFrames = 2;
+    classifiedRecord.acceptance.accepted = true;
+    classifiedRecord.acceptance.verdict = "pass";
+    classifiedRecord.acceptance.failureReasons = [];
+    write(classifiedFile, classifiedReceipt);
+    const classifiedHealth = load(classified).health.passes[0];
+    assert.equal(classifiedHealth.failedGates[0].assessmentRole, "DIAGNOSTIC_ONLY");
+    assert.equal(classifiedHealth.cumulativeAcceptance.accepted, true);
+    assert.equal(classifiedHealth.healthStandard, "MET");
+    classifiedRecord.schemaVersion = 14;
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace = [{
+        startFrame: 20, endFrame: 25, frames: 6, transitionEpoch: 1,
+        startQpc: 100, endQpc: 160, unattributedFrames: 0, reasonMask: 2,
+        epochCoherent: true }];
+    Object.assign(classifiedRecord.presentationPath.allowedPresentationStretch,
+        { episodeTraceOverflow: 0, tracedFrames: 6, unattributedFrames: 0, traceComplete: true });
+    classifiedRecord.acceptance.gates.push({ name: "presentation_stretch_attribution", passed: true,
+        observed: { completedEpisodes: 1, traceEntries: 1, completedFrames: 6,
+            tracedFrames: 6, unattributedFrames: 0, traceOverflow: 0, epochCoherent: true } });
+    classifiedRecord.acceptance.gates.push({ name: "presentation_stretch_complete_stereo_at_stop", passed: true,
+        observed: { incompleteStereoCycleAtStop: false, observedEyeMask: 0 } });
+    classifiedRecord.acceptance.gates.push({ name: "presentation_stretch_inactive_at_stop", passed: true,
+        observed: { activeAtStop: false } });
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].healthStandard, "MET");
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace[0].unattributedFrames = 1;
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].evidenceStatus, "INCOMPLETE");
+    classifiedRecord.presentationPath.allowedPresentationStretch.unattributedFrames = 1;
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace[0].reasonMask = 3;
+    classifiedRecord.acceptance.gates[1].passed = false;
+    classifiedRecord.acceptance.gates[1].observed.unattributedFrames = 1;
+    classifiedRecord.acceptance.accepted = false;
+    classifiedRecord.acceptance.verdict = "fail";
+    classifiedRecord.acceptance.failureReasons = ["presentation_stretch_attribution"];
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].healthStandard, "NOT_MET");
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace[0].unattributedFrames = 0;
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace[0].reasonMask = 2;
+    classifiedRecord.presentationPath.allowedPresentationStretch.unattributedFrames = 0;
+    classifiedRecord.acceptance.gates[1].passed = true;
+    classifiedRecord.acceptance.gates[1].observed.unattributedFrames = 0;
+    classifiedRecord.acceptance.accepted = true;
+    classifiedRecord.acceptance.verdict = "pass";
+    classifiedRecord.acceptance.failureReasons = [];
+    classifiedRecord.acceptance.gates.push(structuredClone(classifiedRecord.acceptance.gates[1]));
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].evidenceStatus, "INCOMPLETE");
+    classifiedRecord.acceptance.gates.pop();
+    const oneEpisode = classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace;
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace = Array(129).fill(oneEpisode[0]);
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].evidenceStatus, "INCOMPLETE");
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace = oneEpisode;
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace[0].startFrame = 4294967295;
+    classifiedRecord.presentationPath.allowedPresentationStretch.episodeTrace[0].endFrame = 4;
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].healthStandard, "MET");
+    classifiedRecord.presentationPath.allowedPresentationStretch.activeAtStop = true;
+    classifiedRecord.acceptance.gates[3].passed = false;
+    classifiedRecord.acceptance.gates[3].observed.activeAtStop = true;
+    classifiedRecord.acceptance.accepted = false;
+    classifiedRecord.acceptance.verdict = "fail";
+    classifiedRecord.acceptance.failureReasons = ["presentation_stretch_inactive_at_stop"];
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].healthStandard, "NOT_MET");
+    classifiedRecord.presentationPath.allowedPresentationStretch.activeAtStop = false;
+    classifiedRecord.acceptance.gates[3].passed = true;
+    classifiedRecord.acceptance.gates[3].observed.activeAtStop = false;
+    classifiedRecord.presentationPath.allowedPresentationStretch.incompleteStereoCycleAtStop = true;
+    classifiedRecord.presentationPath.allowedPresentationStretch.incompleteStereoEyeMaskAtStop = 1;
+    classifiedRecord.acceptance.gates[2].passed = false;
+    classifiedRecord.acceptance.gates[2].observed.incompleteStereoCycleAtStop = true;
+    classifiedRecord.acceptance.gates[2].observed.observedEyeMask = 1;
+    classifiedRecord.acceptance.failureReasons = ["presentation_stretch_complete_stereo_at_stop"];
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].healthStandard, "NOT_MET");
+    classifiedRecord.presentationPath.allowedPresentationStretch.incompleteStereoCycleAtStop = false;
+    classifiedRecord.presentationPath.allowedPresentationStretch.incompleteStereoEyeMaskAtStop = 0;
+    classifiedRecord.acceptance.gates[2].passed = true;
+    classifiedRecord.acceptance.gates[2].observed.incompleteStereoCycleAtStop = false;
+    classifiedRecord.acceptance.gates[2].observed.observedEyeMask = 0;
+    classifiedRecord.acceptance.accepted = true;
+    classifiedRecord.acceptance.verdict = "pass";
+    classifiedRecord.acceptance.failureReasons = [];
+    classifiedRecord.presentationPath.allowedPresentationStretch.maximumObservedFrames = 5;
+    classifiedRecord.acceptance.gates[0].observed.maximumObservedFrames = 5;
+    write(classifiedFile, classifiedReceipt);
+    assert.equal(load(classified).health.passes[0].evidenceStatus, "INCOMPLETE");
+    const future = fixture("future"), futureFile = path.join(future.root,
+        "raw/lane-nvidia/pass-1/finalization/cleanup.json");
+    const futureReceipt = read(futureFile);
+    futureReceipt.results[0].result.record.acceptance.gates[0].classification = "future_kind";
+    write(futureFile, futureReceipt);
+    assert.equal(load(future).health.passes[0].healthStandard, "NOT_MET");
+    delete futureReceipt.results[0].result.record.acceptance.gates[0].classification;
+    futureReceipt.results[0].result.record.schemaVersion = 15;
+    write(futureFile, futureReceipt);
+    assert.equal(load(future).health.passes[0].evidenceStatus, "INCOMPLETE");
+    const active = fixture("active"), activeFile = path.join(active.root,
+        "raw/lane-nvidia/pass-1/finalization/cleanup.json");
+    const activeReceipt = read(activeFile);
+    activeReceipt.results[0].result.record.presentationPath.allowedPresentationStretch.activeAtStop = true;
+    write(activeFile, activeReceipt);
+    assert.equal(load(active).health.passes[0].evidenceStatus, "INCOMPLETE");
+    activeReceipt.results[0].result.record.presentationPath.allowedPresentationStretch.activeAtStop = false;
+    activeReceipt.results[0].result.record.presentationPath.allowedPresentationStretch.incompleteStereoCycleAtStop = true;
+    activeReceipt.results[0].result.record.presentationPath.allowedPresentationStretch.incompleteStereoEyeMaskAtStop = 1;
+    write(activeFile, activeReceipt);
+    assert.equal(load(active).health.passes[0].evidenceStatus, "INCOMPLETE");
     assert.equal(c.rows[0].switchTimings.relatchProofMs, 70);
     assert.equal(c.rows[0].switchTimings.relatchProofFrames, 8);
     assert.equal(c.rows[0].switchTimings.requestToAppliedFrames, 4);

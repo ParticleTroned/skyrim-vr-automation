@@ -78,8 +78,8 @@ function Get-CSXObjectSha256 {
 
 function Assert-CSXProtocol {
     param([Parameter(Mandatory)]$Protocol)
-    if ([string]$Protocol.schema -ne 'csx-render-scale-pr-v1' -or [int]$Protocol.protocolRevision -ne 5) {
-        throw 'The protocol must be csx-render-scale-pr-v1 revision 5.'
+    if ([string]$Protocol.schema -ne 'csx-render-scale-pr-v1' -or [int]$Protocol.protocolRevision -ne 6) {
+        throw 'The protocol must be csx-render-scale-pr-v1 revision 6.'
     }
     if ([string]$Protocol.requiredMethodsCommit -ne 'b46edeaed14c41ad41225641c3a4943f1db25db6') {
         throw 'The protocol does not bind the required DLSS trace methods commit.'
@@ -90,8 +90,8 @@ function Assert-CSXProtocol {
     if ([string]$Protocol.transitionExecution -ne 'fail_fast_top_level_mcp') {
         throw 'The protocol must fail fast on every top-level transition MCP call.'
     }
-    if ([string]$Protocol.fixtureManifestSchema -ne 'csx-render-scale-fixture-v1' -or [int]$Protocol.thresholds.stressRecordSchemaVersion -ne 13) {
-        throw 'The protocol must bind fixture schema v1 and stress-record schema v13.'
+    if ([string]$Protocol.fixtureManifestSchema -ne 'csx-render-scale-fixture-v1' -or [int]$Protocol.thresholds.stressRecordSchemaVersion -ne 14) {
+        throw 'The protocol must bind fixture schema v1 and stress-record schema v14.'
     }
     if ([int]$Protocol.timeBudget.endToEndMs -ne 600000 -or [int]$Protocol.timeBudget.orchestrationMs -ne 585000 -or
         [int]$Protocol.timeBudget.captureAssaysMs -ne 495000 -or [int]$Protocol.timeBudget.visualEvaluationMs -ne 90000 -or
@@ -204,7 +204,7 @@ function Assert-CSXProtocol {
         [int]$Protocol.timeBudget.orchestrationMs + [int]$Protocol.timeBudget.evidenceFinalizationMs -ne [int]$Protocol.timeBudget.endToEndMs) {
         throw 'Capture, vision, and finalization allocations do not exactly fit the unattended cap.'
     }
-    $canonicalProtocolSha256 = '745aa3a0a9d5e2a7f9769d11676d13b5ea77fd6bf59b50d6c3b87bcca507c4bd'
+    $canonicalProtocolSha256 = '45ea1cc51fa139371c524d701122f2576986696134602541b672b3387fd794e8'
     if ((Get-CSXObjectSha256 -Value $Protocol) -ne $canonicalProtocolSha256) {
         throw 'The revision-5 protocol definition changed; publish a new protocol revision instead.'
     }
@@ -1949,6 +1949,158 @@ function Read-CSXProducerJson {
     catch { throw "$Label is not valid JSON: $($_.Exception.Message)" }
 }
 
+function Get-CSXStressRecordAcceptance {
+    param([Parameter(Mandatory)]$Record)
+
+    $version = Get-CSXPropertyValue $Record 'schemaVersion'
+    if ([string](Get-CSXPropertyValue $Record 'schema') -ne 'community-shaders.vr-render-scale.iteration' -or
+        (-not (Test-CSXNumberEquals $version 13) -and -not (Test-CSXNumberEquals $version 14))) {
+        throw 'Stress record has an unsupported schema or version.'
+    }
+    $presentation = Get-CSXPathValue $Record 'presentationPath.allowedPresentationStretch'
+    if ($null -eq $presentation -or
+        (Get-CSXPropertyValue $presentation 'activeAtStop') -isnot [bool] -or
+        (Get-CSXPropertyValue $presentation 'incompleteStereoCycleAtStop') -isnot [bool] -or
+        -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $presentation 'incompleteStereoEyeMaskAtStop')) -or
+        ([bool]$presentation.incompleteStereoCycleAtStop -ne
+            (-not (Test-CSXNumberEquals $presentation.incompleteStereoEyeMaskAtStop 0)))) {
+        throw 'Stress record has inconsistent stretch stop state.'
+    }
+    if ((Test-CSXNumberEquals $version 13) -and
+        ([bool]$presentation.activeAtStop -or [bool]$presentation.incompleteStereoCycleAtStop)) {
+        throw 'Legacy stress record has an active stretch episode or incomplete stereo cycle at stop.'
+    }
+    $acceptance = Get-CSXPropertyValue $Record 'acceptance'
+    $rawAccepted = Get-CSXPropertyValue $acceptance 'accepted'
+    $gates = @(Get-CSXPropertyValue $acceptance 'gates' @())
+    $failureReasons = @(Get-CSXPropertyValue $acceptance 'failureReasons' @())
+    if ($rawAccepted -isnot [bool] -or $gates.Count -eq 0 -or
+        [string](Get-CSXPropertyValue $acceptance 'verdict') -ne $(if ($rawAccepted) { 'pass' } else { 'fail' })) {
+        throw 'Stress record acceptance verdict is missing or inconsistent.'
+    }
+    $stretchGates = @($gates | Where-Object { [string](Get-CSXPropertyValue $_ 'name') -eq 'presentation_stretch_frame_bound' })
+    if ($stretchGates.Count -ne 1 -or
+        -not (Test-CSXNumberEquals (Get-CSXPropertyValue $presentation 'maximumAcceptedFrames') 2) -or
+        -not (Test-CSXNumberEquals (Get-CSXPathValue $stretchGates[0] 'limit.maximumFrames') 2) -or
+        -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $presentation 'maximumObservedFrames')) -or
+        -not (Test-CSXNumberEquals (Get-CSXPathValue $stretchGates[0] 'observed.maximumObservedFrames') $presentation.maximumObservedFrames) -or
+        (Get-CSXPropertyValue $stretchGates[0] 'passed') -isnot [bool] -or
+        [bool]$stretchGates[0].passed -ne ([double]$presentation.maximumObservedFrames -le 2)) {
+        throw 'Stress record stretch gate does not match the raw two-frame observation.'
+    }
+    $classification = Get-CSXPropertyValue $stretchGates[0] 'classification'
+    $legacy = (Test-CSXNumberEquals $version 13) -and $null -eq $classification -and
+        $null -eq (Get-CSXPropertyValue $presentation 'diagnosticThresholdFrames')
+    if (-not $legacy -and ($classification -ne 'diagnostic_only' -or
+            -not (Test-CSXNumberEquals (Get-CSXPropertyValue $presentation 'diagnosticThresholdFrames') 2))) {
+        throw 'Stress record stretch classification or diagnostic threshold is unsupported.'
+    }
+    if (Test-CSXNumberEquals $version 14) {
+        $traceProperty = $presentation.PSObject.Properties['episodeTrace']
+        [object[]]$trace = @()
+        if ($null -ne $traceProperty) { $trace = @($traceProperty.Value) }
+        $traceGate = @($gates | Where-Object { [string](Get-CSXPropertyValue $_ 'name') -eq 'presentation_stretch_attribution' })
+        $inactiveGate = @($gates | Where-Object { [string](Get-CSXPropertyValue $_ 'name') -eq 'presentation_stretch_inactive_at_stop' })
+        $stereoGate = @($gates | Where-Object { [string](Get-CSXPropertyValue $_ 'name') -eq 'presentation_stretch_complete_stereo_at_stop' })
+        if ($null -eq $traceProperty -or $trace.Count -gt 128 -or $traceGate.Count -ne 1 -or
+            $inactiveGate.Count -ne 1 -or $stereoGate.Count -ne 1 -or
+            -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $presentation 'episodeTraceOverflow')) -or
+            -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $presentation 'completedFrames')) -or
+            -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $presentation 'completedEpisodes')) -or
+            -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $presentation 'unattributedFrames')) -or
+            (Get-CSXPropertyValue $presentation 'traceComplete') -isnot [bool] -or
+            (Get-CSXPropertyValue $inactiveGate[0] 'passed') -isnot [bool] -or
+            [bool]$inactiveGate[0].passed -eq [bool]$presentation.activeAtStop -or
+            (Get-CSXPropertyValue $stereoGate[0] 'passed') -isnot [bool] -or
+            [bool]$stereoGate[0].passed -eq [bool]$presentation.incompleteStereoCycleAtStop -or
+            (Get-CSXPathValue $inactiveGate[0] 'observed.activeAtStop') -isnot [bool] -or
+            [bool]$inactiveGate[0].observed.activeAtStop -ne [bool]$presentation.activeAtStop -or
+            (Get-CSXPathValue $stereoGate[0] 'observed.incompleteStereoCycleAtStop') -isnot [bool] -or
+            [bool]$stereoGate[0].observed.incompleteStereoCycleAtStop -ne [bool]$presentation.incompleteStereoCycleAtStop -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $stereoGate[0] 'observed.observedEyeMask') $presentation.incompleteStereoEyeMaskAtStop)) {
+            throw 'Stress record stretch attribution or stop gates are inconsistent.'
+        }
+        $frameSum = [uint64]0
+        $unattributedSum = [uint64]0
+        $maximumTracedFrames = [uint64]0
+        foreach ($episode in $trace) {
+            $frames = Get-CSXPropertyValue $episode 'frames'
+            $reasonMask = Get-CSXPropertyValue $episode 'reasonMask'
+            if (-not (Test-CSXNonNegativeInteger $frames) -or [double]$frames -lt 1 -or
+                -not (Test-CSXNonNegativeInteger $reasonMask) -or
+                [uint64]$reasonMask -gt 15 -or [uint64]$reasonMask -eq 0 -or
+                -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $episode 'unattributedFrames')) -or
+                [uint64]$episode.unattributedFrames -gt [uint64]$frames -or
+                (Get-CSXPropertyValue $episode 'epochCoherent') -isnot [bool] -or
+                -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $episode 'transitionEpoch')) -or
+                -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $episode 'startFrame')) -or
+                -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $episode 'endFrame')) -or
+                -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $episode 'startQpc')) -or
+                -not (Test-CSXNonNegativeInteger (Get-CSXPropertyValue $episode 'endQpc'))) {
+                throw 'Stress record contains an invalid stretch episode attribution.'
+            }
+            $frameSum += [uint64]$frames
+            $unattributedSum += [uint64]$episode.unattributedFrames
+            $maximumTracedFrames = [Math]::Max($maximumTracedFrames, [uint64]$frames)
+        }
+        $epochsCoherent = @($trace | Where-Object { -not [bool]$_.epochCoherent }).Count -eq 0
+        $traceCovered = $trace.Count -eq [uint64]$presentation.completedEpisodes -and
+            (Test-CSXNumberEquals $frameSum (Get-CSXPropertyValue $presentation 'tracedFrames')) -and
+            [uint64]$presentation.episodeTraceOverflow -eq 0 -and $epochsCoherent
+        $attributionPassed = $traceCovered -and
+            (Test-CSXNumberEquals $frameSum (Get-CSXPropertyValue $presentation 'completedFrames')) -and
+            [uint64]$presentation.unattributedFrames -eq 0 -and
+            @($trace | Where-Object { -not [bool]$_.epochCoherent -or [uint64]$_.unattributedFrames -ne 0 }).Count -eq 0
+        if ($maximumTracedFrames -gt [uint64]$presentation.maximumObservedFrames -or
+            -not (Test-CSXNumberEquals $unattributedSum $presentation.unattributedFrames) -or
+            ([bool]$presentation.traceComplete -ne $traceCovered) -or
+            (Get-CSXPropertyValue $traceGate[0] 'passed') -isnot [bool] -or
+            [bool]$traceGate[0].passed -ne $attributionPassed -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $traceGate[0] 'observed.tracedFrames') $frameSum) -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $traceGate[0] 'observed.traceEntries') $trace.Count) -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $traceGate[0] 'observed.completedEpisodes') $presentation.completedEpisodes) -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $traceGate[0] 'observed.completedFrames') $presentation.completedFrames) -or
+            (Get-CSXPathValue $traceGate[0] 'observed.epochCoherent') -isnot [bool] -or
+            [bool]$traceGate[0].observed.epochCoherent -ne $epochsCoherent -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $traceGate[0] 'observed.unattributedFrames') $presentation.unattributedFrames) -or
+            -not (Test-CSXNumberEquals (Get-CSXPathValue $traceGate[0] 'observed.traceOverflow') $presentation.episodeTraceOverflow)) {
+            throw 'Stress record attribution gate disagrees with the episode trace.'
+        }
+    }
+    $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $failedNames = [Collections.Generic.List[string]]::new()
+    $healthFailures = [Collections.Generic.List[string]]::new()
+    foreach ($gate in $gates) {
+        $name = Get-CSXPropertyValue $gate 'name'
+        $passed = Get-CSXPropertyValue $gate 'passed'
+        $role = Get-CSXPropertyValue $gate 'classification'
+        if ([string]::IsNullOrWhiteSpace([string]$name) -or -not $seenNames.Add([string]$name) -or
+            $passed -isnot [bool] -or
+            ($null -ne $role -and ($role -ne 'diagnostic_only' -or $name -ne 'presentation_stretch_frame_bound'))) {
+            throw 'Stress record contains an invalid gate or unknown classification.'
+        }
+        if (-not $passed) {
+            $failedNames.Add([string]$name)
+            if ($name -ne 'presentation_stretch_frame_bound' -or (-not $legacy -and $role -ne 'diagnostic_only')) {
+                $healthFailures.Add([string]$name)
+            }
+        }
+    }
+    $expectedReasons = if ($legacy) { ,$failedNames.ToArray() } else { ,$healthFailures.ToArray() }
+    if ($failureReasons.Count -ne $expectedReasons.Count -or
+        [string]($failureReasons -join '|') -ne [string]($expectedReasons -join '|') -or
+        $rawAccepted -ne ($expectedReasons.Count -eq 0)) {
+        throw 'Stress record raw acceptance does not match its failed gates.'
+    }
+    return [pscustomobject][ordered]@{
+        accepted = $healthFailures.Count -eq 0
+        rawAccepted = $rawAccepted
+        legacy = $legacy
+        failedDiagnosticGates = @($failedNames | Where-Object { $_ -eq 'presentation_stretch_frame_bound' })
+        failedHealthGates = @($healthFailures)
+    }
+}
+
 function Get-CSXStressTransitionProjection {
     param(
         [Parameter(Mandatory)]$Record,
@@ -2134,9 +2286,11 @@ function Test-CSXProducerArtifactEvidence {
                 [bool](Get-CSXPathValue $stressResponse 'status.session.active' $true) -or
                 [bool](Get-CSXPathValue $stressRecord 'session.active' $true) -or
                 [string](Get-CSXPropertyValue $stressRecord 'schema') -ne 'community-shaders.vr-render-scale.iteration' -or
-                -not (Test-CSXNumberEquals (Get-CSXPropertyValue $stressRecord 'schemaVersion') $Protocol.thresholds.stressRecordSchemaVersion) -or
-                (Get-CSXPathValue $stressRecord 'acceptance.accepted') -isnot [bool] -or -not [bool](Get-CSXPathValue $stressRecord 'acceptance.accepted')) {
+                -not (Test-CSXNumberEquals (Get-CSXPropertyValue $stressRecord 'schemaVersion') $Protocol.thresholds.stressRecordSchemaVersion)) {
                 throw "$assay stress record session/schema/verdict identity is invalid."
+            }
+            if (-not (Get-CSXStressRecordAcceptance -Record $stressRecord).accepted) {
+                throw "$assay stress record has a failed health gate."
             }
             foreach ($row in @(Get-CSXPathValue $Raw "assays.$assay.records" @())) {
                 if (-not (Test-CSXNumberEquals (Get-CSXPathValue $row 'receipts.begin.baseline.stressSessionId') $stressId) -or
@@ -2639,21 +2793,12 @@ function Test-CSXAutomatedVisualTelemetry {
             [bool](Get-CSXPathValue $stressRecord 'session.active' $true) -or
             [string](Get-CSXPropertyValue $stressRecord 'schema') -ne 'community-shaders.vr-render-scale.iteration' -or
             -not (Test-CSXNumberEquals (Get-CSXPropertyValue $stressRecord 'schemaVersion') $protocol.thresholds.stressRecordSchemaVersion) -or
-            (Get-CSXPathValue $stressRecord 'acceptance.accepted') -isnot [bool] -or
-            -not [bool](Get-CSXPathValue $stressRecord 'acceptance.accepted') -or
-            (Get-CSXPathValue $stressRecord 'verdict.accepted') -isnot [bool] -or
-            -not [bool](Get-CSXPathValue $stressRecord 'verdict.accepted') -or
             -not (Test-CSXNumberEquals (Get-CSXPathValue $stressRecord 'session.coalescedDuplicateCount') 0) -or
             -not (Test-CSXNumberEquals (Get-CSXPathValue $stressRecord 'session.overwrittenEvents') 0)) {
             throw 'Visual stress record is not one clean, accepted, inactive task-owned session.'
         }
-        foreach ($gateSet in @('acceptance.gates', 'verdict.gates')) {
-            $gates = @(Get-CSXPathValue $stressRecord $gateSet @())
-            if ($gates.Count -eq 0 -or @($gates | Where-Object {
-                    (Get-CSXPropertyValue $_ 'passed') -isnot [bool] -or -not [bool](Get-CSXPropertyValue $_ 'passed')
-                }).Count -ne 0) {
-                throw "Visual stress record $gateSet does not contain an explicit all-pass gate set."
-            }
+        if (-not (Get-CSXStressRecordAcceptance -Record $stressRecord).accepted) {
+            throw 'Visual stress record has a failed health gate.'
         }
         if (-not (Test-CSXNumberEquals $cpuSessionId (Get-CSXPropertyValue $cpuRecord 'sessionId')) -or
             [decimal]$cpuSessionId -le 0 -or [bool](Get-CSXPathValue $cpuResponse 'cpuPerformance.active' $true) -or
@@ -2796,8 +2941,8 @@ function Test-CSXAutomatedVisualReviewEvidence {
     $automated = Get-CSXPathValue $RunRaw 'assays.visual.automatedReview'
     $latestCompletedUtc = [DateTimeOffset]::MinValue
     try {
-        if ([int](Get-CSXPathValue $RunRaw 'protocol.revision' 0) -ne 5) {
-            throw 'Automated visual review evidence requires protocol revision 5.'
+        if ([int](Get-CSXPathValue $RunRaw 'protocol.revision' 0) -ne 6) {
+            throw 'Automated visual review evidence requires protocol revision 6.'
         }
         if ($runId -notmatch '^rsq-[A-Za-z0-9_-]{8,80}$') {
             throw 'Automated visual review run identity is outside the response-schema contract.'
@@ -3495,7 +3640,7 @@ function Test-CSXAutomatedVisualReview {
     if (-not $evidence.integrityOk) { $reviewIntegrityOk = $false }
     if ([string](Get-CSXPropertyValue $Review 'schema') -ne 'csx-render-scale-visual-review-v2' -or
         [string](Get-CSXPathValue $Review 'reviewer.kind') -ne 'image_model') {
-        $errors.Add('Protocol revision 5 requires visual-review-v2 from an image_model; human review is forbidden.')
+        $errors.Add('Protocol revision 6 requires visual-review-v2 from an image_model; human review is forbidden.')
         $reviewIntegrityOk = $false
     }
     if ($evidence.integrityOk) {
@@ -3527,10 +3672,10 @@ function Test-CSXVisualReview {
         [Parameter(Mandatory)]$Review,
         $BaselineVisualIndex = $null
     )
-    if ([int](Get-CSXPathValue $RunRaw 'protocol.revision' 0) -ne 5) {
+    if ([int](Get-CSXPathValue $RunRaw 'protocol.revision' 0) -ne 6) {
         return [pscustomobject][ordered]@{
             ok = $false; integrityOk = $false; qualityPassed = $false
-            errors = @('Only protocol revision 5 automated image-model visual review evidence is accepted.')
+            errors = @('Only protocol revision 6 automated image-model visual review evidence is accepted.')
             reviewer = Get-CSXPropertyValue $Review 'reviewer'; reviewedUtc = Get-CSXPropertyValue $Review 'reviewedUtc'
         }
     }
@@ -3544,17 +3689,17 @@ function Test-CSXFlattenedBaselineVisualReview {
         [Parameter(Mandatory)]$VisualIndex,
         [Parameter(Mandatory)]$Review
     )
-    if ([int](Get-CSXPathValue $RunRaw 'protocol.revision' 0) -ne 5) {
+    if ([int](Get-CSXPathValue $RunRaw 'protocol.revision' 0) -ne 6) {
         return [pscustomobject][ordered]@{
             ok = $false; integrityOk = $false; qualityPassed = $false
-            errors = @('Only protocol revision 5 automated image-model baseline review evidence is accepted.')
+            errors = @('Only protocol revision 6 automated image-model baseline review evidence is accepted.')
             reviewer = Get-CSXPropertyValue $Review 'reviewer'; reviewedUtc = Get-CSXPropertyValue $Review 'reviewedUtc'
         }
     }
     if ([bool](Get-CSXPropertyValue $RunRaw 'prMode' $false)) {
         return [pscustomobject][ordered]@{
             ok = $false; integrityOk = $false; qualityPassed = $false
-            errors = @('A flattened PR baseline requires its automated comparison index; recursive visual baselines are not accepted by revision 5.')
+            errors = @('A flattened PR baseline requires its automated comparison index; recursive visual baselines are not accepted by revision 6.')
             reviewer = Get-CSXPropertyValue $Review 'reviewer'; reviewedUtc = Get-CSXPropertyValue $Review 'reviewedUtc'
         }
     }
@@ -3571,6 +3716,13 @@ function Test-CSXFiniteNonNegativeNumber {
     if ($null -eq $Value -or $Value -is [bool] -or $Value -is [string]) { return $false }
     try { $number = [double]$Value } catch { return $false }
     return [double]::IsFinite($number) -and $number -ge 0
+}
+
+function Test-CSXNonNegativeInteger {
+    param($Value)
+    if (-not (Test-CSXFiniteNonNegativeNumber $Value)) { return $false }
+    try { $integer = [decimal]$Value } catch { return $false }
+    return $integer -eq [decimal]::Truncate($integer) -and $integer -le [decimal][uint64]::MaxValue
 }
 
 function Test-CSXNumberEquals {
@@ -4098,9 +4250,8 @@ function Test-CSXCoreQualificationEvidence {
         -not (Test-CSXExplicitNullProperty $cocValidation 'stressRecordError') -or
         (Get-CSXPropertyValue $cocStretch 'recordAccepted') -isnot [bool] -or -not [bool](Get-CSXPropertyValue $cocStretch 'recordAccepted') -or
         -not (Test-CSXFiniteNonNegativeNumber (Get-CSXPropertyValue $cocStretch 'maxFrames')) -or
-        [double](Get-CSXPropertyValue $cocStretch 'maxFrames') -gt [double]$Protocol.thresholds.maximumPresentationStretchEpisodeFrames -or
         -not (Test-CSXFiniteNonNegativeNumber (Get-CSXPropertyValue $cocStretch 'meanFrames')) -or
-        [double](Get-CSXPropertyValue $cocStretch 'meanFrames') -gt [double]$Protocol.thresholds.maximumMeanPresentationStretchEpisodeFrames -or
+        -not (Test-CSXNumberEquals (Get-CSXPropertyValue $cocStretch 'unattributedFrames') $Protocol.thresholds.maximumUnattributedStretchFrames) -or
         -not (Test-CSXNumberEquals (Get-CSXPropertyValue $cocStress 'requestEvents') 20) -or
         -not (Test-CSXNumberEquals (Get-CSXPropertyValue $cocStress 'uniqueRequestEpochs') 20) -or
         -not (Test-CSXNumberEquals (Get-CSXPropertyValue $cocStress 'metrics') 20) -or
@@ -4587,7 +4738,7 @@ function Update-CSXQualificationReport {
         catch { $infrastructureErrors.Add("Visual review validation failed: $($_.Exception.Message)"); $reviewState = 'FAIL' }
     }
     else {
-        $infrastructureErrors.Add('Protocol revision 5 requires the same-run automated image-model visual review; no review file was produced.')
+        $infrastructureErrors.Add('Protocol revision 6 requires the same-run automated image-model visual review; no review file was produced.')
     }
     $status = if ($infrastructureErrors.Count -gt 0) {
         'INFRASTRUCTURE_ERROR'
@@ -4697,7 +4848,7 @@ function Update-CSXQualificationReport {
         $markdown += "`nThis is a passing local qualification, not a PR qualification. PR use requires -PrMode and an explicitly identified baseline build.`n"
     }
     elseif ($status -ne 'PASS') {
-        $markdown += "`nThis is not a passing PR qualification. See run.json errors; protocol revision 5 has no manual review or pending state.`n"
+        $markdown += "`nThis is not a passing PR qualification. See run.json errors; protocol revision 6 has no manual review or pending state.`n"
     }
     $summaryName = if ($prMode) { 'pr-summary.md' } else { 'qualification-summary.md' }
     $summaryPath = Write-CSXTextFile -Path (Join-Path $root $summaryName) -Value $markdown
@@ -4705,7 +4856,7 @@ function Update-CSXQualificationReport {
 }
 
 Export-ModuleMember -Function Assert-CSXProtocol, Get-CSXQualificationProtocol, Get-CSXFixtureManifest, Write-CSXJsonFile, Write-CSXTextFile, Get-CSXFileSha256,
-    Get-CSXPropertyValue, Get-CSXPathValue, Get-CSXLiveGpuFixtureEvidence, ConvertTo-CSXHashtable, Add-CSXExactRuntimeToProfile, Get-CSXFoveationTarget,
+    Get-CSXPropertyValue, Get-CSXPathValue, Get-CSXStressRecordAcceptance, Get-CSXLiveGpuFixtureEvidence, ConvertTo-CSXHashtable, Add-CSXExactRuntimeToProfile, Get-CSXFoveationTarget,
     New-CSXCocScenario, New-CSXMenuScenario, New-CSXRecoveryScenario, New-CSXVisualSequenceRequest,
     New-CSXMcpConnection, Invoke-CSXMcpTool, Get-CSXRemainingMilliseconds, Get-CSXBoundedTimeoutSeconds,
     Get-CSXNearestRankPercentile, Get-CSXMedian, Get-CSXMetricSummary, Get-CSXWilsonInterval, Get-CSXQualificationWaitRecords, Get-CSXResourcePublicationSummary,

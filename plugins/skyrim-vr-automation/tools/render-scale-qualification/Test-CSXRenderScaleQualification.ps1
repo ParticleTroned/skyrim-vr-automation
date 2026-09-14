@@ -250,7 +250,7 @@ function New-TestCoreAssays {
         New-TestTransitionRecord -Protocol $Protocol -RunId $RunId -BuildId $BuildId -Assay menu -Ordinal $_ `
             -GpuVendor $GpuVendor -FsrRuntime $FsrRuntime -ElapsedMs (10.0 + $_)
     })
-    $validStretch = [pscustomobject]@{ recordAccepted = $true; meanFrames = 1.0; maxFrames = 2; meanMs = 1.0; maxMs = 2.0 }
+    $validStretch = [pscustomobject]@{ recordAccepted = $true; meanFrames = 1.0; maxFrames = 2; unattributedFrames = 0; meanMs = 1.0; maxMs = 2.0 }
     $validValidation = [pscustomobject]@{ scenarioOk = $true; stretchError = $null; stressRecordError = $null }
     $cocStress = [pscustomobject]@{
         requestEvents = 20; uniqueRequestEpochs = 20; metrics = 20; uniqueMetricEpochs = 20
@@ -392,7 +392,28 @@ function New-TestStressRecord {
             completed = $true; superseded = $false
         })
     }
-    $gates = @([pscustomobject][ordered]@{ name = 'terminal_state'; passed = $true })
+    $gates = @(
+        [pscustomobject][ordered]@{ name = 'terminal_state'; passed = $true }
+        [pscustomobject][ordered]@{
+            name = 'presentation_stretch_frame_bound'; passed = $true; classification = 'diagnostic_only'
+            observed = [pscustomobject]@{ maximumObservedFrames = 0 }; limit = [pscustomobject]@{ maximumFrames = 2 }
+        }
+        [pscustomobject][ordered]@{
+            name = 'presentation_stretch_attribution'; passed = $true
+            observed = [pscustomobject]@{
+                completedEpisodes = 0; traceEntries = 0; completedFrames = 0; tracedFrames = 0
+                unattributedFrames = 0; traceOverflow = 0; epochCoherent = $true
+            }
+        }
+        [pscustomobject][ordered]@{
+            name = 'presentation_stretch_complete_stereo_at_stop'; passed = $true
+            observed = [pscustomobject]@{ incompleteStereoCycleAtStop = $false; observedEyeMask = 0 }
+        }
+        [pscustomobject][ordered]@{
+            name = 'presentation_stretch_inactive_at_stop'; passed = $true
+            observed = [pscustomobject]@{ activeAtStop = $false }
+        }
+    )
     return [pscustomobject][ordered]@{
         schema = 'community-shaders.vr-render-scale.iteration'; schemaVersion = $SchemaVersion
         session = [pscustomobject][ordered]@{
@@ -400,8 +421,14 @@ function New-TestStressRecord {
             coalescedDuplicateCount = 0; overwrittenEvents = 0
         }
         events = @($requests); metrics = @($metrics)
-        acceptance = [pscustomobject][ordered]@{ accepted = $true; gates = $gates }
-        verdict = [pscustomobject][ordered]@{ accepted = $true; gates = $gates }
+        presentationPath = [pscustomobject]@{ allowedPresentationStretch = [pscustomobject][ordered]@{
+            episodes = 0; completedEpisodes = 0; timedCompletedEpisodes = 0; completedFrames = 0
+            maximumObservedFrames = 0; maximumAcceptedFrames = 2; diagnosticThresholdFrames = 2
+            episodeTrace = @(); episodeTraceOverflow = 0; tracedFrames = 0; unattributedFrames = 0; traceComplete = $true
+            activeAtStop = $false; incompleteStereoCycleAtStop = $false; incompleteStereoEyeMaskAtStop = 0
+            completedTimingComplete = $true; timingStatus = 'no_completed_episodes'
+        } }
+        acceptance = [pscustomobject][ordered]@{ verdict = 'pass'; accepted = $true; gates = $gates; failureReasons = @() }
     }
 }
 
@@ -1325,6 +1352,131 @@ $fixture = Join-Path ([IO.Path]::GetTempPath()) ('csx-render-scale-qualification
 try {
     $record = Get-CSXQualificationProtocol -Path $protocolPath
     $protocol = $record.protocol
+    $stressFixture = New-TestStressRecord -Rows @() -SessionId 1 -SchemaVersion 14
+    $stretch = $stressFixture.presentationPath.allowedPresentationStretch
+    $stretch.maximumObservedFrames = 6
+    $stretch.episodes = 1
+    $stretch.completedEpisodes = 1
+    $stretch.completedFrames = 6
+    $stretch.tracedFrames = 6
+    $stretch.episodeTrace = @([pscustomobject]@{
+        startFrame = 100; endFrame = 105; frames = 6; transitionEpoch = 7
+        startQpc = 1000; endQpc = 1600; unattributedFrames = 0
+        reasonMask = 2; epochCoherent = $true
+    })
+    $stressFixture.acceptance.gates[1].observed.maximumObservedFrames = 6
+    $stressFixture.acceptance.gates[1].passed = $false
+    $stressFixture.acceptance.gates[2].observed.tracedFrames = 6
+    $stressFixture.acceptance.gates[2].observed.completedEpisodes = 1
+    $stressFixture.acceptance.gates[2].observed.traceEntries = 1
+    $stressFixture.acceptance.gates[2].observed.completedFrames = 6
+    $assessment = Get-CSXStressRecordAcceptance -Record $stressFixture
+    Assert-Test ($assessment.accepted -and $assessment.rawAccepted -and
+        $assessment.failedDiagnosticGates.Count -eq 1 -and $assessment.failedHealthGates.Count -eq 0 -and
+        -not $stressFixture.acceptance.gates[1].passed) 'A diagnostic-only failed stretch gate changed raw evidence or acceptance.'
+    $stressFixture.acceptance.gates += [pscustomobject]@{ name = 'no_device_loss'; passed = $false }
+    $stressFixture.acceptance.accepted = $false
+    $stressFixture.acceptance.verdict = 'fail'
+    $stressFixture.acceptance.failureReasons = @('no_device_loss')
+    Assert-Test (-not (Get-CSXStressRecordAcceptance -Record $stressFixture).accepted) 'A failed health gate was accepted.'
+    $stressFixture.acceptance.gates = @($stressFixture.acceptance.gates | Select-Object -First 5)
+    $stressFixture.acceptance.accepted = $true
+    $stressFixture.acceptance.verdict = 'pass'
+    $stressFixture.acceptance.failureReasons = @()
+    $stretch.activeAtStop = $true
+    $stressFixture.acceptance.gates[4].passed = $false
+    $stressFixture.acceptance.gates[4].observed.activeAtStop = $true
+    $stressFixture.acceptance.accepted = $false
+    $stressFixture.acceptance.verdict = 'fail'
+    $stressFixture.acceptance.failureReasons = @('presentation_stretch_inactive_at_stop')
+    Assert-Test (-not (Get-CSXStressRecordAcceptance -Record $stressFixture).accepted) 'An active stretch episode at stop was accepted.'
+    $stretch.activeAtStop = $false
+    $stressFixture.acceptance.gates[4].passed = $true
+    $stressFixture.acceptance.gates[4].observed.activeAtStop = $false
+    $stretch.incompleteStereoCycleAtStop = $true
+    $stretch.incompleteStereoEyeMaskAtStop = 1
+    $stressFixture.acceptance.gates[3].passed = $false
+    $stressFixture.acceptance.gates[3].observed.incompleteStereoCycleAtStop = $true
+    $stressFixture.acceptance.gates[3].observed.observedEyeMask = 1
+    $stressFixture.acceptance.failureReasons = @('presentation_stretch_complete_stereo_at_stop')
+    Assert-Test (-not (Get-CSXStressRecordAcceptance -Record $stressFixture).accepted) 'An incomplete stereo cycle at stop was accepted.'
+    $stretch.incompleteStereoCycleAtStop = $false
+    $stretch.incompleteStereoEyeMaskAtStop = 0
+    $stressFixture.acceptance.gates[3].passed = $true
+    $stressFixture.acceptance.gates[3].observed.incompleteStereoCycleAtStop = $false
+    $stressFixture.acceptance.gates[3].observed.observedEyeMask = 0
+    $stretch.episodeTrace[0].unattributedFrames = 1
+    $stretch.episodeTrace[0].reasonMask = 3
+    $stretch.unattributedFrames = 1
+    $stressFixture.acceptance.gates[2].passed = $false
+    $stressFixture.acceptance.gates[2].observed.unattributedFrames = 1
+    $stressFixture.acceptance.failureReasons = @('presentation_stretch_attribution')
+    Assert-Test (-not (Get-CSXStressRecordAcceptance -Record $stressFixture).accepted) 'An unattributed stretch frame was accepted.'
+    $stretch.episodeTrace[0].unattributedFrames = 0
+    $stretch.episodeTrace[0].reasonMask = 2
+    $stretch.unattributedFrames = 0
+    $stressFixture.acceptance.gates[2].passed = $true
+    $stressFixture.acceptance.gates[2].observed.unattributedFrames = 0
+    $stressFixture.acceptance.accepted = $true
+    $stressFixture.acceptance.verdict = 'pass'
+    $stressFixture.acceptance.failureReasons = @()
+    $stressFixture.acceptance.gates += [pscustomobject]@{ name = 'presentation_stretch_attribution'; passed = $true }
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'A duplicate health gate was accepted.'
+    $stressFixture.acceptance.gates = @($stressFixture.acceptance.gates | Select-Object -First 5)
+    $stretch.episodeTrace[0].reasonMask = 4294967297
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'A future high-bit reason mask was accepted.'
+    $stretch.episodeTrace[0].reasonMask = 2
+    $stretch.episodeTrace[0].startFrame = [uint32]::MaxValue
+    $stretch.episodeTrace[0].endFrame = 4
+    Assert-Test (Get-CSXStressRecordAcceptance -Record $stressFixture).accepted 'A valid frame-counter wrap was rejected.'
+    $stretch.episodeTrace[0].startFrame = 100
+    $stretch.episodeTrace[0].endFrame = 105
+    $stretch.episodeTrace[0].reasonMask = 16
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'An unknown stretch reason was accepted.'
+    $stretch.episodeTrace[0].reasonMask = 2
+    $stretch.episodeTraceOverflow = 1
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'An overflowed stretch trace was accepted.'
+    $stretch.episodeTraceOverflow = 0
+    $stretch.maximumObservedFrames = 5
+    $stressFixture.acceptance.gates[1].observed.maximumObservedFrames = 5
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'A raw stretch maximum below the episode trace was accepted.'
+    $stretch.maximumObservedFrames = 6
+    $stressFixture.acceptance.gates[1].observed.maximumObservedFrames = 6
+    $stressFixture.acceptance.gates[2].passed = $false
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'A failed attribution health gate was accepted.'
+    $stressFixture.acceptance.gates[2].passed = $true
+    $stressFixture.schemaVersion = 13
+    $stressFixture.acceptance.gates[1].PSObject.Properties.Remove('classification')
+    $stretch.PSObject.Properties.Remove('diagnosticThresholdFrames')
+    $stressFixture.acceptance.accepted = $false
+    $stressFixture.acceptance.verdict = 'fail'
+    $stressFixture.acceptance.failureReasons = @('presentation_stretch_frame_bound')
+    $assessment = Get-CSXStressRecordAcceptance -Record $stressFixture
+    Assert-Test ($assessment.legacy -and $assessment.accepted -and -not $assessment.rawAccepted) 'Supported legacy stretch receipt was not normalized deterministically.'
+    $stretch | Add-Member -NotePropertyName diagnosticThresholdFrames -NotePropertyValue 2
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'An unclassified new-style stretch gate was treated as legacy.'
+    $stressFixture.acceptance.gates[1] | Add-Member -NotePropertyName classification -NotePropertyValue future_kind
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'An unknown future gate classification was accepted.'
+    $stressFixture.schemaVersion = 15
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'An unknown future stress schema was accepted.'
     Assert-Test ($record.sha256 -match '^[a-f0-9]{64}$') 'Protocol hash is not SHA-256.'
     Assert-Test ($protocol.transitionTimingOrigin -eq 'qualification_dispatch' -and
         $protocol.transitionExecution -eq 'fail_fast_top_level_mcp') 'Protocol does not freeze fail-fast dispatch-to-stable timing.'
@@ -1342,7 +1494,7 @@ try {
             cell { $changedProtocol.fixture.interiorCellEditorId = 'WhiterunBanneredMare' }
             foveation { $changedProtocol.fixture.foveation.peripheryTAAOuterScale = 0.6 }
             visual { $changedProtocol.visualAssay.source.fallback = 'game_mirror' }
-            gate { $changedProtocol.thresholds.maximumPresentationStretchEpisodeFrames = 3 }
+            gate { $changedProtocol.thresholds.maximumUnattributedStretchFrames = 1 }
         }
         $mutationRejected = $false
         try { Assert-CSXProtocol -Protocol $changedProtocol } catch { $mutationRejected = $true }
@@ -1582,7 +1734,7 @@ try {
     $humanReview.reviewer.kind = 'human'
     $humanResult = Test-CSXVisualReview -EvidenceDirectory $candidateRoot -RunRaw $raw -VisualIndex $candidateIndex -Review $humanReview -BaselineVisualIndex $baselineIndex
     Assert-Test (-not $humanResult.ok -and ($humanResult.errors -join ' | ') -match 'human|image_model') `
-        'Protocol revision 5 accepted a human visual review.'
+        'Protocol revision 6 accepted a human visual review.'
     $duplicateReview = ($review | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100)
     $duplicateReview.samples[0].candidateArtifacts[2] = $duplicateReview.samples[0].candidateArtifacts[1]
     Assert-Test (-not (Test-CSXVisualReview -EvidenceDirectory $candidateRoot -RunRaw $raw -VisualIndex $candidateIndex -Review $duplicateReview -BaselineVisualIndex $baselineIndex).ok) 'A duplicated candidate artifact binding was accepted.'
