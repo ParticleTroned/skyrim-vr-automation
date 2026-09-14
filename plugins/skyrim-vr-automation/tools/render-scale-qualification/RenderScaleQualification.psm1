@@ -206,7 +206,7 @@ function Assert-CSXProtocol {
     }
     $canonicalProtocolSha256 = '45ea1cc51fa139371c524d701122f2576986696134602541b672b3387fd794e8'
     if ((Get-CSXObjectSha256 -Value $Protocol) -ne $canonicalProtocolSha256) {
-        throw 'The revision-5 protocol definition changed; publish a new protocol revision instead.'
+        throw 'The revision-6 protocol definition changed; publish a new protocol revision instead.'
     }
 }
 
@@ -2046,6 +2046,7 @@ function Get-CSXStressRecordAcceptance {
         $epochsCoherent = @($trace | Where-Object { -not [bool]$_.epochCoherent }).Count -eq 0
         $traceCovered = $trace.Count -eq [uint64]$presentation.completedEpisodes -and
             (Test-CSXNumberEquals $frameSum (Get-CSXPropertyValue $presentation 'tracedFrames')) -and
+            (Test-CSXNumberEquals $frameSum (Get-CSXPropertyValue $presentation 'completedFrames')) -and
             [uint64]$presentation.episodeTraceOverflow -eq 0 -and $epochsCoherent
         $attributionPassed = $traceCovered -and
             (Test-CSXNumberEquals $frameSum (Get-CSXPropertyValue $presentation 'completedFrames')) -and

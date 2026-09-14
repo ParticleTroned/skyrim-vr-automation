@@ -1374,6 +1374,27 @@ try {
     Assert-Test ($assessment.accepted -and $assessment.rawAccepted -and
         $assessment.failedDiagnosticGates.Count -eq 1 -and $assessment.failedHealthGates.Count -eq 0 -and
         -not $stressFixture.acceptance.gates[1].passed) 'A diagnostic-only failed stretch gate changed raw evidence or acceptance.'
+    $missingFrames = $stressFixture | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    $missingFrames.presentationPath.allowedPresentationStretch.completedFrames = 7
+    $missingFrames.presentationPath.allowedPresentationStretch.traceComplete = $false
+    $missingFrames.acceptance.gates[2].observed.completedFrames = 7
+    $missingFrames.acceptance.gates[2].passed = $false
+    $missingFrames.acceptance.accepted = $false
+    $missingFrames.acceptance.verdict = 'fail'
+    $missingFrames.acceptance.failureReasons = @('presentation_stretch_attribution')
+    $missingAssessment = Get-CSXStressRecordAcceptance -Record $missingFrames
+    Assert-Test (-not $missingAssessment.accepted -and -not $missingAssessment.rawAccepted -and
+        $missingAssessment.failedHealthGates[0] -eq 'presentation_stretch_attribution') 'Incomplete producer trace coverage was not retained as a failed health gate.'
+    $unknownGate = New-TestStressRecord -Rows @() -SessionId 1 -SchemaVersion 14
+    $unknownGate.acceptance.gates += [pscustomobject]@{ name = 'future_health_gate'; passed = $false }
+    $unknownGate.acceptance.accepted = $false
+    $unknownGate.acceptance.verdict = 'fail'
+    $unknownGate.acceptance.failureReasons = @('future_health_gate')
+    Assert-Test (-not (Get-CSXStressRecordAcceptance -Record $unknownGate).accepted) 'An unknown unclassified failed gate was treated as diagnostic.'
+    $unknownGate.acceptance.gates[-1] | Add-Member -NotePropertyName classification -NotePropertyValue diagnostic_only
+    $rejected = $false
+    try { Get-CSXStressRecordAcceptance -Record $unknownGate | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'An arbitrary health gate could opt into diagnostic-only acceptance.'
     $stressFixture.acceptance.gates += [pscustomobject]@{ name = 'no_device_loss'; passed = $false }
     $stressFixture.acceptance.accepted = $false
     $stressFixture.acceptance.verdict = 'fail'
@@ -1473,7 +1494,7 @@ try {
     $rejected = $false
     try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
     Assert-Test $rejected 'An unknown future gate classification was accepted.'
-    $stressFixture.schemaVersion = 15
+    $stressFixture = New-TestStressRecord -Rows @() -SessionId 1 -SchemaVersion 15
     $rejected = $false
     try { Get-CSXStressRecordAcceptance -Record $stressFixture | Out-Null } catch { $rejected = $true }
     Assert-Test $rejected 'An unknown future stress schema was accepted.'

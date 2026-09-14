@@ -243,7 +243,9 @@ stress record; every failed health gate still does. A legacy v13 record with
 no classification and no `diagnosticThresholdFrames` is normalized only when
 the named gate and `maximumAcceptedFrames` both retain the two-frame limit.
 Its original failed gate and raw rejection remain in evidence. Unknown schema
-versions or classifications fail closed. An active episode or incomplete
+versions or classifications fail closed. Legacy v13 support is limited to
+historical comparison; revision-6 qualification requires v14 in every assay
+and its baseline. An active episode or incomplete
 stereo cycle at stop also rejects. Revision 6 requires a complete episode
 trace with a coherent transition epoch, frame and QPC ranges, and a recorded
 cooldown, deferred-retry, or loading/menu reason for every stretch frame.
