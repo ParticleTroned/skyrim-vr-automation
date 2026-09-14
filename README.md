@@ -210,10 +210,11 @@ does not authorize it.
 Explicit runtime, fixture, and output locations remain available:
 
 ```powershell
+$qualificationRoot = Join-Path $env:LOCALAPPDATA 'CSX/RenderScaleQualification'
 .\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1 `
-    -RuntimePath C:\Runtime\devbench\runtime.json `
-    -FixtureManifestPath C:\Evidence\render-scale-fixture.json `
-    -EvidenceDirectory C:\Evidence\render-scale-local
+    -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
+    -FixtureManifestPath (Join-Path $qualificationRoot 'fixture.json') `
+    -EvidenceDirectory (Join-Path $qualificationRoot 'local')
 ```
 
 A local run returns `LOCAL_PASS` and `qualification-summary.md`; it is not PR
@@ -223,16 +224,31 @@ protocol and fixture with a different exact Build ID:
 ```powershell
 $baselineBuildId = '<64-character baseline CSX build ID>'
 .\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1 `
-    -PrMode -BaselinePath C:\Evidence\render-scale-baseline `
+    -PrMode -BaselinePath (Join-Path $qualificationRoot 'baseline') `
     -ExpectedBaselineBuildId $baselineBuildId
 ```
 
-Protocol revision 5 has a hard 600-second end-to-end pass limit. It runs the
+Protocol revision 6 has a hard 600-second end-to-end pass limit. It runs the
 20-transition load-synchronized COC assay, a 30-second recovery, the ordered
 25-transition menu assay, a second 30-second recovery, and three one-minute
 HMD-submission capture sequences. Dispatch-to-stability time starts at the
 owner-bound server QPC mark, and each top-level MCP result is checked before
 the next mutation.
+
+Stress records use `community-shaders.vr-render-scale.iteration` schema v14.
+`presentation_stretch_frame_bound` retains its raw two-frame comparison and
+is `diagnostic_only` when `diagnosticThresholdFrames` and legacy
+`maximumAcceptedFrames` both equal 2. Its failure alone does not reject the
+stress record; every failed health gate still does. A legacy v13 record with
+no classification and no `diagnosticThresholdFrames` is normalized only when
+the named gate and `maximumAcceptedFrames` both retain the two-frame limit.
+Its original failed gate and raw rejection remain in evidence. Unknown schema
+versions or classifications fail closed. An active episode or incomplete
+stereo cycle at stop also rejects. Revision 6 requires a complete episode
+trace with a coherent transition epoch, frame and QPC ranges, and a recorded
+cooldown, deferred-retry, or loading/menu reason for every stretch frame.
+Missing, overflowed, or unattributed evidence rejects. The raw two-frame
+result remains visible, while the physical-HMD visual assay remains required.
 
 Visual evaluation is part of the same invocation. The Codex CLI runs
 `gpt-5.6-sol` for three replicates in each of two blinded, independently
