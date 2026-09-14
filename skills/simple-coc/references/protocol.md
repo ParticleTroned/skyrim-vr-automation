@@ -17,12 +17,15 @@
 - Scenario: one async DevBench scenario with `continueOnError: false`.
 - Setup: reuse successful binding/setup for the same live PID/session;
   otherwise bind once and call `prepare_coc` first and alone. Immediately
-  position, then reset telemetry and arm captures after exact-cell verification.
+  position, then submit one reset batch and one arm batch after exact-cell
+  verification. Each batch is a synchronous DevBench scenario with
+  `continueOnError: false`; validate its full transcript before proceeding.
 - Profiler: when `communityshaders.profiler_api` is exposed, preserve its
   initial enabled state and enable it before the measured scenario. A
   `disabled` arm receipt is fatal, but profiler readiness never gates the unmeasured positioning COC.
-- Output: append one commit-headed column to
-  `docs/development/vr-render-scale-comparison-ledger.csv`.
+- Output: preserve a commit-headed CSV comparison and the complete local run
+  evidence. Repositories using immutable numbered ledgers publish only in an
+  identified PR's reporting workflow.
 
 ## 1. Bind DevBench and the build
 
@@ -137,11 +140,26 @@ Do not call `set_enabled` or `start_capture` during discovery. When the
 versioned API is absent, read the legacy profiler status once and preserve
 its initial enabled state.
 
-After discovery, reset each supported telemetry lane whose contract defines
-a reset. Run those stateful reset calls one at a time, require and keep
-each receipt, and do not retry a reset that succeeded. Do not start a capture
-during reset; CPU and GPU counters start only from transition 1's atomic
-dispatch.
+Require the discovered stress, CPU, GPU, trace, lifetime, and probe lanes to
+be inactive before any reset; a foreign-owned active lane stops setup.
+After discovery, construct one synchronous `scenario` with
+`continueOnError: false`. Add tool steps in this exact order: render-scale
+`reset`, `cpu_performance_reset`, `gpu_performance_reset`, then each exposed
+`dlss_trace_reset`, `texture_lifetime_reset`, and `probe_reset`. Bind every
+render-scale step to the exact Build ID. The server executes them serially in
+one call; do not dispatch them in parallel or repeat a successful step.
+No capture starts in this batch. CPU and GPU counters start only from
+transition 1's atomic dispatch.
+
+Require the reset scenario to report `ok: true`, `aborted: false`, and
+`stepsRun` equal to the submitted step count. For every step, require
+`ok: true`, the exact tool/action in its submitted position, and the same
+producer Build ID. Require the stress session inactive, CPU capture inactive
+with reset state, GPU capture inactive, and each exposed trace, lifetime, and probe capture
+inactive. Preserve every receipt. A missing, malformed, rejected, or unknown
+step result stops setup before any capture is armed; never infer that an
+unreported reset succeeded. An aborted reset batch may have completed an
+earlier step, so retain its transcript and do not replay the batch.
 
 Required capture lanes are:
 
@@ -159,17 +177,18 @@ Required capture lanes are:
   admission/early-exit, shader-cache, SSS/SSGI prewarm, DLSS/FSR/FSR4, D3D,
   total, request-to-prepared, and prepared-to-creator timings.
 
-After exact-cell verification, stateful telemetry actions are serialized in a
-short ownership sequence immediately before transition 1: start stress, then
-each exposed trace, lifetime, and probe capture, then pre-arm the selected
-profiler lane. Before arming, require the measurement-admission CPU/GPU reset
-receipts to show both captures inactive; do not issue another CPU/GPU reset.
-Require and preserve each receipt before the next stateful action. Only
-independent read-only schema or status checks may run concurrently;
-never fan out `start`, `reset`, or `set_enabled` calls. Do not retry an action that
-already returned an ownership receipt.
+After validating the reset transcript, construct one synchronous `scenario`
+with `continueOnError: false`. Add tool steps in this exact order:
+render-scale `start`, then each exposed `dlss_trace_start`,
+`texture_lifetime_start`, and `probe_start`, then pre-arm the selected
+profiler lane. Bind every Community Shaders step to the exact Build ID.
+The server executes these stateful steps serially in one call. Before
+submitting it, require the reset receipts to show CPU and GPU captures
+inactive; do not issue another CPU/GPU reset or start either counter here.
+Only independent read-only schema or status checks may run concurrently;
+never fan out `start`, `reset`, or `set_enabled` calls.
 
-Pre-arm the selected profiler lane after its preceding stateful receipts:
+Append the selected profiler step after the capture-start steps:
 
 - For `communityshaders.profiler_api`, call `set_enabled` with
   `contractMajor: 1`, `enabled: true`, unique client/command identity, and the
@@ -178,12 +197,21 @@ Pre-arm the selected profiler lane after its preceding stateful receipts:
   Do not call `start_capture` yet.
 - Only when the versioned API is absent and the legacy
   `communityshaders.profiler` tool is exposed, call `enable` with the exact
-  Build ID, require `enabled: true`, then call `status` and require
-  `status.enabled: true`.
+  Build ID, then append `status` and require `status.enabled: true`.
 
-Wait for and validate every arm receipt before submitting the measured
-scenario; profiler pre-arming is not a step hidden inside that submission. Do
-not run another discovery or reset cycle. Transition 1 must set
+Require the arm scenario to report `ok: true`, `aborted: false`, and
+`stepsRun` equal to the submitted step count. For every step, require
+`ok: true`, the exact tool/action in its submitted position, and the same
+producer Build ID. Require an active stress session with a nonzero session
+ID, active optional captures with nonzero ownership IDs, and the profiler
+state specified above. Preserve every receipt before submitting the measured
+scenario; profiler pre-arming is not a step hidden inside that submission.
+An aborted or malformed arm batch stops measured dispatch. Preserve its
+partial transcript, inspect only unresolved ownership on the selected lane,
+and stop each proven-owned capture with its returned session/start-frame guard.
+Restore the initial profiler enabled state only if this batch changed it.
+Never replay a successful arm step or assume an unreported step did not run.
+Do not run another discovery or reset cycle. Transition 1 must set
 `startPerformanceTelemetry: true`, which starts CPU and GPU telemetry on the
 same dispatch frame as the first measured COC. Later transitions set it to
 false.
@@ -195,8 +223,9 @@ present but fails to arm, stop rather than silently downgrade the run.
 
 ## 4. Run the measured scenario
 
-Start a fresh render-scale stress session. Generate one unique owner from the
-Build ID and UTC time. For transition IDs 1 through 20, append this block:
+Use the fresh render-scale stress session proven by the arm batch. Generate
+one unique owner from the Build ID and UTC time. For transition IDs 1 through
+20, append this block:
 
 1. `qualification_begin` with the exact owner and transition ID;
 2. `{ "wait": 10000 }`;
@@ -313,6 +342,8 @@ frames and worst frames from the 20 waiter receipts. Sum recoverable retries
 and classify their reasons. Also extract:
 
 - fixed waits, scenario elapsed time, and harness overhead;
+- binding/fixture, positioning, post-position reads, reset batch, arm batch,
+  and first-dispatch wall-clock durations, without adding waits or polling;
 - presentation, cleanup, and strict timing per transition;
 - hard failures, OOM, device loss, fidelity mismatches, lifecycle failures,
   and backend deferrals;
@@ -335,25 +366,40 @@ column.
 
 ## CSV contract
 
-Read `docs/development/vr-render-scale-comparison-ledger.csv`. Keep `metric` as
-the first column and never replace the pinned main-VR PrePR19 or RC166 columns.
-Append the new run as the rightmost column. Use the full source commit as the
-header; if that commit already exists, use
-`<full-commit>__<yyyyMMddTHHmmssZ>` so CSV headers remain unique while the
-commit stays visible at the top.
+If `docs/development/vr-render-scale-comparison-ledger.csv` exists as the
+repository's active writable ledger, keep `metric` first and append one run
+column to it. Never replace the pinned main-VR PrePR19 or RC166 columns.
+Use the full source commit as the header; if it already exists, use
+`<full-commit>__<yyyyMMddTHHmmssZ>` so headers remain unique.
 
-Populate every existing metric. Add new metric rows for newly emitted harness
-data rather than discarding it, filling earlier columns with `n/a`. Use
+If that path is absent because the repository uses immutable numbered
+`vr-render-scale-ledger-NNNN-prNUMBER.csv` snapshots, do not recreate the
+old monolithic ledger or alter a history archive. Preserve complete raw
+receipts and a local commit-headed comparison CSV under this run's evidence
+directory. Read the pinned PrePR19 and RC166 reference columns from
+`vr-render-scale-ledger-0001-history.csv` when available. Label differences
+in scene, output resolution, build, and measurement definition; they do not
+support a controlled performance claim. A canonical numbered snapshot needs
+an actual PR identity and the repository's full-ledger comparison workflow.
+Do not invent a PR number or mark local comparison evidence as canonical
+ledger publication.
+
+For an active writable ledger, populate every existing metric and add rows
+for newly emitted harness data, filling earlier columns with `n/a`. For a
+local comparison, include all available summary metrics and retain full raw
+receipts beside it. Use
 `unsupported` only for a lane the loaded producer does not expose and `n/a`
 only for information the producer genuinely did not emit. Include the full
 Build ID, source description, dirty state, fixture, scenario identity, and
 verdict. Edit the CSV with `apply_patch`, parse it after editing, and run
-`git diff --check`. Do not build or run repository tests.
+`git diff --check` for a tracked ledger update. Parse a local comparison CSV
+after writing it. Do not build or run repository tests.
 
 Add rows for preparation availability, retained/overwritten/coalesced counts,
 and each named stage's record/occurrence count plus duration, bytecode, and D3D
 timing summaries. Keep the complete raw preparation events in run evidence;
 the CSV is a comparison view, not their replacement.
 
-Finally, tell the user the run verdict and print the complete comparison table
-for the two pinned references plus the newly appended run.
+Finally, tell the user the run verdict, present the comparison for the two
+pinned references and the new run, and link the complete CSV and raw evidence.
+State explicitly when no canonical ledger was updated.
