@@ -1872,6 +1872,8 @@ function Get-OverwriteShaderCacheDirectories($Config) {
 }
 
 $resolvedConfig = $null
+$failureState = 'tool-error'
+$failureData = [ordered]@{}
 try {
     $script:TreeOperationDeadlineUtc = if ($InternalTestFailurePoint -eq 'tree-operation-deadline') { [DateTime]::UtcNow.AddMilliseconds(-1) } else { [DateTime]::UtcNow.AddSeconds($TreeOperationTimeoutSeconds) }
     $resolvedConfig = Resolve-MO2ControlConfigPath -ConfigPath $ConfigPath -PackageRoot (Join-Path $toolRoot 'mo2-control')
@@ -1880,10 +1882,32 @@ try {
     $profilesRoot = [IO.Path]::GetFullPath([string]$config.mo2.profilesDirectory)
     $modsRoot = [IO.Path]::GetFullPath([string]$config.mo2.modsDirectory)
 
+    if ($Command -in @('fixture-status', 'refresh-fixture', 'list-local-work-mods', 'prepare-source', 'create')) {
+        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { $null }
+        if ([string]::IsNullOrWhiteSpace($sourceName)) {
+            $failureState = 'source-profile-not-configured'
+            $failureData = [ordered]@{
+                configurationProperty = 'defaults.testProfileSource'
+                parameter = 'SourceProfile'
+                guidance = 'Pass the exact maintained -SourceProfile or configure defaults.testProfileSource in the reported configuration. No profile or configuration fallback was selected.'
+            }
+            throw 'The maintained test profile is not configured. Set defaults.testProfileSource or pass -SourceProfile explicitly.'
+        }
+    }
+
     if (-not $WhatIfPreference) {
         # Recovery precedes command-specific reads so an interrupted operation can never be
         # mistaken for a stable workspace merely because the next command is read-oriented.
-        Invoke-WithWorkspaceTransactionLock -Config $config -Action { $null } | Out-Null
+        try { Invoke-WithWorkspaceTransactionLock -Config $config -Action { $null } | Out-Null }
+        catch [UnauthorizedAccessException] {
+            $failureState = 'workspace-control-access-required'
+            $failureData = [ordered]@{
+                controlPath = Get-WorkspaceControlRoot -Config $config
+                requiresWriteAccess = $true
+                guidance = 'Workspace preflight reconciles interrupted transactions under a writable lock. Rerun this exact command with access to the reported control directory; do not bypass the recovery check.'
+            }
+            throw
+        }
     }
 
     if ($Command -eq 'release') {
@@ -1904,7 +1928,6 @@ try {
         }
     }
     elseif ($Command -eq 'list-local-work-mods') {
-        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for local-work mod discovery.' }
         $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
         $catalog = Get-LocalWorkModCatalog -Config $config -SourcePath $sourcePath -ModsRoot $modsRoot
@@ -1923,7 +1946,6 @@ try {
         }
     }
     elseif ($Command -in @('fixture-status', 'refresh-fixture')) {
-        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for fixture control.' }
         $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
         if ($Command -eq 'refresh-fixture') { $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName -AllowOverwriteShaderCaches }
@@ -1976,7 +1998,6 @@ try {
         }
     }
     elseif ($Command -eq 'prepare-source') {
-        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required for source preparation.' }
         $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         $null = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName -AllowOverwriteShaderCaches
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Stable source profile does not exist: $sourceName" }
@@ -2003,7 +2024,6 @@ try {
     }
     elseif ($Command -eq 'create') {
         $resolvedTaskId = Resolve-TaskId -RequestedTaskId $TaskId -Required
-        $sourceName = if (-not [string]::IsNullOrWhiteSpace($SourceProfile)) { $SourceProfile } elseif ($config.defaults.PSObject.Properties['testProfileSource']) { [string]$config.defaults.testProfileSource } else { throw 'defaults.testProfileSource is required; test workspaces never infer a stable source from the ordinary session default.' }
         $sourcePath = Resolve-DirectProfilePath -ProfilesRoot $profilesRoot -ProfileName $sourceName
         $validation = Assert-AccessAndClosed -Config $config -OwnedAccessId $AccessId -Profile $sourceName -AllowOverwriteShaderCaches
         $accessStatus = Invoke-MO2AccessStatus -Config $config -AccessId $AccessId
@@ -2770,10 +2790,12 @@ try {
     }
 }
 catch {
-    $result = [pscustomobject][ordered]@{ ok = $false; command = $Command; state = 'tool-error'; errors = @($_.Exception.Message); data = @{} }
+    $result = [pscustomobject][ordered]@{ ok = $false; command = $Command; state = $failureState; errors = @($_.Exception.Message); data = [pscustomobject]$failureData }
 }
 
+if ($result.data -is [Collections.IDictionary]) { $result.data = [pscustomobject]$result.data }
 $result.data | Add-Member -NotePropertyName approval -NotePropertyValue (New-WorkspaceApprovalMetadata -Subcommand $Command) -Force
+if ($result.state -eq 'workspace-control-access-required') { $result.data.approval.escalationUsuallyRequired = $true }
 if ($null -ne $resolvedConfig) {
     $result.data | Add-Member -NotePropertyName configuration -NotePropertyValue ([pscustomobject][ordered]@{
         path = [string]$resolvedConfig.path

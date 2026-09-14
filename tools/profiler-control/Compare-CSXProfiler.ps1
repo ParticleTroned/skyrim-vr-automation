@@ -10,6 +10,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ProfilerTimingSemantics.ps1')
 
 function Get-Percentile {
     param([double[]]$Values, [double]$Percentile)
@@ -55,6 +56,8 @@ foreach ($path in $InputPath) {
     if (@($steady.frame | Sort-Object -Unique).Count -ne $steady.Count) { throw "Profiler input '$path' contains repeated frames and is not a fresh sample set." }
     $contextFingerprints = @($steady.contextFingerprint | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
     if ($contextFingerprints.Count -ne 1) { throw "Profiler input '$path' must contain exactly one non-empty context fingerprint." }
+    $semantics = @($records | ForEach-Object { Get-ProfilerTimingSemantics $_ } | Sort-Object -Unique)
+    if ($semantics.Count -ne 1) { throw "Profiler input '$path' mixes timing semantics and cannot be compared." }
     foreach ($record in $steady) {
         Assert-Finite ([double]$record.resolvedTotalMs) 'resolvedTotalMs' $path
         Assert-Finite ([double]$record.resolvedCpuTotalMs) 'resolvedCpuTotalMs' $path
@@ -80,6 +83,7 @@ foreach ($path in $InputPath) {
         steadySamples = $steady.Count
         discardedWarmupSamples = $records.Count - $steady.Count
         contextFingerprint = $contextFingerprints[0]
+        timingSemantics = $semantics[0]
         resolvedTotalMs = Get-MetricSummary -Values ([double[]]@($steady | ForEach-Object resolvedTotalMs))
         resolvedCpuTotalMs = Get-MetricSummary -Values ([double[]]@($steady | ForEach-Object resolvedCpuTotalMs))
         timers = @($timers)
@@ -87,6 +91,13 @@ foreach ($path in $InputPath) {
 }
 
 if (@($states.contextFingerprint | Sort-Object -Unique).Count -ne 1) { throw 'Profiler inputs were captured under different environment/runtime context fingerprints and cannot be compared.' }
+if (@($states.timingSemantics | Sort-Object -Unique).Count -ne 1) { throw 'Profiler inputs use different timing semantics and cannot be compared.' }
+$timingSemantics = $states[0].timingSemantics
+$timingNotice = if ($timingSemantics -eq 'gpu_cpu_self_time') {
+    'GPU and CPU timer values exclude profiled descendants. Feature sums represent self time; GPU top-level totals remain inclusive.'
+} else {
+    'Legacy samples do not declare timing semantics. Timer and feature sums may overlap; their additivity is unverified.'
+}
 
 if ([string]::IsNullOrWhiteSpace($ReferenceLabel)) { $ReferenceLabel = $states[0].label }
 $reference = @($states | Where-Object label -eq $ReferenceLabel)
@@ -96,6 +107,7 @@ $referenceMean = [double]$reference[0].resolvedTotalMs.mean
 $rows = foreach ($state in $states) {
     [pscustomobject][ordered]@{
         label = $state.label
+        timingSemantics = $timingSemantics
         requestedSamples = $state.requestedSamples
         steadySamples = $state.steadySamples
         totalMeanMs = $state.resolvedTotalMs.mean
@@ -118,7 +130,8 @@ $timerMarkdownPath = Join-Path $OutputDirectory 'profiler-timer-comparison.md'
 $featureCsvPath = Join-Path $OutputDirectory 'profiler-feature-comparison.csv'
 $featureMarkdownPath = Join-Path $OutputDirectory 'profiler-feature-comparison.md'
 [pscustomobject][ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
+    timingSemantics = $timingSemantics
     generatedUtc = [DateTime]::UtcNow.ToString('o')
     referenceLabel = $ReferenceLabel
     states = @($states)
@@ -130,6 +143,7 @@ $timerRows = foreach ($state in $states) {
         [pscustomobject][ordered]@{
             state = $state.label
             timer = $timer.name
+            timingSemantics = $timingSemantics
             samples = $timer.gpuMs.count
             meanMs = $timer.gpuMs.mean
             medianMs = $timer.gpuMs.median
@@ -155,6 +169,7 @@ $featureRows = foreach ($state in $states) {
         [pscustomobject][ordered]@{
             state = $state.label
             feature = $feature
+            timingSemantics = $timingSemantics
             timerCount = $matches.Count
             weightedMeanMs = $weightedMeanMs
             activeTimerSamples = if ($matches.Count -gt 0) { [int](($matches | Measure-Object samples -Sum).Sum) } else { 0 }
@@ -164,6 +179,8 @@ $featureRows = foreach ($state in $states) {
 $featureRows | Export-Csv -LiteralPath $featureCsvPath -NoTypeInformation -Encoding utf8
 $md = [System.Collections.Generic.List[string]]::new()
 $md.Add('# CSX profiler state comparison')
+$md.Add('')
+$md.Add($timingNotice)
 $md.Add('')
 $md.Add("Reference: ``$ReferenceLabel``. Samples without resolved timers are excluded as warm-up.")
 $md.Add('')
@@ -175,6 +192,8 @@ foreach ($row in $rows) {
 $md | Set-Content -LiteralPath $markdownPath -Encoding utf8
 $timerMd = [System.Collections.Generic.List[string]]::new()
 $timerMd.Add('# CSX profiler timer comparison')
+$timerMd.Add('')
+$timerMd.Add($timingNotice)
 $timerMd.Add('')
 $timerMd.Add('Only timers with a mean of at least 0.001 ms in one state are shown. Missing entries mean the timer was not registered or active in that state.')
 $timerMd.Add('')
@@ -189,6 +208,8 @@ foreach ($timerGroup in $materialTimers) {
 $timerMd | Set-Content -LiteralPath $timerMarkdownPath -Encoding utf8
 $featureMd = [System.Collections.Generic.List[string]]::new()
 $featureMd.Add('# CSX relevant-feature timer comparison')
+$featureMd.Add('')
+$featureMd.Add($timingNotice)
 $featureMd.Add('')
 $featureMd.Add('Weighted mean is each active timer mean multiplied by its active-sample fraction, then summed by feature. It is a per-frame estimate for the named timers, not an independently measured frame total.')
 $featureMd.Add('')
