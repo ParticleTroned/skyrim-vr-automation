@@ -37,7 +37,7 @@ function Set-CaptureInteractionControllerNeutral($Controller) {
 function New-CaptureInteractionFrames {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]$ObservedFrame,
+        $ObservedFrame,
         [Parameter(Mandatory)][string]$ActionName,
         $ActionArguments = ([pscustomobject]@{}),
         [string]$CatalogPath = (Join-Path $PSScriptRoot 'actions.v1.json')
@@ -53,6 +53,18 @@ function New-CaptureInteractionFrames {
         if (-not $values.Contains([string]$required)) { throw "Action '$ActionName' requires '$required'." }
     }
 
+    $holdValue = if ($values.Contains('holdMs')) { $values.holdMs } else { 50 }
+    $holdMs = [int]$holdValue
+    if ([string]$action.kind -eq 'keyboard') {
+        if ($holdMs -lt 10 -or $holdMs -gt 5000) { throw 'Keyboard holdMs must be between 10 and 5000.' }
+        return [pscustomobject][ordered]@{
+            device = 'keyboard'; arguments = [pscustomobject][ordered]@{
+                action = 'tap'; device = 'keyboard'; key = [string]$values.key; durationMs = $holdMs
+            }
+        }
+    }
+    if ($holdMs -lt 10 -or $holdMs -gt 10000) { throw 'holdMs must be between 10 and 10000.' }
+    if ($null -eq $ObservedFrame) { throw "Action '$ActionName' requires an observed tracked set." }
     $neutral = Copy-CaptureInteractionValue $ObservedFrame
     foreach ($role in @('left', 'right')) {
         if (-not $neutral.PSObject.Properties[$role]) { throw "Observed tracked set is missing '$role'." }
@@ -61,20 +73,10 @@ function New-CaptureInteractionFrames {
     foreach ($required in @('hmd', 'left', 'right')) {
         if (-not $neutral.PSObject.Properties[$required]) { throw "Observed tracked set is missing '$required'." }
     }
-    $neutral.tMs = 0
-    $neutral.seq = [uint64]1
-    $holdValue = if ($values.Contains('holdMs')) { $values.holdMs } else { 50 }
-    $holdMs = [int]$holdValue
-    if ($holdMs -lt 10 -or $holdMs -gt 10000) { throw 'holdMs must be between 10 and 10000.' }
+    $neutral | Add-Member -NotePropertyName tMs -NotePropertyValue 0 -Force
+    $neutral | Add-Member -NotePropertyName seq -NotePropertyValue ([uint64]1) -Force
 
     if ([string]$action.kind -eq 'tracked-set') { return @($neutral) }
-    if ([string]$action.kind -eq 'keyboard') {
-        return [pscustomobject][ordered]@{
-            device = 'keyboard'; arguments = [pscustomobject][ordered]@{
-                action = 'tap'; device = 'keyboard'; key = [string]$values.key; holdMs = $holdMs
-            }
-        }
-    }
 
     $active = Copy-CaptureInteractionValue $neutral
     $release = Copy-CaptureInteractionValue $neutral
@@ -110,7 +112,7 @@ function New-CaptureInteractionFrames {
 
 function Find-CaptureInteractionScreenshotReceipt {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Value)
+    param([Parameter(Mandatory)]$Value, [string]$RequestId)
     $found = [Collections.Generic.List[object]]::new()
     function Visit($Current) {
         if ($null -eq $Current -or $Current -is [string] -or $Current -is [ValueType]) { return }
@@ -122,7 +124,8 @@ function Find-CaptureInteractionScreenshotReceipt {
         foreach ($property in @($Current.PSObject.Properties)) { Visit $property.Value }
     }
     Visit $Value
-    return @($found | Sort-Object { if ($_.PSObject.Properties['terminal']) { [int][bool]$_.terminal } else { 0 } } -Descending | Select-Object -First 1)
+    if ($RequestId) { return @($found | Where-Object requestId -eq $RequestId | Select-Object -First 1) }
+    return @($found | Select-Object -First 1)
 }
 
 function Get-CaptureInteractionLatestFrame {
@@ -133,33 +136,40 @@ function Get-CaptureInteractionLatestFrame {
         [string]$PreferredView = 'left_eye'
     )
     $items = [Collections.Generic.List[object]]::new()
-    function VisitArtifact($Current, [int]$Ordinal, [long]$EngineFrame, [string]$TimestampUtc) {
+    function VisitArtifact($Current) {
         if ($null -eq $Current -or $Current -is [string] -or $Current -is [ValueType]) { return }
-        $nextOrdinal = if ($Current.PSObject.Properties['ordinal']) { [int]$Current.ordinal } else { $Ordinal }
-        $nextFrame = if ($Current.PSObject.Properties['scheduledEngineFrame']) { [long]$Current.scheduledEngineFrame } elseif ($Current.PSObject.Properties['engineFrame']) { [long]$Current.engineFrame } else { $EngineFrame }
-        $nextTimestamp = if ($Current.PSObject.Properties['timestampUtc']) { [string]$Current.timestampUtc } elseif ($Current.PSObject.Properties['scheduledTimestampUtc']) { [string]$Current.scheduledTimestampUtc } else { $TimestampUtc }
-        if ($Current.PSObject.Properties['path']) {
-            $state = [string](Get-CaptureInteractionProperty $Current 'state' '')
-            $committed = [bool](Get-CaptureInteractionProperty $Current 'committed' ($state -in @('written', 'completed')))
-            if ($committed) {
+        $acquisition = Get-CaptureInteractionProperty (Get-CaptureInteractionProperty $Current 'actual') 'acquisition'
+        foreach ($artifact in @(Get-CaptureInteractionProperty $Current 'artifacts' @())) {
+            if ([bool](Get-CaptureInteractionProperty $artifact 'committed' $false)) {
+                $actual = Get-CaptureInteractionProperty $artifact 'actual'
+                if ([string](Get-CaptureInteractionProperty $acquisition 'sourceKind') -ne 'hmd_submission') {
+                    throw 'Committed screenshot artifact lacks an actual hmd_submission acquisition.'
+                }
+                if ([string](Get-CaptureInteractionProperty $actual 'format') -ne 'png' -or
+                    [string](Get-CaptureInteractionProperty $actual 'colourContract') -ne 'sdr_srgb') {
+                    throw 'Committed screenshot artifact is not an actual sdr_srgb PNG.'
+                }
                 $items.Add([pscustomobject][ordered]@{
-                    path = [string]$Current.path
-                    view = [string](Get-CaptureInteractionProperty $Current 'view' '')
-                    format = [string](Get-CaptureInteractionProperty $Current 'format' '')
-                    sha256 = Get-CaptureInteractionProperty $Current 'sha256' $null
-                    bytes = Get-CaptureInteractionProperty $Current 'bytes' $null
-                    ordinal = $nextOrdinal
-                    engineFrame = $nextFrame
-                    timestampUtc = $nextTimestamp
+                    path = [string]$artifact.path
+                    view = [string](Get-CaptureInteractionProperty $actual 'view' '')
+                    format = [string]$actual.format
+                    colourContract = [string]$actual.colourContract
+                    width = Get-CaptureInteractionProperty $actual 'width'
+                    height = Get-CaptureInteractionProperty $actual 'height'
+                    sha256 = Get-CaptureInteractionProperty $artifact 'sha256'
+                    bytes = Get-CaptureInteractionProperty $artifact 'bytes'
+                    requestId = Get-CaptureInteractionProperty $Current 'requestId'
+                    ordinal = Get-CaptureInteractionProperty $Current 'ordinal' -1
+                    engineFrame = Get-CaptureInteractionProperty $acquisition 'engineFrame' -1
+                    scheduledEngineFrame = Get-CaptureInteractionProperty $Current 'scheduledEngineFrame' -1
+                    acquisition = $acquisition
                     committed = $true
                 })
             }
         }
-        if ($Current -is [Collections.IDictionary]) { foreach ($entry in $Current.GetEnumerator()) { VisitArtifact $entry.Value $nextOrdinal $nextFrame $nextTimestamp }; return }
-        if ($Current -is [Collections.IEnumerable] -and $Current -isnot [pscustomobject]) { foreach ($entry in $Current) { VisitArtifact $entry $nextOrdinal $nextFrame $nextTimestamp }; return }
-        foreach ($property in @($Current.PSObject.Properties)) { VisitArtifact $property.Value $nextOrdinal $nextFrame $nextTimestamp }
+        foreach ($child in @(Get-CaptureInteractionProperty $Current 'children' @())) { VisitArtifact $child }
     }
-    VisitArtifact $Receipt -1 -1 $null
+    VisitArtifact $Receipt
     $ranked = @($items | Sort-Object @{ Expression = 'ordinal'; Descending = $true }, @{ Expression = 'engineFrame'; Descending = $true }, @{ Expression = { if ($_.view -eq $PreferredView) { 1 } else { 0 } }; Descending = $true })
     if ($ranked.Count -eq 0) { return $null }
     return $ranked[0]
@@ -196,4 +206,4 @@ function Get-CaptureInteractionSaveCandidates {
     })
 }
 
-Export-ModuleMember -Function Get-CaptureInteractionActionCatalog, New-CaptureInteractionFrames, Find-CaptureInteractionScreenshotReceipt, Get-CaptureInteractionLatestFrame, ConvertTo-CaptureInteractionUtcBoundary, Get-CaptureInteractionSaveCandidates
+Export-ModuleMember -Function Get-CaptureInteractionActionCatalog, Get-CaptureInteractionProperty, New-CaptureInteractionFrames, Find-CaptureInteractionScreenshotReceipt, Get-CaptureInteractionLatestFrame, ConvertTo-CaptureInteractionUtcBoundary, Get-CaptureInteractionSaveCandidates
