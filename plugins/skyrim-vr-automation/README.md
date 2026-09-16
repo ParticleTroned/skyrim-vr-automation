@@ -70,7 +70,7 @@ versioned shared-memory pose contract, but it is not the bootstrap provider.
 ## Codex plugin
 
 The repository publishes a Codex marketplace plugin. It registers the
-loopback `devbench_vr` MCP server directly and its seventeen skills connect a
+loopback `devbench_vr` MCP server directly and its eighteen skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
@@ -111,6 +111,9 @@ new task to the bundled implementations and their operational contracts:
   sweep, including raw cooldown telemetry and None-relative results.
 - `$capture-interaction-control` provides a current-frame observation/action
   loop over correlated DevBench state, stereo screenshots, and input receipts.
+- `$nr-colour-assessment` uses the selected CSX checkout's HMD campaign tools
+  for attributed native stereo captures and automated blinded colour review,
+  with baseline repeatability and separate detail/temporal/stereo assessments.
 
 Install from the public Git marketplace:
 
