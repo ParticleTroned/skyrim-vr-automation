@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Document runtime-owned DevBench schema refresh, including NR Lighting
+  preservation: load the matching CSX DLL before reloading the Codex host.
+  Refresh the development marketplace package and cache identity.
+
 - Add the NR colour-assessment skill, routing to the selected CSX checkout's
   canonical capture/analyser tools with blinded native-HMD image review.
 - Refresh the development plugin package with the owned capture contracts,

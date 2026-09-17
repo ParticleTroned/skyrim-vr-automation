@@ -132,6 +132,30 @@ The listed version must match `.codex-plugin/plugin.json`. Review
 `CHANGELOG.md`, rerun the doctor, and restart Codex. Pin a marketplace checkout
 to a release tag with `--ref vX.Y.Z` when reproducibility matters.
 
+### Refreshing a runtime tool schema
+
+The direct MCP tool definitions come from the running CSX producer. The
+automation package does not carry a second copy of their input schemas.
+If a new CSX setting is missing from the typed client, first install the
+matching AIO and load its DLL in the game, then fully reload the Codex
+host. A plugin cache rotation against an older running DLL still discovers
+that older DLL's schema; a new chat alone may retain the prior catalog.
+
+For example, Neural Rendering Colour 1-3-0 adds the optional numeric
+`settings.lightingPreservation` field to `communityshaders.nr_color`.
+Its range is 0 through 1, corresponding to 0–100% in Preserve Source.
+Verify that the exposed direct tool definition includes this field before
+sending it. Read `action=status` and configure with the returned
+`expectedRevision`; check the returned setting and revision. Refreshing
+this client schema does not require rebuilding DevBench itself.
+
+When a package refresh is also needed, use the guarded installer above
+after all automation runs are terminal. Keep its installed-version and
+file-hash receipt, then perform the producer/host sequence described here.
+Do not hand-edit cached tool definitions or use another transport to
+tunnel a field absent from the selected client schema. Installation and
+game restart remain separate actions requiring task authorization.
+
 ## Remove
 
 ```text
