@@ -19,3 +19,7 @@ native/**/build-*/
 Thumbs.db
 __pycache__/
 *.py[cod]
+
+/build/tests/gameft-sw-*/
+/build/gameft-sw/
+/build/bisect/measurements/

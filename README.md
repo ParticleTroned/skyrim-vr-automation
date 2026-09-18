@@ -7,6 +7,9 @@ optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
 
+- `tools/gameft-sw` — versioned save-load timing, CPU stack/wait recording,
+  RC166 compatibility and offline tests; see its [protocol](tools/gameft-sw/README.md).
+
 - `tools/modlist-control` — fail-closed registration and persistent selection
   of exact named MO2 machine configurations.
 
@@ -154,7 +157,7 @@ For one MO2 installation, edit
 modlists, register and select exact named configs instead:
 
 ```powershell
-.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 register -Name main -ConfigPath C:\staging\main.json
+.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 register -Name main -ConfigPath '<modlist-config.json>'
 .\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 select -Name main
 .\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 list
 ```
@@ -179,7 +182,7 @@ variable, or by `devBenchRuntimePath` in the stable per-user
 `%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`:
 
 ```powershell
-$env:CSX_DEVBENCH_RUNTIME_PATH = 'C:\Path\To\overwrite\SKSE\Plugins\devbench\runtime.json'
+$env:CSX_DEVBENCH_RUNTIME_PATH = '<MO2 overwrite>/SKSE/Plugins/devbench/runtime.json'
 .\tools\devbench-control\Invoke-DevBenchControl.ps1 list
 ```
 
