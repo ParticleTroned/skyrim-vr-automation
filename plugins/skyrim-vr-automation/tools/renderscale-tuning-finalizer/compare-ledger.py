@@ -35,10 +35,21 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def read_ledger(ledger):
+    """Read lossless detail cells while restoring the caller's CSV limit."""
+    with ledger.open(encoding="utf-8-sig", newline="") as stream:
+        previous_limit = csv.field_size_limit()
+        try:
+            # A decoded UTF-8 field cannot contain more characters than file bytes.
+            csv.field_size_limit(max(previous_limit, os.fstat(stream.fileno()).st_size))
+            return list(csv.reader(stream))
+        finally:
+            csv.field_size_limit(previous_limit)
+
+
 def audit_ledger(ledger, comparison):
     """Verify every retained numeric timing, without interpreting missing cells."""
-    with ledger.open(encoding="utf-8-sig", newline="") as stream:
-        table = list(csv.reader(stream))
+    table = read_ledger(ledger)
     if not table or any(len(row) != len(table[0]) for row in table):
         raise ValueError("canonical ledger is empty or nonrectangular")
     if len({row[0] for row in table[1:]}) != len(table) - 1:
@@ -189,8 +200,7 @@ def finalize_candidate(args, tool_identity):
 def validate_extension(original, candidate):
     """A prepared ledger may append rows/columns, never rewrite historical cells."""
     def read(path):
-        with path.open(encoding='utf-8-sig', newline='') as stream:
-            table = list(csv.reader(stream))
+        table = read_ledger(path)
         if not table or any(len(row) != len(table[0]) for row in table):
             raise ValueError('ledger is empty or nonrectangular')
         if len({row[0] for row in table[1:]}) != len(table) - 1 or len(set(table[0])) != len(table[0]):

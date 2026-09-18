@@ -1,0 +1,80 @@
+{
+  "schema": "gameft-source-migration-v1",
+  "sourceRepository": "ParticleTroned/skyrim-community-shaders",
+  "sourceHead": "dbe1657c981fdd7d27ac8703d9f02ef56a5eedc7",
+  "sourceIncludesUncommittedChanges": true,
+  "files": [
+    {
+      "path": "tools/gameft-sw/CpuStackWait.wprp",
+      "bytes": 1163,
+      "sha256": "136a9feedf5211a5097c3f15ae1299ac9288d1a2f1f9ac277aa0ecc16d9860b4"
+    },
+    {
+      "path": "tools/gameft-sw/GameFtStackWait.psm1",
+      "bytes": 15006,
+      "sha256": "50d84134c7ab18db55e0641ec490fd5ebbb007e2e830105cb51930612c2f58e3"
+    },
+    {
+      "path": "tools/gameft-sw/Get-GameFtStackWaitResult.ps1",
+      "bytes": 237,
+      "sha256": "f790c32b1d70d53010653e0f423a6e551dede1befdcbbaca33ac51f117f87dda"
+    },
+    {
+      "path": "tools/gameft-sw/Invoke-GameFtStackWait.ps1",
+      "bytes": 8103,
+      "sha256": "5cfbf1bc4356a0be6156986d5f5e4349c810209e10753c272a7ff11d7bb2ea22"
+    },
+    {
+      "path": "tools/gameft-sw/Invoke-StackWaitWorker.ps1",
+      "bytes": 321,
+      "sha256": "adb126f13a28cc7e239ff8be166072c67617178a2e57983c931bd54049ec4f61"
+    },
+    {
+      "path": "tools/gameft-sw/LegacyRc166.psm1",
+      "bytes": 3660,
+      "sha256": "18bbecab83de47fb3f9196a49892aaec9fdcc9a077dc075236f026653464be10"
+    },
+    {
+      "path": "tools/gameft-sw/Test-GameFtStackWaitRecorder.ps1",
+      "bytes": 4243,
+      "sha256": "69b311d7959a3b1b53f6d9f93a0e9532a3ea4fb6adc0166b3c26fd764c77751a"
+    },
+    {
+      "path": "build/bisect/protocol/Invoke-SaveLoadTimingV2.ps1",
+      "bytes": 14897,
+      "sha256": "908d96843b6f493ae758db57d6e1449f14d0a39d4472584847c7e151e1dfb382"
+    },
+    {
+      "path": "build/bisect/protocol/Show-SaveLoadTimingQuickReport.ps1",
+      "bytes": 36327,
+      "sha256": "1d08975eb1dbd027dd362e0f61ff06f67add1e0b63b1d8785f8d66dd9941983b"
+    },
+    {
+      "path": "build/bisect/protocol/Compare-GameFtRuns.ps1",
+      "bytes": 9944,
+      "sha256": "988475d39f8fafc39dd5e115e5c419fb517576bc1fee2fb5c71a30f2fdfc8f17"
+    },
+    {
+      "path": "build/bisect/protocol/save-load-frame-timing-v2.md",
+      "bytes": 17697,
+      "sha256": "f5219e7aa42b9a54e6434c085c46ed83bab6168fe8f71db4e64760de61c5e1f3"
+    },
+    {
+      "path": "tests/gameft_stack_wait_test.ps1",
+      "bytes": 14084,
+      "sha256": "800e363546cfedb1467002a38ed4a6cbe541d6c9da731fdf7d1d46ee7b2df63d"
+    },
+    {
+      "path": "tests/gameft_legacy_rc166_test.ps1",
+      "bytes": 2195,
+      "sha256": "729a144f6abd11c4dd3d819755038a0b452c7223b2d57d5e1e0ce4532293b8a6"
+    }
+  ],
+  "adaptations": [
+    "Version runner, reporter and comparison dependencies under protocol/.",
+    "Replace machine-specific defaults with explicit parameters and repository-relative controller paths.",
+    "Pass the selected Controller through to the runner.",
+    "Move CSX bridge source assertions back to their owner; preserve all external-control tests.",
+    "Update the exact runner byte hash after the path/parameter migration."
+  ]
+}

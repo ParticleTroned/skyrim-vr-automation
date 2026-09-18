@@ -103,6 +103,7 @@ try {
     '+Loader' | Set-Content -LiteralPath (Join-Path $escapedSource 'modlist.txt') -Encoding utf8
     $escapedStatus = & $entry fixture-status -ConfigPath $configPath -SourceProfile '..\outside' -Compact -NoExit | ConvertFrom-Json
     if ($escapedStatus.ok -or $escapedStatus.errors[0] -notmatch 'direct child|malformed') { throw 'SourceProfile traversal was not rejected as malformed.' }
+    if ($escapedStatus.data.configuration.path -ne $configPath -or -not $escapedStatus.data.approval.reusableApprovalEligible) { throw 'Failure JSON lost the selected configuration or approval metadata.' }
     $fixtureStatusRaw = & $entry fixture-status -ConfigPath $configPath -Compact
     if ($fixtureStatusRaw -match "`r|`n") { throw 'Compact workspace output was not one line.' }
     $fixtureStatus = $fixtureStatusRaw | ConvertFrom-Json
@@ -136,6 +137,32 @@ try {
     $unconfigured | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $missingPath -Encoding utf8
     $missingStatus = & $entry fixture-status -ConfigPath $missingPath -Compact | ConvertFrom-Json
     if (-not $missingStatus.ok -or $missingStatus.state -ne 'fixture-manifest-missing' -or -not $missingStatus.data.configured -or $missingStatus.data.manifestExists) { throw 'Fixture discovery did not distinguish a configured missing manifest.' }
+    $noSourcePath = Join-Path $fixture 'config-no-source.json'
+    $noSource = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $noSource.defaults.PSObject.Properties.Remove('testProfileSource')
+    $noSource | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $noSourcePath -Encoding utf8
+    foreach ($sourceCommand in @('fixture-status', 'list-local-work-mods', 'create', 'prepare-source', 'refresh-fixture')) {
+        $noSourceStatus = & $entry $sourceCommand -ConfigPath $noSourcePath -Compact -NoExit | ConvertFrom-Json
+        if ($noSourceStatus.ok -or $noSourceStatus.state -ne 'source-profile-not-configured' -or
+            $noSourceStatus.data.configuration.path -ne $noSourcePath -or $noSourceStatus.data.parameter -ne 'SourceProfile' -or
+            $noSourceStatus.data.configurationProperty -ne 'defaults.testProfileSource') { throw "$sourceCommand did not report the missing source without falling back to defaults.profile." }
+    }
+    $explicitSourceStatus = & $entry fixture-status -ConfigPath $noSourcePath -SourceProfile 'Mad God Stable' -Compact -NoExit | ConvertFrom-Json
+    if (-not $explicitSourceStatus.ok -or $explicitSourceStatus.state -ne 'fixture-valid') { throw 'An explicit maintained source was not honored when the default was absent.' }
+    $noSource.defaults | Add-Member -NotePropertyName testProfileSource -NotePropertyValue ' '
+    $noSource | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $noSourcePath -Encoding utf8
+    $transactionLock = Get-Item -LiteralPath (Join-Path $sessions 'workspaces\.workspace.transaction.lock')
+    try {
+        $transactionLock.IsReadOnly = $true
+        $blankSourceStatus = & $entry fixture-status -ConfigPath $noSourcePath -Compact -NoExit | ConvertFrom-Json
+        if ($blankSourceStatus.state -ne 'source-profile-not-configured') { throw 'Blank source configuration was not rejected before writable recovery.' }
+        $deniedStatus = & $entry list-task -ConfigPath $configPath -TaskId $taskId -Compact -NoExit | ConvertFrom-Json
+        if ($deniedStatus.ok -or $deniedStatus.state -ne 'workspace-control-access-required' -or
+            -not $deniedStatus.data.requiresWriteAccess -or -not $deniedStatus.data.approval.escalationUsuallyRequired -or
+            $deniedStatus.data.controlPath -ne (Join-Path $sessions 'workspaces') -or
+            $deniedStatus.data.configuration.path -ne $configPath) { throw 'A denied recovery lock did not report its exact configuration, control directory and access requirement.' }
+    }
+    finally { $transactionLock.IsReadOnly = $false }
     if ($DiscoveryOnly) {
         $releasedAccess = Invoke-MO2ReleaseAccess -Config $config -AccessId $accessId
         if (-not $releasedAccess.ok) { throw 'Discovery-only access release failed.' }

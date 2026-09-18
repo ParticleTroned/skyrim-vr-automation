@@ -516,7 +516,7 @@ function Get-StretchSummary($StressStop) {
     $record = Get-CSXPropertyValue $StressStop 'record'
     if ([string](Get-CSXPropertyValue $record 'schema') -ne 'community-shaders.vr-render-scale.iteration' -or
         [int](Get-CSXPropertyValue $record 'schemaVersion' -1) -ne [int]$script:protocol.thresholds.stressRecordSchemaVersion) {
-        throw 'Stress stop did not return the required schema-v13 immutable record.'
+        throw 'Stress stop did not return the required schema-v14 immutable record.'
     }
     if ([bool](Get-CSXPathValue $record 'session.active' $true)) { throw 'Stress record was still active at stop.' }
     $presentation = Get-CSXPathValue $record 'presentationPath.allowedPresentationStretch'
@@ -526,7 +526,7 @@ function Get-StretchSummary($StressStop) {
     $timed = [uint64](Get-CSXPropertyValue $presentation 'timedCompletedEpisodes' 0)
     $activeAtStop = [bool](Get-CSXPropertyValue $presentation 'activeAtStop' $true)
     $incompleteStereoAtStop = [bool](Get-CSXPropertyValue $presentation 'incompleteStereoCycleAtStop' $true)
-    $incompleteStereoEyeMaskAtStop = [uint64](Get-CSXPropertyValue $presentation 'incompleteStereoCycleEyeMaskAtStop' ([uint64]::MaxValue))
+    $incompleteStereoEyeMaskAtStop = [uint64](Get-CSXPropertyValue $presentation 'incompleteStereoEyeMaskAtStop' ([uint64]::MaxValue))
     $timingComplete = [bool](Get-CSXPropertyValue $presentation 'completedTimingComplete' $false)
     $timingStatus = [string](Get-CSXPropertyValue $presentation 'timingStatus')
     if ($activeAtStop) { throw 'Presentation-stretch episode remained active at stress stop.' }
@@ -542,12 +542,13 @@ function Get-StretchSummary($StressStop) {
         completedEpisodes = $completed; totalFrames = $frames
         meanFrames = $(if ($completed -gt 0) { [double](Get-CSXPropertyValue $presentation 'meanCompletedFrames' ([double]$frames / $completed)) } else { 0.0 })
         maxFrames = $maxFrames
+        unattributedFrames = [uint64](Get-CSXPropertyValue $presentation 'unattributedFrames' ([uint64]::MaxValue))
         meanMs = $(if ($completed -gt 0) { [double](Get-CSXPropertyValue $presentation 'meanCompletedMilliseconds') } else { 0.0 })
         maxMs = $(if ($completed -gt 0) { [double](Get-CSXPropertyValue $presentation 'maximumCompletedMilliseconds') } else { 0.0 })
         qpcFrequency = [uint64](Get-CSXPropertyValue $presentation 'qpcFrequency' 0)
-        activeAtStop = $activeAtStop; incompleteStereoCycleAtStop = $incompleteStereoAtStop; incompleteStereoCycleEyeMaskAtStop = $incompleteStereoEyeMaskAtStop
+        activeAtStop = $activeAtStop; incompleteStereoCycleAtStop = $incompleteStereoAtStop; incompleteStereoEyeMaskAtStop = $incompleteStereoEyeMaskAtStop
         timingComplete = $timingComplete; timingStatus = $timingStatus
-        recordAccepted = [bool](Get-CSXPathValue $record 'acceptance.accepted' $false)
+        recordAccepted = [bool](Get-CSXStressRecordAcceptance -Record $record).accepted
     }
 }
 
@@ -1768,9 +1769,9 @@ try {
     Assert-WaitRecords $cocRecords 20 'COC assay'
     if ($stretchError) { throw $stretchError }
     if ($cocStressError) { throw $cocStressError }
-    if (-not $stretch.recordAccepted) { throw 'COC schema-v13 stress record verdict failed.' }
+    if (-not $stretch.recordAccepted) { throw 'COC schema-v14 stress record verdict failed.' }
     if ($cocDiagnosticFailureLowerBound -ne 0 -or $cocFailedTransitions -ne 0) { throw "COC assay recorded $cocFailureCount render-scale failure events and diagnostic failures in $cocFailedTransitions transitions." }
-    if ([double]$stretch.maxFrames -gt [double]$script:protocol.thresholds.maximumPresentationStretchEpisodeFrames -or [double]$stretch.meanFrames -gt [double]$script:protocol.thresholds.maximumMeanPresentationStretchEpisodeFrames) { throw 'COC presentation stretch exceeded the versioned threshold.' }
+    if ([uint64]$stretch.unattributedFrames -gt [uint64]$script:protocol.thresholds.maximumUnattributedStretchFrames) { throw 'COC presentation stretch had unattributed frames.' }
 
     $recoveryOneRequest = New-CSXRecoveryScenario -Protocol $script:protocol -ExpectedBuildId $script:expectedBuildId -RunId $script:runId -FsrRuntime $fsrRuntime -RecoveryLabel one
     $recoveries.one.state = 'RUNNING'
@@ -1844,7 +1845,7 @@ try {
     Assert-MenuPolicies $menuScenario $menuRecords
     if ($menuStretchError) { throw $menuStretchError }
     if ($menuStressError) { throw $menuStressError }
-    if (-not $menuStretch.recordAccepted) { throw 'CS-menu schema-v13 stress record verdict failed.' }
+    if (-not $menuStretch.recordAccepted) { throw 'CS-menu schema-v14 stress record verdict failed.' }
     if ($menuDiagnosticFailureLowerBound -ne 0 -or $menuFailedTransitions -ne 0) { throw 'CS-menu assay recorded a render-scale or diagnostic failure.' }
     if (-not $traceEvidence.ok) { throw "DLSS trace validation failed: $($traceEvidence.errors -join ' ')" }
 
@@ -1897,7 +1898,7 @@ try {
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\stress-record.json') -Value $visualDiagnostics.stress.record | Out-Null
     Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\cpu-record.json') -Value $visualDiagnostics.cpu.cpuPerformance | Out-Null
     $visualStress = Get-StretchSummary $visualDiagnostics.stress
-    if (-not $visualStress.recordAccepted) { throw 'Visual schema-v13 stress record verdict failed.' }
+    if (-not $visualStress.recordAccepted) { throw 'Visual schema-v14 stress record verdict failed.' }
     $visualObservationPath = Write-CSXJsonFile -Path (Join-Path $script:evidenceRoot 'visual\fixture-observations.json') -Value ([pscustomobject][ordered]@{
         schema = 'csx-render-scale-visual-fixture-observations-v1'; runId = $script:runId; observations = @($visualObservations)
     })

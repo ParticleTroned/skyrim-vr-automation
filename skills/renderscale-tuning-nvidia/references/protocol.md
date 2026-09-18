@@ -379,6 +379,12 @@ live read, polling loop, wait or admission gate to obtain these diagnostics.
 The finalizer owns interpretation through
 `tools/renderscale-tuning-finalizer/retry-telemetry.js`.
 
+Apply the shared [event compatibility and owned drain contract](../../../tools/renderscale-tuning-finalizer/README.md#retry-event-compatibility-and-owned-drain-timing).
+Preserve additive event names with explicit compatibility diagnostics;
+derive drain and commit intervals from the exact retained endpoints. Repair
+an offline parser mismatch by re-finalizing the same immutable journal and
+updating that run's existing ledger column, never by replaying the assay.
+
 Correlate the producer Build ID, stress session, request ID and transition epoch
 with that exact transition and its dispatch-to-terminal QPC window. Preserve
 every non-coalesced `Retry` reason/category and source file/line. Correlate each

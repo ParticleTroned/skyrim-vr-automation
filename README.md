@@ -7,6 +7,9 @@ optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
 
+- `tools/gameft-sw` — versioned save-load timing, CPU stack/wait recording,
+  RC166 compatibility and offline tests; see its [protocol](tools/gameft-sw/README.md).
+
 - `tools/modlist-control` — fail-closed registration and persistent selection
   of exact named MO2 machine configurations.
 
@@ -70,7 +73,7 @@ versioned shared-memory pose contract, but it is not the bootstrap provider.
 ## Codex plugin
 
 The repository publishes a Codex marketplace plugin. It registers the
-loopback `devbench_vr` MCP server directly and its seventeen skills connect a
+loopback `devbench_vr` MCP server directly and its eighteen skills connect a
 new task to the bundled implementations and their operational contracts:
 
 - `$feedback-control` records unexpected automation behaviour and concrete
@@ -111,6 +114,9 @@ new task to the bundled implementations and their operational contracts:
   sweep, including raw cooldown telemetry and None-relative results.
 - `$capture-interaction-control` provides a current-frame observation/action
   loop over correlated DevBench state, stereo screenshots, and input receipts.
+- `$nr-colour-assessment` uses the selected CSX checkout's HMD campaign tools
+  for attributed native stereo captures and automated blinded colour review,
+  with baseline repeatability and separate detail/temporal/stereo assessments.
 
 Install from the public Git marketplace:
 
@@ -151,7 +157,7 @@ For one MO2 installation, edit
 modlists, register and select exact named configs instead:
 
 ```powershell
-.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 register -Name main -ConfigPath C:\staging\main.json
+.\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 register -Name main -ConfigPath '<modlist-config.json>'
 .\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 select -Name main
 .\tools\modlist-control\Invoke-SkyrimVRModlist.ps1 list
 ```
@@ -176,7 +182,7 @@ variable, or by `devBenchRuntimePath` in the stable per-user
 `%LOCALAPPDATA%\SkyrimVRAutomation\machine.local.json`:
 
 ```powershell
-$env:CSX_DEVBENCH_RUNTIME_PATH = 'C:\Path\To\overwrite\SKSE\Plugins\devbench\runtime.json'
+$env:CSX_DEVBENCH_RUNTIME_PATH = '<MO2 overwrite>/SKSE/Plugins/devbench/runtime.json'
 .\tools\devbench-control\Invoke-DevBenchControl.ps1 list
 ```
 
@@ -210,10 +216,11 @@ does not authorize it.
 Explicit runtime, fixture, and output locations remain available:
 
 ```powershell
+$qualificationRoot = Join-Path $env:LOCALAPPDATA 'CSX/RenderScaleQualification'
 .\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1 `
-    -RuntimePath C:\Runtime\devbench\runtime.json `
-    -FixtureManifestPath C:\Evidence\render-scale-fixture.json `
-    -EvidenceDirectory C:\Evidence\render-scale-local
+    -RuntimePath $env:CSX_DEVBENCH_RUNTIME_PATH `
+    -FixtureManifestPath (Join-Path $qualificationRoot 'fixture.json') `
+    -EvidenceDirectory (Join-Path $qualificationRoot 'local')
 ```
 
 A local run returns `LOCAL_PASS` and `qualification-summary.md`; it is not PR
@@ -223,16 +230,33 @@ protocol and fixture with a different exact Build ID:
 ```powershell
 $baselineBuildId = '<64-character baseline CSX build ID>'
 .\tools\render-scale-qualification\Start-CSXRenderScaleQualification.ps1 `
-    -PrMode -BaselinePath C:\Evidence\render-scale-baseline `
+    -PrMode -BaselinePath (Join-Path $qualificationRoot 'baseline') `
     -ExpectedBaselineBuildId $baselineBuildId
 ```
 
-Protocol revision 5 has a hard 600-second end-to-end pass limit. It runs the
+Protocol revision 6 has a hard 600-second end-to-end pass limit. It runs the
 20-transition load-synchronized COC assay, a 30-second recovery, the ordered
 25-transition menu assay, a second 30-second recovery, and three one-minute
 HMD-submission capture sequences. Dispatch-to-stability time starts at the
 owner-bound server QPC mark, and each top-level MCP result is checked before
 the next mutation.
+
+Stress records use `community-shaders.vr-render-scale.iteration` schema v14.
+`presentation_stretch_frame_bound` retains its raw two-frame comparison and
+is `diagnostic_only` when `diagnosticThresholdFrames` and legacy
+`maximumAcceptedFrames` both equal 2. Its failure alone does not reject the
+stress record; every failed health gate still does. A legacy v13 record with
+no classification and no `diagnosticThresholdFrames` is normalized only when
+the named gate and `maximumAcceptedFrames` both retain the two-frame limit.
+Its original failed gate and raw rejection remain in evidence. Unknown schema
+versions or classifications fail closed. Legacy v13 support is limited to
+historical comparison; revision-6 qualification requires v14 in every assay
+and its baseline. An active episode or incomplete
+stereo cycle at stop also rejects. Revision 6 requires a complete episode
+trace with a coherent transition epoch, frame and QPC ranges, and a recorded
+cooldown, deferred-retry, or loading/menu reason for every stretch frame.
+Missing, overflowed, or unattributed evidence rejects. The raw two-frame
+result remains visible, while the physical-HMD visual assay remains required.
 
 Visual evaluation is part of the same invocation. The Codex CLI runs
 `gpt-5.6-sol` for three replicates in each of two blinded, independently

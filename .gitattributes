@@ -3,3 +3,7 @@
 *.psm1 text eol=crlf
 *.json text eol=lf
 *.md text eol=lf
+
+# Exact protocol hashes must survive checkout on every platform.
+/tools/gameft-sw/protocol/*.ps1 text eol=lf
+/tools/gameft-sw/CpuStackWait.wprp text eol=lf

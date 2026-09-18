@@ -2,6 +2,8 @@
 
 "use strict";
 
+const { ownedReleaseReport } = require("./owned-release-telemetry.js");
+
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -648,7 +650,7 @@ function csv(rows) {
     const columns = [
         "lane", "pass", "ordinal", "strict_ms", "presentation_ms", "cleanup_ms",
         "cleanup_tail_ms", "switch_health", "switch_timings", "retry_telemetry_status", "retry_outcome", "retry_count",
-        "retry_reasons", "viewport_waits", "retry_stabilization",
+        "retry_reasons", "viewport_waits", "retry_stabilization", "retry_compatibility", "owned_drain", "owned_release",
         "method", "quality_mode", "render_scale_mode",
         "actual_backend", "lane_qualification", "render_verdict", "stability_status",
         "stability_presentation_disposition",
@@ -692,7 +694,8 @@ function csv(rows) {
             row.switchHealth, row.switchTimings,
             row.retryTelemetry.status, row.retryTelemetry.outcome, row.retryTelemetry.retryCount ?? "n.d.",
             row.retryTelemetry.retryReasons, JSON.stringify(row.retryTelemetry.waits),
-            JSON.stringify(row.retryTelemetry.stabilization), row.target.method,
+            JSON.stringify(row.retryTelemetry.stabilization), row.retryTelemetry.compatibility,
+            row.retryTelemetry.ownedDrain, row.retryTelemetry.ownedRelease, row.target.method,
             row.target.qualityMode, row.target.renderScaleMode, row.actualBackend, JSON.stringify(row.laneQualification),
             row.renderVerdict,
             note ? note.status : "stable",
@@ -741,6 +744,43 @@ function csv(rows) {
         lines.push(values.map(csvCell).join(","));
     }
     return `${lines.join("\n")}\n`;
+}
+
+function ownedDrainReport(transitions) {
+    const interval = value => value?.milliseconds === null || value?.milliseconds === undefined ?
+        `n.d. (${value?.reasons?.join("; ") || "not_exposed"})` :
+        `${value.frames} / ${value.milliseconds.toFixed(4)}`;
+    const rows = [];
+    const compatibility = [];
+    for (const row of transitions) {
+        const retry = row.retryTelemetry;
+        if (retry.compatibility?.unknownEventCount) {
+            compatibility.push(`${row.lane || "default"}/${row.pass}/${row.ordinal}: ` +
+                `${retry.compatibility.unknownEventCount} retained additive events ` +
+                `(${retry.compatibility.unknownEventTypes.join(", ")})`);
+        }
+        for (const attempt of retry.ownedDrain?.attempts || []) {
+            const spans = attempt.intervals;
+            rows.push(`| ${row.lane || "default"} | ${row.pass} | ${row.ordinal} | ` +
+                `${attempt.beginSequence ?? "n.d."} | ${attempt.status} | ` +
+                `${interval(spans.beginToFirstPending)} | ${interval(spans.pendingToReady)} | ` +
+                `${interval(spans.readyToCommit)} | ${interval(spans.commitToSharedCleanup)} | ` +
+                `${interval(spans.commitToApplied)} | ${attempt.reasons.join("; ") || "none"} |`);
+        }
+    }
+    return `## Owned provider drain and commit intervals\n\n` +
+        `Cells show frames / milliseconds from exact retained QPC endpoints. ` +
+        `Ready means the last observed provider-ready event before the first commit; ` +
+        `the required-provider set is not exposed. Commit-to-shared-cleanup is elapsed ` +
+        `time to that marker, not isolated cleanup cost. Subsequent commit attempts, ` +
+        `raw poll counts and missing identity fields remain in summary.json and CSV. ` +
+        `The six-frame settling guard is reported separately.\n\n` +
+        (rows.length ? `| Lane | Pass | Row | Begin sequence | Status | Begin to pending | ` +
+            `Pending to ready | Ready to commit | Commit to cleanup | Commit to applied | Reasons |\n` +
+            `| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |\n` +
+            `${rows.join("\n")}\n\n` : `No owned drain attempts were derived; see each row's diagnostic status.\n\n`) +
+        (compatibility.length ? `Preserved additive event diagnostics (counts refer to each cumulative snapshot):\n\n` +
+            compatibility.map(value => `- ${value}`).join("\n") + "\n\n" : "");
 }
 
 function report(summary) {
@@ -839,6 +879,8 @@ function report(summary) {
         `\`${summary.evidenceExtraction.path}\`.\n\n` +
         healthReport(summary.switchHealth) +
         memoryReport(summary.memoryConfirmation) +
+        ownedDrainReport(summary.transitions) +
+        ownedReleaseReport(summary.transitions) +
         `## Transitions\n\n` +
         `Retry waits end at the first observed preparation-ready result. ` +
         `Ready-to-candidate includes stereo qualification and the settling guard; ` +
