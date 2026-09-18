@@ -212,3 +212,6 @@ pwsh ./tests/gameft_stack_wait_test.ps1
 pwsh ./tests/gameft_legacy_rc166_test.ps1
 pwsh ./tests/gameft_package_test.ps1
 ```
+
+Pinned protocol scripts and the WPR profile use LF in every checkout.
+Git attributes enforce this; protocol hashes verify the checked-out bytes.
