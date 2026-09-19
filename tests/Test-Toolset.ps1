@@ -11,6 +11,11 @@ Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $powerShell = (Get-Process -Id $PID).Path
 $tests = @(
+    @{ Name = 'depthc'; Path = 'tests\depthc_test.ps1'; Arguments = @() },
+    @{ Name = 'frustrum'; Path = 'tests\frustrum_test.ps1'; Arguments = @() },
+    @{ Name = 'gameft-stack-wait'; Path = 'tests\gameft_stack_wait_test.ps1'; Arguments = @() },
+    @{ Name = 'gameft-legacy'; Path = 'tests\gameft_legacy_rc166_test.ps1'; Arguments = @() },
+    @{ Name = 'gameft-package'; Path = 'tests\gameft_package_test.ps1'; Arguments = @() },
     @{ Name = 'modlist-control'; Path = 'tools\modlist-control\Test-ModlistControl.ps1'; Arguments = @() },
     @{ Name = 'feedback-control'; Path = 'tools\feedback-control\Test-AutomationFeedback.ps1'; Arguments = @() },
     @{ Name = 'mo2-control'; Path = 'tools\mo2-control\tests\Test-MO2Control.ps1'; Arguments = $(if ($IncludeLiveMO2) { @('-IncludeLive') } else { @() }) },

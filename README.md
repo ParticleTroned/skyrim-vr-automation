@@ -7,6 +7,10 @@ optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
 
+- `tools/frustrum` — paired fast-path OFF/ON reloads for each save with the
+  unchanged gameft-sw timing, health and stack/wait recorder; see its
+  [protocol](tools/frustrum/README.md).
+
 - `tools/gameft-sw` — versioned save-load timing, CPU stack/wait recording,
   RC166 compatibility and offline tests; see its [protocol](tools/gameft-sw/README.md).
 

@@ -4,6 +4,10 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Package the maintained gameft-sw toolchain and the paired `frustrum` assay,
+  with discoverable skills, OFF/ON health evidence and unchanged statistics.
+  Refresh the local marketplace/cache identity; no game DLL change.
+
 - Document runtime-owned DevBench schema refresh, including NR Lighting
   preservation: load the matching CSX DLL before reloading the Codex host.
   Refresh the development marketplace package and cache identity.

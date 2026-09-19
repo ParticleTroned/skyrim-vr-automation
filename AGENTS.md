@@ -96,3 +96,10 @@
   would otherwise be lost or the implementation is blocked.
   Tasks report desires; they do not publish issues or edit automation source
   unless that work is explicitly in scope.
+
+- When the user invokes `depthc`, follow `tools/depthc/README.md` through
+  `skills/depthc/SKILL.md`. Preserve one load per selected save, the six-mode
+  depth-control matrix, fresh render/backend admission, 20-second holds and
+  final-ten-second statistics. This separate protocol does not change
+  `gameft-sw` or reload-paired `frustrum`. Present timing/health before
+  provenance and stack analysis; do not start an assay from a tooling request.

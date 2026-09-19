@@ -1,0 +1,16 @@
+#Requires -Version 7.0
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$SaveNumberText,
+    [switch]$DepthJobBackoff,
+    [string]$RunDirectory,
+    [string]$Controller = (Join-Path $PSScriptRoot '../devbench-control/Invoke-DevBenchControl.ps1'),
+    [Parameter(Mandatory)][string]$FpsVrCmd,
+    [ValidateRange(1, 65535)][int]$DevBenchPort = 8921,
+    [string]$WprPath,
+    [string]$RecorderValidationPath = (Join-Path $PSScriptRoot '../../build/gameft-sw/recorder-validation.json'),
+    [Parameter(Mandatory)][string]$ArchiveDirectory
+)
+$ErrorActionPreference = 'Stop'
+# Share the recorder, measurement schedule and calculations with gameft-sw.
+& (Join-Path $PSScriptRoot '../gameft-sw/Invoke-GameFtStackWait.ps1') @PSBoundParameters -FrustumPaired

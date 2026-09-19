@@ -51,17 +51,29 @@ try {
     $servers = @($mcp.mcpServers.PSObject.Properties)
     if ($servers.Count -ne 1 -or $servers[0].Name -ne 'devbench_vr') { throw 'DevBench MCP registration is missing or ambiguous.' }
     if ($servers[0].Value.type -ne 'http' -or $servers[0].Value.url -ne 'http://127.0.0.1:8921/mcp') { throw 'DevBench MCP endpoint is not the expected loopback server.' }
-    foreach ($skill in @('feedback-control', 'mo2-control', 'steamvr-null-hmd', 'devbench-control', 'coc-stability', 'simple-coc', 'simple-coc-5', 'simple-csm', 'renderscale-tuning-nvidia', 'renderscale-tuning-amd', 'static-coc', 'fidelstab', 'render-scale-qualification', 'profiler-control', 'shader-cache-control', 'perftune-upscaling', 'capture-interaction-control')) {
+    foreach ($skill in @('depthc', 'gameft-sw', 'frustrum', 'feedback-control', 'mo2-control', 'steamvr-null-hmd', 'devbench-control', 'coc-stability', 'simple-coc', 'simple-coc-5', 'simple-csm', 'renderscale-tuning-nvidia', 'renderscale-tuning-amd', 'static-coc', 'fidelstab', 'render-scale-qualification', 'profiler-control', 'shader-cache-control', 'perftune-upscaling', 'capture-interaction-control')) {
         if (-not (Test-Path -LiteralPath (Join-Path $rebuilt "skills\$skill\SKILL.md") -PathType Leaf)) { throw "Missing installed skill: $skill" }
     }
     if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Filter '*.local.json').Count -ne 0) { throw 'Distribution contains machine-local JSON.' }
     if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -File -Include '*.pyc', '*.pyo').Count -ne 0) { throw 'Distribution contains Python bytecode.' }
     if (@(Get-ChildItem -LiteralPath $rebuilt -Recurse -Directory -Force | Where-Object Name -Like '.fixture-refresh-*').Count -ne 0) { throw 'Distribution contains local fixture-refresh evidence.' }
 
+    Import-Module (Join-Path $rebuilt 'tools/gameft-sw/GameFtStackWait.psm1') -Force
+    $protocolHashes = Assert-GameFtScripts (Join-Path $rebuilt 'tools/gameft-sw/protocol')
+    if ($protocolHashes.Count -ne 3) { throw 'Packaged timing protocol is incomplete.' }
+
     $simulatedCache = Join-Path $fixture "cache\skyrim-vr-automation\$($manifest.version)"
     New-Item -ItemType Directory -Path (Split-Path -Parent $simulatedCache) -Force | Out-Null
     Copy-Item -LiteralPath $rebuilt -Destination $simulatedCache -Recurse
     foreach ($entryPoint in @(
+        'tools\depthc\Invoke-DepthC.ps1',
+        'tools\depthc\Show-DepthCComparison.ps1',
+        'tools\depthc\DepthC.psm1',
+        'tools\frustrum\Invoke-Frustrum.ps1',
+        'tools\frustrum\Show-FrustrumComparison.ps1',
+        'tools\frustrum\Frustrum.psm1',
+        'tools\gameft-sw\Invoke-GameFtStackWait.ps1',
+        'tools\gameft-sw\protocol\Invoke-SaveLoadTimingV2.ps1',
         'tools\modlist-control\Invoke-SkyrimVRModlist.ps1',
         'tools\doctor\Invoke-SkyrimVRAutomationDoctor.ps1',
         'tools\feedback-control\Invoke-AutomationFeedback.ps1',
