@@ -630,7 +630,7 @@ try {
         $procDumpCapture = Get-OwnedProcDumpCapture $owned.data
         $cancellation = Get-OwnedCancellation $owned.data
         $ownedTarget = Get-OwnedTarget $owned.data
-        $targets = if ($ownedTarget) { @($ownedTarget) } else { @() }
+        $targets = @(if ($ownedTarget) { $ownedTarget })
         $dumps = @(Get-ChildItem -LiteralPath (
             [string]$owned.data.captureDirectory
         ) -Filter '*.dmp' -File -ErrorAction SilentlyContinue |
