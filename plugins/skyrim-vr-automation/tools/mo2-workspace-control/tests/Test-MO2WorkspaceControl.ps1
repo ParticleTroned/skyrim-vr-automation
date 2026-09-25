@@ -65,7 +65,7 @@ try {
         buildId = 'workspace-build-fixture'
         artifact = [pscustomobject]@{
             fileName = 'CommunityShaders.dll'
-            sha256 = (Get-FileHash -LiteralPath $communityShadersPluginPath -Algorithm SHA256).Hash
+            sha256 = (Get-FileHash -LiteralPath $communityShadersPluginPath -Algorithm SHA256).Hash.ToLowerInvariant()
             sizeBytes = $communityShadersPluginBytes.Length
         }
         identity = [pscustomobject]@{ shaderCache = [pscustomobject]@{ abiId = 'fixture-v1' } }

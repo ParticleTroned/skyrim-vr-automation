@@ -60,6 +60,11 @@ Validation also resolves a registered executable stored under MO2's `mods`
 directory back to its owning mod. Launch is blocked when that exact mod is
 disabled, missing, or ambiguous in the requested profile.
 
+Community Shaders artifact verification accepts uppercase, lowercase, and
+mixed-case SHA-256 text in `CSX.BuildManifest.json`. The digest must still be
+exactly 64 hexadecimal characters and match the DLL; a declared byte size
+must also match. Verification does not rewrite the manifest.
+
 DevBench, SKSE-plugin, and other extension-dependent sessions must pass
 `-RequireSKSE` to both `validate` and `prepare`. The controller identifies
 `skse_loader.exe`/`sksevr_loader.exe` as SKSE-capable and rejects a registered
