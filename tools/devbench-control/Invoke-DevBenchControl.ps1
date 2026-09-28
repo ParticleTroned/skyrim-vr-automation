@@ -734,7 +734,8 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
             }
             if ($listenerPid -ne [int]$expectedIdentity.listenerPid) { $errors.Add("Expected listener PID $($expectedIdentity.listenerPid) differs from observed PID $listenerPid.") }
             if ($processIdentity -and -not [string]::Equals([string]$processIdentity.path, [string]$expectedIdentity.processPath, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('Expected listener process path differs from the observed process path.') }
-            if ($processIdentity -and [string]$processIdentity.startTimeUtc -cne [string]$expectedIdentity.processStartTimeUtc) { $errors.Add('Expected listener process start time differs from the observed process start time.') }
+            $expectedStart = ConvertTo-DevBenchIdentityTimestamp $expectedIdentity.processStartTimeUtc
+            if ($processIdentity -and (ConvertTo-DevBenchIdentityTimestamp $processIdentity.startTimeUtc) -cne $expectedStart) { $errors.Add('Expected listener process start time differs from the observed process start time.') }
             if ([string]$actualBuildId -cne [string]$expectedIdentity.buildId) { $errors.Add('Expected CSX build ID differs from the observed build ID.') }
             if ($artifact -and -not [string]::Equals([string]$artifact.path, [string]$expectedIdentity.artifactPath, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('Expected artifact path differs from the observed artifact path.') }
             if ($artifact -and [string]$artifact.sha256 -cne [string]$expectedIdentity.artifactSha256) { $errors.Add('Expected artifact SHA-256 differs from the observed artifact SHA-256.') }

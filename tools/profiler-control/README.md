@@ -10,6 +10,10 @@ summary, timer CSV, DevBench invocation journals, and recovery receipt.
 Only one capture may own a given runtime metadata target at once. The collector
 uses a deterministic, bounded lease and verifies the complete DevBench process,
 start time, build, and deployed artifact identity on every profiler response.
+Start times use invariant UTC ISO 8601 with all seven fractional digits,
+including after JSON readers materialize them as date objects. The controller
+compares exact normalized timestamps. Legacy culture-formatted journal values
+cannot prove process continuity and fail closed.
 If that identity changes, it refuses to mix samples or mutate the replacement
 runtime. Each raw sample carries the verified identity fingerprint. The lease's
 deterministic control directory also owns a write-ahead transaction journal. A

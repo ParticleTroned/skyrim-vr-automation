@@ -2,6 +2,24 @@
 
 Set-StrictMode -Version Latest
 
+function ConvertTo-DevBenchIdentityTimestamp {
+    [CmdletBinding()]
+    param($Value)
+
+    # JSON readers may materialize timestamps; string casts lose fractional ticks.
+    if ($Value -is [DateTimeOffset]) { return $Value.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [DateTime] -and $Value.Kind -ne [DateTimeKind]::Unspecified) {
+        return $Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [string] -and $Value -cmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$') {
+        $timestamp = [DateTimeOffset]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None)
+        return $timestamp.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    throw 'Runtime identity timestamp requires an ISO 8601 timezone and preserves all fractional ticks; ambiguous or lossy values are invalid.'
+}
+
+Export-ModuleMember -Function ConvertTo-DevBenchIdentityTimestamp
+
 function Get-DevBenchSemanticStatus {
     [CmdletBinding()]
     param([AllowEmptyCollection()][object[]]$Content)

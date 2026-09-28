@@ -176,7 +176,8 @@ $action = ($ArgumentsJson | ConvertFrom-Json).action
 $listenerPid = if (-not [string]::IsNullOrWhiteSpace($env:CSX_PROFILER_TEST_DRIFT_AT_CALL) -and [int]$env:CSX_PROFILER_TEST_DRIFT_AT_CALL -eq [int]$state.calls) { 456 } else { 123 }
 if (-not [string]::IsNullOrWhiteSpace($ExpectedRuntimeIdentityJson)) {
     $expected = $ExpectedRuntimeIdentityJson | ConvertFrom-Json
-    if ([int]$expected.listenerPid -ne $listenerPid) {
+    if ([int]$expected.listenerPid -ne $listenerPid -or
+        (ConvertTo-DevBenchIdentityTimestamp $expected.processStartTimeUtc) -cne '2026-09-28T13:30:13.0821265Z') {
         $state.rejectedBeforeMutation = $true
         $state | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:CSX_PROFILER_TEST_STATE -Encoding utf8
         [pscustomobject]@{ok=$false;errors=@('Expected runtime identity changed before dispatch.')} | ConvertTo-Json -Compress
@@ -209,7 +210,7 @@ if ($RequirePerformanceNeutral) {
 $optionalMode = [string]$env:CSX_PROFILER_TEST_RENDER_SCALE_OPTIONAL_MODE
 $optionalUnavailable = $isRenderScale -and $optionalMode -in @('absent', 'unsupported')
 $semantic = if ($optionalUnavailable) { [pscustomobject]@{known=$true;ok=$false;outcome=$(if ($optionalMode -eq 'absent') {'tool-unavailable'} else {'unsupported'});codes=@($(if ($optionalMode -eq 'absent') {'tool_unavailable'} else {'unsupported'}));states=@()} } else { $null }
-[pscustomobject]@{ok=(-not $optionalUnavailable);state=$(if ($optionalUnavailable -and $optionalMode -eq 'absent') {'tool-unavailable'} else {'completed'});semantic=$semantic;runtimeIdentity=[pscustomobject]@{complete=$true;verified=$true;listenerPid=$listenerPid;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-08-28T00:00:00Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");sessionCleanup=[pscustomobject]@{attempted=$true;ok=$true;state='all_closed'};data=[pscustomobject]$data;errors=$(if ($optionalUnavailable) {@("render-scale $optionalMode")} else {@()})} | ConvertTo-Json -Depth 20 -Compress
+[pscustomobject]@{ok=(-not $optionalUnavailable);state=$(if ($optionalUnavailable -and $optionalMode -eq 'absent') {'tool-unavailable'} else {'completed'});semantic=$semantic;runtimeIdentity=[pscustomobject]@{complete=$true;verified=$true;listenerPid=$listenerPid;process=[pscustomobject]@{path='C:\Fixture\SkyrimVR.exe';startTimeUtc='2026-09-28T13:30:13.0821265Z'};build=[pscustomobject]@{buildId='fixture'};artifact=[pscustomobject]@{path='C:\Fixture\CommunityShaders.dll';sha256='AA'}};invocationEvidencePath=(Join-Path $EvidenceDirectory "$EvidenceLabel.json");sessionCleanup=[pscustomobject]@{attempted=$true;ok=$true;state='all_closed'};data=[pscustomobject]$data;errors=$(if ($optionalUnavailable) {@("render-scale $optionalMode")} else {@()})} | ConvertTo-Json -Depth 20 -Compress
 '@, [Text.UTF8Encoding]::new($false))
     $env:CSX_PROFILER_TEST_STATE = $statePath
     $env:CSX_PROFILER_CONTROL_ROOT = Join-Path $resolvedTestRoot 'profiler-control'

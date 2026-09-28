@@ -10,6 +10,25 @@ $passes = [Collections.Generic.List[string]]::new()
 $failures = [Collections.Generic.List[string]]::new()
 function Assert-Test([bool]$Condition, [string]$Message) { if ($Condition) { $passes.Add($Message) } else { $failures.Add($Message) } }
 
+$identityTimestamp = '2026-09-28T13:30:13.0821265Z'
+$savedCulture = [Globalization.CultureInfo]::CurrentCulture
+try {
+    foreach ($culture in @('en-US', 'de-DE')) {
+        [Globalization.CultureInfo]::CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo($culture)
+        $materialized = ('{"start":"' + $identityTimestamp + '"}') | ConvertFrom-Json
+        Assert-Test ((ConvertTo-DevBenchIdentityTimestamp $materialized.start) -ceq $identityTimestamp) "JSON identity timestamp preserves every tick under $culture"
+        $offset = [DateTimeOffset]::Parse('2026-09-28T15:30:13.0821265+02:00')
+        Assert-Test ((ConvertTo-DevBenchIdentityTimestamp $offset) -ceq $identityTimestamp -and (ConvertTo-DevBenchIdentityTimestamp $offset.ToString('o')) -ceq $identityTimestamp) "offset identity timestamps normalize without losing precision under $culture"
+    }
+} finally { [Globalization.CultureInfo]::CurrentCulture = $savedCulture }
+Assert-Test ((ConvertTo-DevBenchIdentityTimestamp '2026-09-28T13:30:13.0821266Z') -cne $identityTimestamp) 'one-tick process replacement remains detectable'
+Assert-Test ((ConvertTo-DevBenchIdentityTimestamp '2026-09-28T13:30:13Z') -ceq '2026-09-28T13:30:13.0000000Z') 'whole-second ISO identity remains valid'
+foreach ($invalid in @($null, '', '09/28/2026 13:30:13', '2026-09-28T13:30:13', '2026-09-28T13:30:13.08212651Z', '2026-99-28T13:30:13Z', [DateTime]::SpecifyKind([DateTime]::Now, [DateTimeKind]::Unspecified))) {
+    $rejected = $false
+    try { ConvertTo-DevBenchIdentityTimestamp $invalid | Out-Null } catch { $rejected = $true }
+    Assert-Test $rejected 'ambiguous, malformed or excess-precision identity fails closed'
+}
+
 $success = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'success'; value = 0 } })
 Assert-Test ($success.known -and $success.ok) 'semantic status recognizes a successful API payload'
 $conflict = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'idempotency_conflict'; value = 12 } })
