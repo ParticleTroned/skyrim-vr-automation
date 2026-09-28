@@ -181,8 +181,99 @@ function Test-DevBenchReadOnlyRequest {
     }
     if ($ToolName -eq 'menu') { return $action -eq 'list' }
     if ($ToolName -eq 'record') { return $action -eq 'status' }
-    if ($ToolName -eq 'input') { return $action -in @('observe', 'status') }
+    if ($ToolName -eq 'input') { return $action -in @('observe', 'status', 'capabilities') }
+    if ($ToolName -eq 'recordings') { return $action -eq 'list' }
     return $false
+}
+
+function Get-DevBenchActionContract {
+    param([string]$ToolName, [Collections.IDictionary]$Arguments, $Payload)
+
+    $action = if ($Arguments.Contains('action')) { [string]$Arguments['action'] } else { '' }
+    $contract = switch ("$ToolName/$action") {
+        'input/capabilities' { 'input-capabilities' }
+        'recordings/list' { 'recordings-list' }
+        'record/stop' { 'record-stop' }
+        'communityshaders.neural_rendering/foveation_configure' { 'foveation-settings-transition' }
+        default { return $null }
+    }
+    $reasons = [Collections.Generic.List[string]]::new()
+    $evidence = [Collections.Generic.List[string]]::new()
+    $errorValue = Get-DevBenchTelemetryMember $Payload 'error'
+    if ($null -ne $errorValue) { $reasons.Add('content.error reports a service error') }
+    $errorsValue = Get-DevBenchTelemetryMember $Payload 'errors'
+    if ($null -ne $errorsValue -and @($errorsValue).Count -gt 0) { $reasons.Add('content.errors reports service errors') }
+    $reportedAction = Get-DevBenchTelemetryMember $Payload 'action'
+    if ($null -ne $reportedAction -and [string]$reportedAction -cne $action) { $reasons.Add('content.action differs from the requested action') }
+
+    switch ($contract) {
+        'input-capabilities' {
+            $identity = Get-DevBenchTelemetryMember $Payload 'contract'
+            $version = Get-DevBenchTelemetryMember $identity 'version'
+            $capabilities = Get-DevBenchTelemetryMember $Payload 'capabilities'
+            if ((Get-DevBenchTelemetryMember $identity 'name') -cne 'devbench.input' -or
+                (Get-DevBenchTelemetryMember $version 'major') -ne 2 -or $capabilities -isnot [pscustomobject] -or
+                @($capabilities.PSObject.Properties).Count -eq 0) { $reasons.Add('input capabilities contract is missing or unsupported') }
+            else {
+                foreach ($device in $capabilities.PSObject.Properties) {
+                    $available = Get-DevBenchTelemetryMember $device.Value 'available'
+                    $actions = if ($device.Value -is [pscustomobject]) { $device.Value.PSObject.Properties['actions'] } else { $null }
+                    if ($available -isnot [bool] -or -not $actions -or $actions.Value -isnot [array] -or
+                        @($actions.Value | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+                        $reasons.Add("capabilities.$($device.Name) lacks typed availability/actions")
+                    }
+                }
+            }
+            $evidence.Add('content.contract'); $evidence.Add('content.capabilities')
+        }
+        'recordings-list' {
+            $count = Get-DevBenchTelemetryMember $Payload 'count'
+            $directory = Get-DevBenchTelemetryMember $Payload 'dir'
+            $entries = $Payload.PSObject.Properties['recordings']
+            if (($count -isnot [int] -and $count -isnot [long]) -or $count -lt 0 -or
+                $directory -isnot [string] -or [string]::IsNullOrWhiteSpace($directory) -or
+                -not $entries -or $entries.Value -isnot [array] -or $entries.Value.Count -ne $count) {
+                $reasons.Add('recordings list requires a directory and an array matching its nonnegative count')
+            } else {
+                foreach ($entry in $entries.Value) {
+                    $file = Get-DevBenchTelemetryMember $entry 'file'
+                    if ($file -isnot [string] -or [string]::IsNullOrWhiteSpace($file)) { $reasons.Add('recordings entry lacks its file identity') }
+                }
+            }
+            $evidence.Add('content.count'); $evidence.Add('content.dir'); $evidence.Add('content.recordings')
+        }
+        'record-stop' {
+            $path = Get-DevBenchTelemetryMember $Payload 'path'
+            $meta = Get-DevBenchTelemetryMember $Payload 'meta'
+            if ($reportedAction -cne 'stop' -or $path -isnot [string] -or [string]::IsNullOrWhiteSpace($path) -or $meta -isnot [pscustomobject]) {
+                $reasons.Add('record stop requires its action, saved path and metadata')
+            }
+            $recording = Get-DevBenchTelemetryMember $Payload 'recording'
+            if ($null -ne $recording -and ($recording -isnot [bool] -or $recording)) { $reasons.Add('record stop does not report an inactive recorder') }
+            if ($Arguments.Contains('expectedCorrelationId') -and
+                (Get-DevBenchTelemetryMember $meta 'correlationId') -cne [string]$Arguments['expectedCorrelationId']) {
+                $reasons.Add('content.meta.correlationId differs from the requested recording owner')
+            }
+            $evidence.Add('content.action'); $evidence.Add('content.path'); $evidence.Add('content.meta')
+        }
+        'foveation-settings-transition' {
+            $transition = Get-DevBenchTelemetryMember $Payload 'transitionSucceeded'
+            $changed = Get-DevBenchTelemetryMember $Payload 'settingsChanged'
+            $noOp = Get-DevBenchTelemetryMember $Payload 'noOp'
+            $execution = Get-DevBenchTelemetryMember $Payload 'executionClaimed'
+            $nr = Get-DevBenchTelemetryMember $Payload 'neuralRendering'
+            $foveation = Get-DevBenchTelemetryMember $nr 'foveation'
+            $settings = Get-DevBenchTelemetryMember $foveation 'settings'
+            if ($reportedAction -cne $action -or $transition -isnot [bool] -or -not $transition -or
+                $changed -isnot [bool] -or $noOp -isnot [bool] -or $changed -eq $noOp -or
+                $execution -isnot [bool] -or $execution -or $settings -isnot [pscustomobject] -or
+                @($settings.PSObject.Properties).Count -eq 0) {
+                $reasons.Add('foveation requires a successful settings transition or no-op with settings evidence')
+            }
+            $evidence.Add('content.transitionSucceeded'); $evidence.Add('content.neuralRendering.foveation.settings')
+        }
+    }
+    return [pscustomobject]@{ name = $contract; reasons = @($reasons); evidence = @($evidence) }
 }
 
 function Get-DevBenchCallSemanticStatus {
@@ -194,12 +285,23 @@ function Get-DevBenchCallSemanticStatus {
     )
 
     $semantic = Get-DevBenchSemanticStatus -Content $Content
-    if ($semantic.known) { return $semantic }
+    if ($semantic.known -and -not $semantic.ok) { return $semantic }
     $payloads = @($Content)
     if ($payloads.Count -ne 1 -or $null -eq $payloads[0] -or $payloads[0] -is [string] -or $payloads[0] -is [ValueType]) {
         return $semantic
     }
     $payload = $payloads[0]
+
+    $contract = Get-DevBenchActionContract -ToolName $ToolName -Arguments $Arguments -Payload $payload
+    if ($null -ne $contract) {
+        $semantic.known = $true
+        $semantic.ok = $contract.reasons.Count -eq 0
+        $semantic.outcome = $contract.name + $(if ($semantic.ok) { '-satisfied' } else { '-failed' })
+        $semantic.reasons = @($semantic.reasons) + @($contract.reasons)
+        $semantic.explicitOutcomeEvidence = @($semantic.explicitOutcomeEvidence) + @($contract.evidence)
+        return $semantic
+    }
+    if ($semantic.known) { return $semantic }
 
     if ($ToolName -eq 'record' -and $Arguments.Contains('action') -and [string]$Arguments['action'] -eq 'start') {
         $actionProperty = $payload.PSObject.Properties['action']

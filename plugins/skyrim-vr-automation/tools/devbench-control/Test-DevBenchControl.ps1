@@ -29,6 +29,64 @@ foreach ($invalid in @($null, '', '09/28/2026 13:30:13', '2026-09-28T13:30:13', 
     Assert-Test $rejected 'ambiguous, malformed or excess-precision identity fails closed'
 }
 
+$capabilitiesPayload = '{"contract":{"name":"devbench.input","version":{"major":2,"minor":0}},"capabilities":{"vrTrackedSet":{"available":false,"actions":["status","observe"]}}}' | ConvertFrom-Json
+$stopPayload = '{"action":"stop","path":"recording.json","meta":{"correlationId":"owned"},"limitReached":false}' | ConvertFrom-Json
+$listPayload = '{"count":1,"dir":"recordings","recordings":[{"file":"recording.json"}]}' | ConvertFrom-Json
+$foveationPayload = '{"action":"foveation_configure","transitionSucceeded":true,"settingsChanged":true,"noOp":false,"executionClaimed":false,"neuralRendering":{"foveation":{"settings":{"fovOnlyCenterScale":0.95}}}}' | ConvertFrom-Json
+$actionCases = @(
+    @{tool='input'; args=@{action='capabilities'}; payload=$capabilitiesPayload},
+    @{tool='record'; args=@{action='stop';expectedCorrelationId='owned'}; payload=$stopPayload},
+    @{tool='recordings'; args=@{action='list'}; payload=$listPayload},
+    @{tool='communityshaders.neural_rendering'; args=@{action='foveation_configure';fovOnlyCenterScale=0.95}; payload=$foveationPayload}
+)
+foreach ($case in $actionCases) {
+    $accepted = Get-DevBenchCallSemanticStatus -ToolName $case.tool -Arguments $case.args -Content @($case.payload)
+    Assert-Test ($accepted.known -and $accepted.ok) "explicit $($case.tool)/$($case.args.action) response is recognized without a generic ok"
+    foreach ($errorField in @('error', 'errors', 'ok')) {
+        $bad = $case.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $value = switch ($errorField) { 'error' {'service failed'}; 'errors' {,@('service failed')}; 'ok' {$false} }
+        $bad | Add-Member -NotePropertyName $errorField -NotePropertyValue $value
+        $rejected = Get-DevBenchCallSemanticStatus -ToolName $case.tool -Arguments $case.args -Content @($bad)
+        Assert-Test ($rejected.known -and -not $rejected.ok) "$($case.tool) explicit $errorField failure is never promoted"
+    }
+    $incomplete = Get-DevBenchCallSemanticStatus -ToolName $case.tool -Arguments $case.args -Content @([pscustomobject]@{})
+    Assert-Test ($incomplete.known -and -not $incomplete.ok) "$($case.tool) incomplete contract fails closed"
+    $wrongAction = Get-DevBenchCallSemanticStatus -ToolName $case.tool -Arguments @{action='unrecognized'} -Content @($case.payload)
+    Assert-Test (-not $wrongAction.known) "$($case.tool) adapter is limited to its exact action"
+}
+Assert-Test ((Test-DevBenchReadOnlyRequest input @{action='capabilities'}) -and (Test-DevBenchReadOnlyRequest recordings @{action='list'}) -and -not (Test-DevBenchReadOnlyRequest recordings @{action='delete'})) 'capabilities and recording inventory extend only the read-only allowlist'
+$foreignStop = Get-DevBenchCallSemanticStatus record @{action='stop';expectedCorrelationId='other'} @($stopPayload)
+Assert-Test ($foreignStop.known -and -not $foreignStop.ok) 'record stop requires the exact recording owner'
+$badStop = $stopPayload | ConvertTo-Json | ConvertFrom-Json
+$badStop.action = 'start'
+$badStop | Add-Member -NotePropertyName recording -NotePropertyValue $true
+Assert-Test (-not (Get-DevBenchCallSemanticStatus record @{action='stop'} @($badStop)).ok) 'a running or wrong-action receipt cannot prove record stop'
+$emptyList = '{"count":0,"dir":"recordings","recordings":[]}' | ConvertFrom-Json
+Assert-Test ((Get-DevBenchCallSemanticStatus recordings @{action='list'} @($emptyList)).ok) 'an empty recording inventory is a valid read result'
+$listPayload.count = 2
+Assert-Test (-not (Get-DevBenchCallSemanticStatus recordings @{action='list'} @($listPayload)).ok) 'recording inventory count mismatch fails closed'
+$listPayload.count = 1
+$listPayload.recordings[0].file = ''
+Assert-Test (-not (Get-DevBenchCallSemanticStatus recordings @{action='list'} @($listPayload)).ok) 'recording inventory requires each file identity'
+$capabilitiesPayload.capabilities.vrTrackedSet.available = 'false'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus input @{action='capabilities'} @($capabilitiesPayload)).ok) 'capability availability must be a boolean'
+$capabilitiesPayload.capabilities.vrTrackedSet.available = $false
+$capabilitiesPayload.capabilities.vrTrackedSet.actions = 'observe'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus input @{action='capabilities'} @($capabilitiesPayload)).ok) 'capability actions must be an array, not a scalar'
+$capabilitiesPayload.capabilities.vrTrackedSet.actions = @()
+Assert-Test ((Get-DevBenchCallSemanticStatus input @{action='capabilities'} @($capabilitiesPayload)).ok) 'unavailable device may report an empty action array'
+$capabilitiesPayload.contract.name = 'unrecognized.input'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus input @{action='capabilities'} @($capabilitiesPayload)).ok) 'unrecognized input contract is rejected'
+$foveationPayload.settingsChanged = $false
+$foveationPayload.noOp = $true
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.neural_rendering @{action='foveation_configure'} @($foveationPayload)).ok) 'FOV no-op is accepted as a settings result without claiming rendering'
+$foveationPayload.transitionSucceeded = $false
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.neural_rendering @{action='foveation_configure'} @($foveationPayload)).ok) 'failed FOV transitions remain failures'
+$foveationPayload.transitionSucceeded = 'true'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.neural_rendering @{action='foveation_configure'} @($foveationPayload)).ok) 'FOV success requires a typed transition result'
+$queuedConsole = Get-DevBenchCallSemanticStatus console @{action='exec'} @([pscustomobject]@{queued=$true;command='coc Example'})
+Assert-Test (-not $queuedConsole.known) 'queued console dispatch still does not establish completed scene transition'
+
 $success = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'success'; value = 0 } })
 Assert-Test ($success.known -and $success.ok) 'semantic status recognizes a successful API payload'
 $conflict = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'idempotency_conflict'; value = 12 } })

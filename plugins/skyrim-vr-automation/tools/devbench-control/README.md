@@ -54,14 +54,21 @@ one evidence record.
 
 Mutation-capable calls require that complete identity. The controller keeps a
 strict, action-sensitive allowlist for read-only inspection: built-in
-`inspect` kinds, `menu list`, `record status`, and tracked-input
-observation/status. Those calls may proceed when listener and process identity
+`inspect` kinds, `menu list`, `record status`, `recordings list`, and input
+capabilities/observation/status. Those calls may proceed when listener and process identity
 are verified even if build or deployed-artifact provenance is unavailable.
 They do not broaden the mutation boundary.
 
 `ok` reflects transport success unless `-RequireSuccess` is supplied. Every
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
+Narrow adapters recognize input capability contracts, recording inventories,
+correlated recorder-stop receipts and NR `foveation_configure` settings
+transitions without requiring a generic `ok`. Missing/malformed fields,
+service errors and mismatched recording owners still fail. FOV acceptance
+proves the settings transition only; callers must observe a subsequent safe
+frame to establish rendering. Recording paths identify saved output but do
+not verify its physical contents. Queued console work remains unverified.
 The `communityshaders.profiler` bridge has a contract-specific adapter because
 its legacy response does not carry a generic top-level `ok`: `status` must
 contain a frame-bearing status object, while `enable` and `disable` must report
