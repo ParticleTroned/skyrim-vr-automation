@@ -96,6 +96,11 @@ and verifies its request identity. Image metadata comes from each committed
 artifact's `actual` object; source and acquired frame come from the child's
 `actual.acquisition`. A scheduled frame is retained separately. Source or
 encoding mismatches suppress image submission and preserve the offending receipt.
+The sequence container's committed artifacts are its manifest and optional
+preview, not acquired images; latest-frame selection skips those packaging
+artifacts and validates the child images. A child never borrows acquisition
+metadata from the container or a sibling. Standalone captures still use their
+own receipt's acquisition.
 This observation pointer does not replace an assay's full stereo-pair,
 dimension, hash, provenance and image-quality validation.
 

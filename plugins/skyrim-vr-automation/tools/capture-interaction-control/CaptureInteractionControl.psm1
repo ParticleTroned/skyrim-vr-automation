@@ -139,7 +139,9 @@ function Get-CaptureInteractionLatestFrame {
     function VisitArtifact($Current) {
         if ($null -eq $Current -or $Current -is [string] -or $Current -is [ValueType]) { return }
         $acquisition = Get-CaptureInteractionProperty (Get-CaptureInteractionProperty $Current 'actual') 'acquisition'
-        foreach ($artifact in @(Get-CaptureInteractionProperty $Current 'artifacts' @())) {
+        # Sequence artifacts package the run; only child receipts own acquired images.
+        $artifacts = if ((Get-CaptureInteractionProperty $Current 'kind') -eq 'sequence') { @() } else { @(Get-CaptureInteractionProperty $Current 'artifacts' @()) }
+        foreach ($artifact in $artifacts) {
             if ([bool](Get-CaptureInteractionProperty $artifact 'committed' $false)) {
                 $actual = Get-CaptureInteractionProperty $artifact 'actual'
                 if ([string](Get-CaptureInteractionProperty $acquisition 'sourceKind') -ne 'hmd_submission') {

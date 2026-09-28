@@ -30,12 +30,29 @@ try {
     $actualLeft = [pscustomobject]@{ view='left_eye'; format='png'; colourContract='sdr_srgb'; width=100; height=100 }
     $actualRight = [pscustomobject]@{ view='right_eye'; format='png'; colourContract='sdr_srgb'; width=100; height=100 }
     $acquisition = [pscustomobject]@{ acquisition=[pscustomobject]@{ sourceKind='hmd_submission'; engineFrame=25; compositorCycle=40 } }
-    $receipt = [pscustomobject]@{ requestId='req'; state='running'; children=@(
+    $receipt = [pscustomobject]@{ requestId='req'; kind='sequence'; state='running'; actual=[pscustomobject]@{};
+        artifacts=@([pscustomobject]@{path='sequence.json';committed=$true},[pscustomobject]@{path='preview.mp4';committed=$true}); children=@(
         [pscustomobject]@{ ordinal=1; actual=$acquisition; scheduledEngineFrame=10; artifacts=@([pscustomobject]@{ actual=$actualLeft;path='old.png';committed=$true }) },
         [pscustomobject]@{ ordinal=2; actual=$acquisition; scheduledEngineFrame=20; artifacts=@([pscustomobject]@{ actual=$actualRight;path='right.png';committed=$true },[pscustomobject]@{ actual=$actualLeft;path='latest.png';committed=$true }) }
     ) }
     $latest = Get-CaptureInteractionLatestFrame -Receipt $receipt -PreferredView left_eye
     Assert-Test ($latest.path -eq 'latest.png' -and $latest.ordinal -eq 2 -and $latest.engineFrame -eq 25 -and $latest.scheduledEngineFrame -eq 20) 'latest-frame selection uses nested actual metadata and acquired frame rather than scheduled frame'
+    $single = [pscustomobject]@{ requestId='single'; kind='capture'; state='completed'; actual=$acquisition;
+        artifacts=@([pscustomobject]@{actual=$actualLeft;path='single.png';committed=$true}) }
+    Assert-Test ((Get-CaptureInteractionLatestFrame $single).path -eq 'single.png') 'standalone capture retains its own acquisition metadata'
+    $containerOnly = [pscustomobject]@{ requestId='empty'; kind='sequence'; artifacts=$receipt.artifacts; children=@() }
+    Assert-Test ($null -eq (Get-CaptureInteractionLatestFrame $containerOnly)) 'packaging alone cannot be submitted as a frame'
+    $missingChildSource = $receipt | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $missingChildSource.actual = $acquisition
+    $missingChildSource.children[1].actual = [pscustomobject]@{}
+    $rejectedChild = $false
+    try { $null = Get-CaptureInteractionLatestFrame $missingChildSource } catch { $rejectedChild = $true }
+    Assert-Test $rejectedChild 'a child cannot borrow acquisition evidence from its parent or sibling'
+    $badEncoding = $single | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $badEncoding.artifacts[0].actual.format = 'jpeg'
+    $rejectedEncoding = $false
+    try { $null = Get-CaptureInteractionLatestFrame $badEncoding } catch { $rejectedEncoding = $true }
+    Assert-Test $rejectedEncoding 'non-PNG capture artifacts remain rejected'
     $partialReceipt = [pscustomobject]@{ requestId='partial'; state='running'; children=@(
         [pscustomobject]@{ ordinal=2; actual=$acquisition; scheduledEngineFrame=20; artifacts=@([pscustomobject]@{ actual=$actualLeft;path='stale-left.png';committed=$true }) },
         [pscustomobject]@{ ordinal=3; actual=$acquisition; scheduledEngineFrame=30; artifacts=@([pscustomobject]@{ actual=$actualRight;path='current-right.png';committed=$true }) }
@@ -113,6 +130,17 @@ try {
     $env:CAPTURE_INTERACTION_SCENARIO = 'interrupted'
     $failed = & $entry act -SessionPath $testSession.statePath -ActionName accept -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
     Assert-Test (-not $failed.ok -and $failed.data.vrAction.state -eq 'restored' -and -not $failed.data.vrAction.terminal.lastCompletion.completed) 'restored interrupted input is retained as a failed action'
+    $null = & $entry stop -SessionPath $testSession.statePath -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit
+
+    $testSession = Start-FixtureSession 'manifest-owner' 'sequence'
+    $fakeState = Get-Content -LiteralPath (Join-Path $root 'fake-state.json') -Raw | ConvertFrom-Json -Depth 80
+    $manifest = Get-Content -LiteralPath $fakeState.manifestPath -Raw | ConvertFrom-Json -Depth 80
+    $manifest.requestId = 'foreign-request'
+    $manifest | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $fakeState.manifestPath -Encoding utf8
+    $foreignManifest = & $entry observe -SessionPath $testSession.statePath -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+    Assert-Test (-not $foreignManifest.ok -and -not $foreignManifest.data.observation.frameSubmission -and $foreignManifest.errors[0] -match 'identity mismatch') 'foreign manifest cannot supply a child image to this request'
+    $manifest.requestId = 'req-1'
+    $manifest | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $fakeState.manifestPath -Encoding utf8
     $null = & $entry stop -SessionPath $testSession.statePath -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit
 
     $testSession = Start-FixtureSession 'record-limit'
