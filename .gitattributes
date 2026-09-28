@@ -7,3 +7,5 @@
 # Exact protocol hashes must survive checkout on every platform.
 /tools/gameft-sw/protocol/*.ps1 text eol=lf
 /tools/gameft-sw/CpuStackWait.wprp text eol=lf
+/plugins/skyrim-vr-automation/tools/gameft-sw/protocol/*.ps1 text eol=lf
+/plugins/skyrim-vr-automation/tools/gameft-sw/CpuStackWait.wprp text eol=lf
