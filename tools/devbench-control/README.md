@@ -90,6 +90,27 @@ rejects the result if the probe became active or the epoch changed. Legacy or
 unproven status fails closed. The guard never disarms the probe; that is a
 separate runtime mutation requiring its own authorization.
 
+For direct MCP, import `DevBenchControl.psm1` offline and pass the parsed,
+unwrapped payloads from adjacent `inspect kind=state` and
+`inspect kind=registrants` calls to `Get-DevBenchDirectPerformanceGuard`
+with `-Runtime` and `-Registrants`. These helpers perform no live I/O.
+DevBench's C-ABI registration ledger is append-only for the process lifetime.
+A complete fresh ledger with neither standalone owner nor probe proves
+`applicable: false`, `neutral: true`, with a null performance epoch. An absent
+name in a cached/abbreviated callable catalog is insufficient. Preserve the
+raw responses and the normal build/process identity checks with each guard.
+
+If registered, call the exact typed temporal-probe status tool and supply its
+parsed result as `-ProbeContent`; unavailable, legacy, ambiguous or physically
+unproven status fails closed. Repeat the direct inspection before and after
+each measured window, retaining the initial guard across the whole capture.
+Use `Test-DevBenchPerformanceWindow -Before ... -After ...`: it rejects
+registration, process identity, frame rollback and ownership epoch changes.
+Do not dispatch an unavailable probe through a generic scenario or open a
+second transport. The guard qualifies only the standalone temporal probe;
+other active instrumentation, including lifetime-tracer hooks, remains a
+separate limitation on performance-neutral comparisons.
+
 The exact Skyrim VR console command `tfc 1` is denied wherever it appears in a
 tool argument tree because it has a confirmed player-camera null-write crash
 path under null-HMD automation. Prefer a naturally stationary scene for

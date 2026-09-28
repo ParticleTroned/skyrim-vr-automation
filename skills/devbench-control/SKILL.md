@@ -74,10 +74,17 @@ or construct HTTP or MCP requests ad hoc.
 11. Every timing, frame-rate, CPU, or GPU measurement on the bundled lane must
     pass `-RequirePerformanceNeutral`. The controller queries the registered
     standalone temporal-probe owner and rejects an unproven or changed epoch.
-    On the direct lane, apply the equivalent explicit before/after check for
-    `performanceDistorted: false`, `physicalStateKnown: true`, and a stable
-    ownership epoch. Never disarm the probe unless the user separately
-    authorized that mutation.
+    On the direct lane, preserve fresh `inspect kind=state` and
+    `inspect kind=registrants` payloads before/after the window and use the
+    offline `Get-DevBenchDirectPerformanceGuard` and
+    `Test-DevBenchPerformanceWindow` helpers described in the controller
+    README. A proven absent standalone owner/probe is not applicable; a
+    missing callable name alone does not prove absence. A registered probe
+    requires its exact typed status tool, `performanceDistorted: false`,
+    `physicalStateKnown: true`, and a stable ownership epoch. Missing or
+    inconsistent evidence fails closed. Never disarm the probe unless the
+    user separately authorized that mutation. This guard covers the temporal
+    probe only; other active instrumentation must be reported separately.
 12. Preserve the controller's `sessionCleanup` receipt with the command result.
    Cleanup is successful when it reports `closed`, `already_absent`, or
    `not_opened`; a cleanup failure is diagnostic and never changes the primary

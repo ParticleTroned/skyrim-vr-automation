@@ -24,11 +24,16 @@ comparing data. Use these entry points:
 3. Supply `ContextJson` with the exact environment and treatment. A capture
    enables the CSX profiler, so that mutation requires the user's run or
    measurement authority; a request to review existing data does not.
-4. Before enabling or sampling the profiler, require the central controller to
-   read the registered standalone `skyrimvrupscaler.temporalProbe` status and
-   prove a neutral physical state and ownership epoch. Recheck the same epoch
-   throughout the capture. A changed, legacy, or unproven probe fails closed;
-   profiler restoration still runs and never disarms the probe.
+4. Before enabling or sampling the profiler, establish temporal-probe
+   applicability on the selected DevBench transport. Proven absence is not
+   applicable, not a missing mandatory tool. Follow `$devbench-control` for
+   the direct registration-evidence check; do not switch to the bundled
+   controller. A registered `skyrimvrupscaler.temporalProbe` requires neutral
+   physical status and an unchanged ownership epoch throughout capture.
+   Unknown registration, an unavailable registered status tool, legacy status
+   or changed state fails closed. Restoration still runs and never disarms
+   the probe. A neutral temporal-probe guard does not establish that other
+   instrumentation is off; an active lifetime tracer still distorts timing.
 5. When `communityshaders.profiler_api` is exposed, call `snapshot`, preserve
    the initial enabled state, then call `set_enabled` with `enabled: true` and
    require its nested snapshot to be available and enabled before

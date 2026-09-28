@@ -1156,6 +1156,88 @@ function Test-DevBenchPerformanceNeutral {
     }
 }
 
+function Get-DevBenchDirectPerformanceGuard {
+    <# Evaluates preserved direct inspect payloads without opening a transport. #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$Runtime,
+        [AllowNull()]$Registrants,
+        [AllowEmptyCollection()][object[]]$ProbeContent = @()
+    )
+
+    $guard = [ordered]@{
+        applicable = $true; neutral = $false; performanceDistorted = $false
+        performanceEpoch = $null; physicalStateKnown = $false
+        reason = 'performance-registration-evidence-unproven'
+        tool = 'skyrimvrupscaler.temporalProbe'; evidenceSource = 'direct-inspect-registrants'
+        runtimeIdentity = $null; observedFrame = $null; registrationFingerprint = $null
+    }
+    $pidValue = Get-DevBenchTelemetryMember $Runtime 'pid'
+    $portValue = Get-DevBenchTelemetryMember $Runtime 'port'
+    $frameValue = Get-DevBenchTelemetryMember $Runtime 'frame'
+    $integers = @([int], [long], [uint32], [uint64])
+    foreach ($value in @($pidValue, $portValue, $frameValue)) {
+        if ($null -eq $value -or @($integers | Where-Object { $_.IsInstanceOfType($value) }).Count -eq 0) {
+            return [pscustomobject]$guard
+        }
+    }
+    $plugin = Get-DevBenchTelemetryMember $Runtime 'plugin'
+    $exe = Get-DevBenchTelemetryMember $Runtime 'exe'
+    $version = Get-DevBenchTelemetryMember $Runtime 'version'
+    if ($pidValue -le 0 -or $portValue -le 0 -or $portValue -gt 65535 -or $frameValue -lt 0 -or
+        $plugin -cne 'devbench' -or $exe -notin @('SkyrimVR.exe', 'SkyrimSE.exe') -or
+        $version -isnot [string] -or [string]::IsNullOrWhiteSpace($version)) { return [pscustomobject]$guard }
+
+    # JSON round-trip preserves empty arrays while accepting dictionaries and parsed payloads.
+    $ledger = $Registrants | ConvertTo-Json -Depth 30 -Compress | ConvertFrom-Json -Depth 30
+    if ($null -eq $ledger -or -not $ledger.PSObject.Properties['registrations'] -or
+        -not $ledger.PSObject.Properties['consumers'] -or
+        $ledger.registrations -isnot [array] -or $ledger.consumers -isnot [array] -or
+        (Get-DevBenchTelemetryMember $ledger 'error') -or
+        (Get-DevBenchTelemetryMember $ledger 'ok') -eq $false -or
+        $null -ne (Get-DevBenchTelemetryMember $ledger 'truncated')) { return [pscustomobject]$guard }
+    foreach ($entry in @($ledger.registrations) + @($ledger.consumers)) {
+        if ((Get-DevBenchTelemetryMember $entry 'name') -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($entry.name)) { return [pscustomobject]$guard }
+    }
+    foreach ($entry in $ledger.registrations) {
+        if ((Get-DevBenchTelemetryMember $entry 'kind') -notin @('tool', 'extension') -or
+            (Get-DevBenchTelemetryMember $entry 'replaced') -isnot [bool]) { return [pscustomobject]$guard }
+    }
+    $guard.runtimeIdentity = "$pidValue|$portValue|$exe|$version"
+    $guard.observedFrame = $frameValue
+    $ledgerJson = [ordered]@{ consumers = $ledger.consumers; registrations = $ledger.registrations } | ConvertTo-Json -Depth 30 -Compress
+    $guard.registrationFingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($ledgerJson)))
+    $probeEntries = @($ledger.registrations | Where-Object { $_.kind -eq 'tool' -and $_.name -ceq $guard.tool })
+    if ($probeEntries.Count -eq 0) {
+        $ownerPresent = @($ledger.consumers | Where-Object { $_.name -match 'SkyrimVRUpscaler' }).Count -gt 0 -or
+            @($ledger.registrations | Where-Object { $_.name -match '^skyrimvrupscaler[.:]' }).Count -gt 0
+        if ($ownerPresent -or $ProbeContent.Count -gt 0) {
+            $guard.reason = 'performance-probe-registration-inconsistent'
+            return [pscustomobject]$guard
+        }
+        $guard.applicable = $false
+        $guard.neutral = $true
+        $guard.physicalStateKnown = $true
+        $guard.reason = 'standalone-temporal-probe-not-registered'
+        return [pscustomobject]$guard
+    }
+    if ($probeEntries.Count -ne 1 -or $probeEntries[0].replaced) {
+        $guard.reason = 'performance-probe-registration-ambiguous'
+        return [pscustomobject]$guard
+    }
+    $semantic = Get-DevBenchSemanticStatus -Content $ProbeContent
+    if ($semantic.known -and -not $semantic.ok) {
+        $guard.reason = 'performance-probe-status-failed'
+        return [pscustomobject]$guard
+    }
+    $assessment = Test-DevBenchPerformanceNeutral -Content $ProbeContent
+    foreach ($field in @('neutral', 'performanceDistorted', 'performanceEpoch', 'physicalStateKnown', 'reason')) {
+        $guard[$field] = $assessment.$field
+    }
+    return [pscustomobject]$guard
+}
+
 function Test-DevBenchPerformanceWindow {
     [CmdletBinding()]
     param(
@@ -1169,15 +1251,29 @@ function Test-DevBenchPerformanceWindow {
         ($null -ne $Before.performanceEpoch -and
             $null -ne $After.performanceEpoch -and
             [uint64]$Before.performanceEpoch -eq [uint64]$After.performanceEpoch)
+    $beforeIdentity = Get-DevBenchTelemetryMember $Before 'runtimeIdentity'
+    $afterIdentity = Get-DevBenchTelemetryMember $After 'runtimeIdentity'
+    $directEvidence = (Get-DevBenchTelemetryMember $Before 'evidenceSource') -eq 'direct-inspect-registrants' -or
+        (Get-DevBenchTelemetryMember $After 'evidenceSource') -eq 'direct-inspect-registrants'
+    $sameRuntime = -not $directEvidence -or ($null -ne $beforeIdentity -and $beforeIdentity -ceq $afterIdentity -and
+        (Get-DevBenchTelemetryMember $After 'observedFrame') -ge (Get-DevBenchTelemetryMember $Before 'observedFrame'))
+    $beforeRegistration = Get-DevBenchTelemetryMember $Before 'registrationFingerprint'
+    $sameRegistration = -not $directEvidence -or ($null -ne $beforeRegistration -and
+        $beforeRegistration -ceq (Get-DevBenchTelemetryMember $After 'registrationFingerprint'))
     $valid = $sameApplicability -and [bool]$Before.neutral -and
-        [bool]$After.neutral -and $sameEpoch
+        [bool]$After.neutral -and $sameEpoch -and $sameRuntime -and $sameRegistration
     return [pscustomobject][ordered]@{
         valid = $valid
         applicable = $applicable
         sameEpoch = $sameEpoch
+        sameRuntime = $sameRuntime
+        sameRegistration = $sameRegistration
         before = $Before
         after = $After
-        reason = if (-not $sameApplicability) {
+        reason = if (-not $sameRuntime) {
+            'performance-runtime-identity-changed'
+        }
+        elseif (-not $sameApplicability -or -not $sameRegistration) {
             'performance-probe-registration-changed'
         }
         elseif (-not [bool]$Before.neutral) {
@@ -1194,5 +1290,7 @@ function Test-DevBenchPerformanceWindow {
         }
     }
 }
+
+Export-ModuleMember -Function Get-DevBenchDirectPerformanceGuard
 
 Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchCallSemanticStatus, Test-DevBenchReadOnlyRequest, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfileShape, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow

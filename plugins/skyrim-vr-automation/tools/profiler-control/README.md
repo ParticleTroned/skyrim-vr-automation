@@ -27,6 +27,13 @@ the run, while the reserved restoration path remains available to restore the
 profiler's prior state. Guard observations are retained in receipt and summary
 schema 4; the collector never disarms the probe.
 
+Confirmed absence of the standalone probe is a valid not-applicable guard.
+On direct MCP, use the fresh registration evidence and offline helpers in
+`../devbench-control/README.md`; the selected transport remains exclusive.
+A missing callable name is not absence proof. This check does not establish
+whole-process neutrality: report other instrumentation, and do not claim
+performance-neutral results while lifetime-tracer hooks report distortion.
+
 The collector also retains central-controller, read-only resource-publication
 snapshots immediately before and after the measured interval: current,
 current/completed/published generations,
