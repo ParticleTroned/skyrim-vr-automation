@@ -1,7 +1,7 @@
 # DevBench Control
 
 `Invoke-DevBenchControl.ps1` lists and calls the MCP tools exposed by a running
-CSX DevBench server. Supply runtime metadata with `-RuntimePath` or set
+DevBench server, including CSX and Open Shaders. Supply runtime metadata with `-RuntimePath` or set
 `CSX_DEVBENCH_RUNTIME_PATH`; no machine-specific path is compiled into the
 client.
 
@@ -52,7 +52,17 @@ equivalents). The controller queries the CSX registry bridge and hashes the
 deployed DLL, binding source build, physical artifact, endpoint, and process in
 one evidence record.
 
-Mutation-capable calls require that complete identity. The controller keeps a
+Mutation-capable calls require verified listener/process identity and the
+deployed artifact hash. A CSX Build ID is optional: it is required only when
+explicitly pinned through runtime metadata, `-ExpectedBuildId`, or a nonempty
+`buildId` in `-ExpectedRuntimeIdentityJson`. Open Shaders and other producers
+without a CSX registry retain a null Build ID without requiring a verification
+bypass. Available CSX registries still contribute provenance, and conflicting
+registry IDs or explicit expectation mismatches still fail closed. Prior
+runtime bindings retain mandatory process and artifact fields; omit `buildId`
+when the producer does not expose one.
+
+The controller keeps a
 strict, action-sensitive allowlist for read-only inspection: built-in
 `inspect` kinds, `menu list`, `record status`, `recordings list`, and input
 capabilities/observation/status. Those calls may proceed when listener and process identity

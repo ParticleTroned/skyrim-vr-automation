@@ -727,7 +727,7 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
     if (-not [string]::IsNullOrWhiteSpace($ExpectedRuntimeIdentityJson)) {
         try {
             $expectedIdentity = $ExpectedRuntimeIdentityJson | ConvertFrom-Json -Depth 20
-            foreach ($required in @('listenerPid', 'processPath', 'processStartTimeUtc', 'buildId', 'artifactPath', 'artifactSha256')) {
+            foreach ($required in @('listenerPid', 'processPath', 'processStartTimeUtc', 'artifactPath', 'artifactSha256')) {
                 if (-not $expectedIdentity.PSObject.Properties[$required] -or [string]::IsNullOrWhiteSpace([string]$expectedIdentity.$required)) {
                     throw "ExpectedRuntimeIdentityJson requires '$required'."
                 }
@@ -736,7 +736,11 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
             if ($processIdentity -and -not [string]::Equals([string]$processIdentity.path, [string]$expectedIdentity.processPath, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('Expected listener process path differs from the observed process path.') }
             $expectedStart = ConvertTo-DevBenchIdentityTimestamp $expectedIdentity.processStartTimeUtc
             if ($processIdentity -and (ConvertTo-DevBenchIdentityTimestamp $processIdentity.startTimeUtc) -cne $expectedStart) { $errors.Add('Expected listener process start time differs from the observed process start time.') }
-            if ([string]$actualBuildId -cne [string]$expectedIdentity.buildId) { $errors.Add('Expected CSX build ID differs from the observed build ID.') }
+            if ($expectedIdentity.PSObject.Properties['buildId'] -and
+                -not [string]::IsNullOrWhiteSpace([string]$expectedIdentity.buildId) -and
+                [string]$actualBuildId -cne [string]$expectedIdentity.buildId) {
+                $errors.Add('Expected CSX build ID differs from the observed build ID.')
+            }
             if ($artifact -and -not [string]::Equals([string]$artifact.path, [string]$expectedIdentity.artifactPath, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('Expected artifact path differs from the observed artifact path.') }
             if ($artifact -and [string]$artifact.sha256 -cne [string]$expectedIdentity.artifactSha256) { $errors.Add('Expected artifact SHA-256 differs from the observed artifact SHA-256.') }
         }
@@ -747,11 +751,11 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
     $missing = [Collections.Generic.List[string]]::new()
     if (-not $listenerPid) { $missing.Add('pid') }
     if (-not $processIdentity -or -not $processIdentity.path) { $missing.Add('process.path') }
-    if (-not $actualBuildId) { $missing.Add('buildId') }
+    if ($expectations.buildId -and -not $actualBuildId) { $missing.Add('buildId') }
     if (-not $artifact) { $missing.Add('artifact.path+sha256') }
     return [pscustomobject][ordered]@{
         verified = $errors.Count -eq 0 -and $null -ne $listenerPid -and $null -ne $health
-        complete = $missing.Count -eq 0
+        complete = $missing.Count -eq 0 -and $errors.Count -eq 0
         expectations = $expectations
         listenerPid = $listenerPid
         process = $processIdentity

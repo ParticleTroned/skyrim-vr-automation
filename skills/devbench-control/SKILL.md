@@ -1,6 +1,6 @@
 ---
 name: devbench-control
-description: "Inspect and call the MCP tools exposed by a running CSX DevBench server through one selected transport. Use for DevBench discovery, capability inspection, structured tool calls, screenshot API probing, performance API probing, or diagnosing runtime metadata and session failures."
+description: "Inspect and call the MCP tools exposed by a running DevBench server, including CSX and Open Shaders, through one selected transport. Use for DevBench discovery, capability inspection, structured tool calls, screenshot API probing, performance API probing, or diagnosing runtime metadata and session failures."
 ---
 
 # DevBench Control
@@ -50,8 +50,9 @@ or construct HTTP or MCP requests ad hoc.
    `call -Tool <exact-name> -ArgumentsJson <json>`. Parse the structured result
    and preserve errors as evidence; never infer success from a visible in-game
    effect alone.
-6. Keep runtime identity verification enabled. Supply build/artifact
-   expectations when testing a newly deployed DLL, and use `-RequireSuccess`
+6. Keep runtime identity verification enabled. Supply artifact expectations
+   when testing a newly deployed DLL and a Build ID only when the producer
+   exposes one. Open Shaders does not require a CSX Build ID. Use `-RequireSuccess`
    when a semantic failure must fail the orchestration step.
 7. On the selected controller lane, prefer
    `wait -Condition noBlockingMenu` over the server `noMenu` condition when

@@ -561,6 +561,78 @@ Assert-Test ($entryPointText -match "outcome = 'guard-invalidated'") 'changed pr
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('devbench-control-' + [guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    & {
+        $identityFunction = @($entryPointAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-RuntimeIdentity' }, $true))[0]
+        Invoke-Expression $identityFunction.Extent.Text
+        $ArtifactPath = Join-Path $fixture 'producer.dll'
+        [IO.File]::WriteAllText($ArtifactPath, 'fixture producer artifact')
+        $ExpectedArtifactSha256 = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash
+        $ExpectedBuildId = ''
+        $ExpectedRuntimeIdentityJson = ''
+        $fixtureHealthPid = $PID
+        $fixtureBuildIds = @{}
+        function Get-ListenerPid([int]$Port) { return $PID }
+        function Invoke-ToolRpc($Name, $Arguments, $Headers) {
+            $payload = if ($Name -eq 'inspect') {
+                [pscustomobject]@{ pid = $fixtureHealthPid; exe = 'fixture.exe' }
+            } else {
+                [pscustomobject]@{ producer = [pscustomobject]@{ buildId = $fixtureBuildIds[$Name] } }
+            }
+            return [pscustomobject]@{ content = @($payload) }
+        }
+        $runtime = [pscustomobject]@{ port = 65534 }
+        $openShadersTools = @([pscustomobject]@{ name = 'inspect' }, [pscustomobject]@{ name = 'openshaders.feature' })
+        $binding = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test ($binding.verified -and $binding.complete -and $null -eq $binding.build.buildId -and $binding.missing.Count -eq 0) 'Open Shaders binds its process and artifact without a CSX Build ID'
+
+        $ExpectedRuntimeIdentityJson = [ordered]@{
+            listenerPid = $binding.listenerPid; processPath = $binding.process.path
+            processStartTimeUtc = $binding.process.startTimeUtc
+            artifactPath = $binding.artifact.path; artifactSha256 = $binding.artifact.sha256
+        } | ConvertTo-Json -Compress
+        $continued = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test ($continued.verified -and $continued.complete) 'prior runtime identity can omit an unavailable Build ID'
+        $pinned = $ExpectedRuntimeIdentityJson | ConvertFrom-Json
+        $pinned | Add-Member -NotePropertyName buildId -NotePropertyValue 'pinned-build'
+        $ExpectedRuntimeIdentityJson = $pinned | ConvertTo-Json -Compress
+        $missingPinned = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test (-not $missingPinned.verified -and -not $missingPinned.complete -and $missingPinned.errors -match 'Expected CSX build ID') 'explicit prior Build ID still rejects a producer without that identity'
+        $ExpectedRuntimeIdentityJson = ''
+
+        $ExpectedBuildId = 'pinned-build'
+        $missingBuild = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test (-not $missingBuild.verified -and -not $missingBuild.complete -and $missingBuild.missing -contains 'buildId') 'explicit ExpectedBuildId remains mandatory'
+        $deferred = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools -AllowDeferredBuildIdentity
+        Assert-Test ($deferred.verified -and -not $deferred.complete -and $deferred.missing -contains 'buildId') 'deferred explicit Build ID never admits mutation before registration'
+        $ExpectedBuildId = ''
+        $metadataBuild = Get-RuntimeIdentity -Runtime ([pscustomobject]@{ port = 65534; buildId = 'metadata-build' }) -Headers @{} -Tools $openShadersTools
+        Assert-Test (-not $metadataBuild.verified -and -not $metadataBuild.complete) 'runtime metadata Build ID expectations remain mandatory'
+
+        $csxTools = @([pscustomobject]@{ name = 'inspect' }, [pscustomobject]@{ name = 'communityshaders.fixture_api' })
+        $fixtureBuildIds['communityshaders.fixture_api'] = 'csx-build'
+        $ExpectedBuildId = 'csx-build'
+        $csxBinding = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $csxTools
+        Assert-Test ($csxBinding.verified -and $csxBinding.complete -and $csxBinding.build.buildId -eq 'csx-build') 'matching CSX producer Build ID remains verified'
+        $ExpectedBuildId = 'different-build'
+        $wrongBuild = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $csxTools
+        Assert-Test (-not $wrongBuild.verified -and -not $wrongBuild.complete -and $wrongBuild.errors -match 'differs from runtime build ID') 'mismatching explicit CSX Build ID remains rejected'
+        $ExpectedBuildId = ''
+        $fixtureBuildIds['communityshaders.other_api'] = 'other-build'
+        $disagreeing = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools ($csxTools + [pscustomobject]@{ name = 'communityshaders.other_api' })
+        Assert-Test (-not $disagreeing.verified -and -not $disagreeing.complete -and $disagreeing.errors -match 'registries disagree') 'conflicting observed CSX registries remain rejected without an explicit pin'
+
+        $fixtureHealthPid = $PID + 1
+        $wrongPid = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test (-not $wrongPid.verified -and -not $wrongPid.complete -and $wrongPid.errors -match 'differs from listener PID') 'Open Shaders still rejects health and listener PID disagreement'
+        $fixtureHealthPid = $PID
+        $ExpectedArtifactSha256 = 'incorrect-hash'
+        $wrongHash = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test (-not $wrongHash.verified -and -not $wrongHash.complete -and $wrongHash.errors -match 'differs from deployed artifact') 'Open Shaders still rejects an incorrect artifact hash'
+        $ExpectedArtifactSha256 = ''
+        $ArtifactPath = ''
+        $missingArtifact = Get-RuntimeIdentity -Runtime $runtime -Headers @{} -Tools $openShadersTools
+        Assert-Test (-not $missingArtifact.complete -and $missingArtifact.missing -contains 'artifact.path+sha256') 'optional Build ID does not remove mandatory mutation artifact provenance'
+    }
     $runtimePath = Join-Path $fixture 'runtime.json'
     [IO.File]::WriteAllText($runtimePath, '{"port":65534}', [Text.UTF8Encoding]::new($false))
     $entryPoint = Join-Path $PSScriptRoot 'Invoke-DevBenchControl.ps1'
