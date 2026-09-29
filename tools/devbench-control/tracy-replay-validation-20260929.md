@@ -176,6 +176,66 @@ SteamVR null HMD qualified before capture.
   identities. All 31 focused guard regression tests passed after the protocol
   clarifications. Source and packaged documentation remain identical.
 
-The exterior route and CSX comparison remain pending. Raw trace, settings,
-identity, route, image, replay, timing and extraction evidence remain local;
-no raw game evidence is bundled into the distributed automation package.
+## Successful protocol-v2 exterior capture
+
+Measured automation source: `b8070e2f0005eda9f225bab910d1dd73c19d8c5e`.
+Open Shaders source, DLL hash and DevBench version match the interior.
+Process 23188 started at 2026-09-29T21:55:58.5859899Z. All 37 effective
+feature settings, the preset and nine profile files matched the interior.
+Unified Water and fixed-null-HMD qualification passed. The runtime log
+confirmed DLSS Quality input 1008x1120 and output 1512x1680 per eye.
+
+- The pinned exterior recording actually ends in Riverwood02 despite its
+  GuardianStonesToWhiterun filename. Both forks must use this exact path.
+- Untraced warm-up run 4 completed 6804 steps in 103319 ms. Measured run 11
+  completed 6804 steps in 100573 ms, without failed steps, with successful
+  scene/menu assertions, finished pose driver and no held input.
+- Engine replay boundaries: 2026-09-29T22:20:47.791Z through 22:22:28.388Z.
+  Requested hour 14.362698554992676, dispatch hour 14.362725257873535,
+  timescale 1. Helios_SkyrimClearTU was observed at dispatch, all eight
+  in-replay checks and the later postcondition. The resolved weather ID,
+  control cadence and camera transforms are pinned for CSX.
+- One fresh Tracy connection used the unchanged 16384 MiB memory cap.
+  Twice the observed 103.319-second warm-up plus margin justified a 240-second
+  outer watchdog. The guard stopped on replay_complete, without GPU errors
+  or resource/deadline failures. Conversation compaction followed stop.
+- Saved trace: 242741061 bytes, SHA-256
+  `EF4D761E1221BFE91B28FFA383D74907ADD12B63B1F5236EA2A85DD6E989E709`.
+  Reload preserved 5037 frame markers, 160068877 CPU zones, first timestamp
+  1476446102689 ns, last timestamp 1601054528407 ns, and every named CPU/GPU
+  timing statistic. Live GPU begin count was 763228; live context count and
+  reloaded count were both 763077. Source inspection established the 151
+  difference as begun zones without their first GPU timestamp: live global
+  count advances on begin, context count on timestamp, and reload sums the
+  serialized context counts. This is not lost measured timing data.
+- Positive GPU samples cover every walking second and continue 12.048 s
+  beyond replay end. Replay seconds 4 and 5 have no samples; both lie inside
+  one preserved 3.761-second frame gap during exterior restoration, before
+  the walk. The full-replay statistics retain this loading pause. Requiring
+  a sample in every wall-clock second would incorrectly reject loading.
+- Estimated full replay: 4127 intervals, mean 24.371 ms, median 21.002 ms,
+  p95 36.918 ms, p99 44.464 ms. Excluding 9954 ms of initial restoration:
+  3817 intervals, mean 23.744 ms, median 21.351 ms, p95 37.111 ms,
+  p99 43.898 ms. Observed UTC/trace offset spread was 17.412 ms; unknown
+  receive lag and boundary sensitivity remain explicit limitations.
+- All 582 exposed names were processed: 153149822 positive CPU occurrences
+  and 448488 positive GPU occurrences. Histogram counts/totals, raw file
+  sizes/hashes, no-truncation checks and full walking GPU coverage passed.
+  Twelve shader-compilation scopes within replay totaled 78.413 ms;
+  inclusive task time alone is not an inferred frame stall.
+- Nine PNGs passed CRC/payload checks, with full stereo and both eyes at
+  Guardian Stones, the Riverwood approach and Riverwood endpoint. All views
+  were visually inspected; stereo review used half-resolution previews.
+  Originals and exact realized transforms remain unchanged.
+- Final renderer, DevBench, preset and recording hashes matched preflight.
+  After export/unload, the instance registry was empty, all tasks completed,
+  and two memory samples both read 93921280 private bytes (89.57 MiB), with
+  over 35 GB physical and 45 GB commit headroom. No retained worker recurred.
+- This follow-up changes protocol documentation only. The prior 31 focused
+  guard tests remain the implementation validation; no new guard code or
+  shader change was made. Source/package documentation parity was checked.
+
+Both OS routes are captured and extracted. CSX runs and side-by-side quality
+and performance comparisons remain pending. Raw trace, settings, identity,
+route, image, replay, timing and extraction evidence remain local; no raw
+game evidence is bundled into the distributed automation package.

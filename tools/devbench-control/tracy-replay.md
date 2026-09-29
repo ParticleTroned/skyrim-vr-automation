@@ -228,8 +228,20 @@ large zone export, source editing or dependency repair belongs in this window.
 7. Export and verify the required data below before declaring this route
    complete. Run `CLEANUP_EVAL`, unload, prove empty/low-memory, reload just
    this saved file, wait for background processing, and confirm the same
-   frame/GPU counts and timeline endpoints survived. Finish extraction from
-   one loaded trace at a time, then unload and prove low memory again.
+   frame/CPU counts, timeline endpoints and named CPU/GPU timing statistics.
+   Compare reloaded GPU counts with the saved live GPU-context counts:
+   the live global counter counts zone begins, while context counts advance
+   on the first GPU timestamp. Preserve both counters and their difference;
+   do not mistake begun zones lacking timestamps for lost measured timings.
+   Unexplained differences remain a failed verification. Finish extraction
+   from one loaded trace at a time, then unload and prove low memory again.
+
+Check positive GPU coverage throughout the walking portion and beyond its
+terminal boundary. A zero-sample interval during initial scene restoration
+requires a preserved enclosing frame interval with no intervening frame
+marks, wholly before the walking portion. Retain that loading pause in the
+full-replay statistics and report it separately. Do not waive unexplained
+GPU gaps while rendering or classify every loading pause as collector loss.
 
 Every guard request has `owner` and `action`. `prepare` takes the arming
 fields shown above; `finish` needs only the owner. `stop` takes `reason` and
@@ -288,9 +300,21 @@ Interior reference requests, in the camera API's documented units:
 The gallery request previously produced an observed yaw near 1.723928 and
 pitch near 0.052325. Qualify the realized view before freezing the campaign
 manifest; do not claim requested pitch 0.35 was applied. Define exterior
-views from the pinned route's guardian, approach and Whiterun checkpoints,
+views from the pinned route's guardian, approach and actual endpoint,
 record their realized transforms on OS, and replay those exact views on CSX.
 Images remain labeled OS/CSX; this campaign does not request blinding.
+
+The pinned exterior recording actually ends in `Riverwood02`, despite its
+`GuardianStonesToWhiterun` filename. Preserve the supplied path in both
+forks and label the actual endpoint; do not silently extend it to Whiterun.
+The OS exterior qualified `Helios_SkyrimClearTU` at the requested start hour
+14.362698554992676 and timescale 1. Record weather/hour at dispatch and
+periodically during this exterior replay, with the same control cadence on
+CSX. The observed 103319 ms warm-up supports a 240-second outer watchdog
+(two route durations plus about 30 seconds of transport margin); completion
+still stops capture immediately. Keep the exact realized camera transforms
+and screenshot requests in the campaign manifest, not machine-specific paths
+in the distributed protocol.
 
 ## Completeness, extraction and comparison
 
