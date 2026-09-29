@@ -68,6 +68,12 @@
   unexpected delays.
 - Keep automated waits bounded and report the observed postcondition. A CTD is
   useful evidence, not permission for unbounded retries.
+- Use time limits only for a concrete stall, ownership, freshness or resource
+  risk. Base them on observed operation duration and transport overhead with
+  documented margin; do not invent tight deadlines to simplify orchestration.
+  Prefer explicit state and progress checks. An otherwise healthy, complete
+  measurement must not fail merely because an arbitrary interval elapsed.
+  Overall watchdogs are failure backstops, not requested capture durations.
 - Treat the render-scale tuning fixture, immediate positioning, and startup
   admission sequence as frozen. Change that prefix only on explicit user
   instruction or preserved evidence proving the prefix itself is defective;
