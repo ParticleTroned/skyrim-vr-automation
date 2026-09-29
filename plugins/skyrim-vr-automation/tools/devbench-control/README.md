@@ -1,5 +1,13 @@
 # DevBench Control
 
+For fixed-HMD recorded-route measurements and matched image captures with
+the existing Tracy MCP collector, follow [the replay protocol](tracy-replay.md).
+It includes physical memory admission, a collector-side stop timer, GPU
+timestamp gates, asynchronous replay, full trace validation and extraction.
+The helper runs inside the existing collector; it introduces no profiler or
+DevBench transport. Validate it with `python tests/test_tracy_replay_guard.py`
+from the repository root.
+
 `Invoke-DevBenchControl.ps1` lists and calls the MCP tools exposed by a running
 DevBench server, including CSX and Open Shaders. Supply runtime metadata with `-RuntimePath` or set
 `CSX_DEVBENCH_RUNTIME_PATH`; no machine-specific path is compiled into the

@@ -110,6 +110,16 @@ or construct HTTP or MCP requests ad hoc.
     `-AllowUnprovenGameMutation` unless the user explicitly authorized bypassing
     workspace save policy.
 
+For a recorded performance route with Tracy (including Dragonsreach and
+Guardian Stones to Whiterun), first read and follow
+`../../tools/devbench-control/tracy-replay.md` in full. Use its existing-MCP
+guard helper, physical collector-memory admission, one connection per fresh
+game process, asynchronous replay, GPU readiness and full-capture acceptance
+checks. An empty instance list or scheduler completion cannot establish a
+clean collector or a complete performance result. Do not repair or reconnect
+mid-measurement, or declare the next route ready before extraction and image
+validation finish.
+
 The bundled fallback entry point is:
 
 ```text
