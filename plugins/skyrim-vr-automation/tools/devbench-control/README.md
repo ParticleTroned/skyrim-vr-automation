@@ -165,9 +165,9 @@ existing owner/status instead of sending the action again.
 
 Synchronous `scenario` requests also account for their declared waits,
 repeats, nested synchronous scenarios and child `timeoutMs` budgets, plus
-the same receipt allowance. Asynchronous children do not extend the
-request: their admission reply returns before that work finishes. Declared
-waits cannot predict arbitrary tool execution time. Use `async:true` for
+the same receipt allowance. Asynchronous `scenario` and `record` children do
+not extend the request: their admission reply returns before that work finishes.
+Declared waits cannot predict arbitrary tool execution time. Use `async:true` for
 image batches and other paced scenarios, retain the returned `runId`, and
 poll that owner to its terminal transcript. Check asynchronous screenshot
 requests separately. A transport timeout does not stop server-side work

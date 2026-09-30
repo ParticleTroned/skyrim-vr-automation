@@ -16,9 +16,29 @@ $imageWaits.async=$true
 Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario $imageWaits) -eq 0) 'asynchronous image admission retains a short transport request'
 Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario @{action='status';runId=7}) -eq 0) 'owner status reads do not inherit capture pacing'
 Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds profiler @{timeoutMs=60123}) -eq 60123) 'direct server-owned timeout is preserved exactly'
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds profiler @{async=$true;timeoutMs=60123}) -eq 60123) 'unknown async semantics cannot remove another tool server-owned budget'
 $nestedWaits = @{repeat=3;steps=@(@{wait=1000},@{tool='scenario';args=@{repeat=2;steps=@(@{wait=6000})}},@{tool='record';args=@{async=$true;timeoutMs=180000}})}
 Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario $nestedWaits) -eq 39000) 'nested repeated waits count while asynchronous child lifetime is excluded'
 Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario @{steps=@(@{waitUntil='noMenu';timeoutMs=12000})}) -eq 12000) 'explicit conditional wait budget is retained'
+
+$budgetTokens = $null
+$budgetErrors = $null
+$budgetAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Invoke-DevBenchControl.ps1'), [ref]$budgetTokens, [ref]$budgetErrors)
+$budgetFunction = $budgetAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-ServerWaitBudgetAtDispatch'}, $false)
+. ([scriptblock]::Create($budgetFunction.Extent.Text))
+$RequestTimeoutSeconds=10
+$script:requestTimeoutSecondsForRpc=10
+$script:operationStartedUtc=[DateTime]::UtcNow.AddSeconds(-20)
+$script:operationDeadlineUtc=[DateTime]::UtcNow.AddSeconds(1)
+$budgetBefore=[DateTime]::UtcNow
+$imageWaits.async=$false
+Set-ServerWaitBudgetAtDispatch -Arguments $imageWaits -Name scenario
+Assert-Test ($script:requestTimeoutSecondsForRpc -eq 26) 'real dispatch reserves the full image pacing and receipt allowance'
+Assert-Test ($script:operationDeadlineUtc -ge $budgetBefore.AddSeconds(26)) 'image allowance starts at dispatch even after slow preflight'
+$script:requestTimeoutSecondsForRpc=10
+$imageWaits.async=$true
+Set-ServerWaitBudgetAtDispatch -Arguments $imageWaits -Name scenario
+Assert-Test ($script:requestTimeoutSecondsForRpc -eq 10) 'real async admission does not wait for the image sequence lifetime'
 
 $identityTimestamp = '2026-09-28T13:30:13.0821265Z'
 $savedCulture = [Globalization.CultureInfo]::CurrentCulture

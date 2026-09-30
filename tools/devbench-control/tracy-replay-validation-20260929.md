@@ -258,7 +258,10 @@ The protocol requires the scenario transcript and every screenshot's
 terminal artifact receipt before camera cleanup and Tracy admission.
 
 Validation: `pwsh tools/devbench-control/Test-DevBenchControl.ps1` passed
-246 checks. New cases cover the 20.1-second image sequence, asynchronous
+250 checks. New cases cover the 20.1-second image sequence, asynchronous
 admission, owner status, nested repeats, asynchronous child exclusion and
-conditional waits. Fixed-build in-game image qualification and the CSX
-benchmark remain pending; the rejected attempt is not a measurement.
+conditional waits. Adversarial review added checks against the actual dispatch
+function for slow preflight, paced requests and asynchronous admission. Only
+known asynchronous scenario/record semantics exclude a server wait; other
+tools retain their explicit timeout. Fixed-build in-game image qualification
+and the CSX benchmark remain pending; the rejected attempt is not a measurement.

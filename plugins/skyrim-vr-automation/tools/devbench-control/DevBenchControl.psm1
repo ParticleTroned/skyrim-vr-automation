@@ -1415,7 +1415,8 @@ function Get-DevBenchSynchronousWaitMilliseconds {
     [CmdletBinding()]
     param([string]$Tool, [hashtable]$Arguments, [int]$Depth = 0)
 
-    if ($null -eq $Arguments -or ($Arguments.ContainsKey('async') -and $Arguments.async -eq $true)) { return 0.0 }
+    if ($null -eq $Arguments) { return 0.0 }
+    if ($Tool -in @('scenario', 'record') -and $Arguments.ContainsKey('async') -and $Arguments.async -eq $true) { return 0.0 }
     if ($Depth -gt 32) { throw 'Nested scenario wait budget exceeds the supported request depth.' }
     $total = 0.0
     if ($Arguments.ContainsKey('timeoutMs') -and $null -ne $Arguments.timeoutMs) {
