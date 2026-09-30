@@ -304,6 +304,18 @@ views from the pinned route's guardian, approach and actual endpoint,
 record their realized transforms on OS, and replay those exact views on CSX.
 Images remain labeled OS/CSX; this campaign does not request blinding.
 
+Dispatch paced image scenarios with `async:true`; keep short request
+timeouts for admission and status reads, not for the scenario's full
+duration. Retain the actual `runId` and poll that owner until its terminal
+transcript is saved. Then resolve every accepted screenshot request to its
+terminal artifact receipt, verify its physical PNG and hash, and only then
+restore the camera. Do not restore it in an unconditional `finally` while
+server-side ownership is unresolved. A failed image write blocks Tracy
+admission; retain its diagnostic and fix the cause before another benchmark.
+Do not silently replace a failed native eye capture with a crop or a later
+frame. Any changed acquisition protocol needs explicit campaign review and
+matching treatment of both forks.
+
 The pinned exterior recording actually ends in `Riverwood02`, despite its
 `GuardianStonesToWhiterun` filename. Preserve the supplied path in both
 forks and label the actual endpoint; do not silently extend it to Whiterun.

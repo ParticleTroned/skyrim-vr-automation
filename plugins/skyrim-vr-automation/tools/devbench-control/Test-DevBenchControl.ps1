@@ -10,6 +10,16 @@ $passes = [Collections.Generic.List[string]]::new()
 $failures = [Collections.Generic.List[string]]::new()
 function Assert-Test([bool]$Condition, [string]$Message) { if ($Condition) { $passes.Add($Message) } else { $failures.Add($Message) } }
 
+$imageWaits = @{steps=@(@{wait=1800},@{wait=100},@{wait=6000},@{wait=100},@{wait=6000},@{wait=100},@{wait=6000})}
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario $imageWaits) -eq 20100) 'image sequence request accounts for all server-side pacing'
+$imageWaits.async=$true
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario $imageWaits) -eq 0) 'asynchronous image admission retains a short transport request'
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario @{action='status';runId=7}) -eq 0) 'owner status reads do not inherit capture pacing'
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds profiler @{timeoutMs=60123}) -eq 60123) 'direct server-owned timeout is preserved exactly'
+$nestedWaits = @{repeat=3;steps=@(@{wait=1000},@{tool='scenario';args=@{repeat=2;steps=@(@{wait=6000})}},@{tool='record';args=@{async=$true;timeoutMs=180000}})}
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario $nestedWaits) -eq 39000) 'nested repeated waits count while asynchronous child lifetime is excluded'
+Assert-Test ((Get-DevBenchSynchronousWaitMilliseconds scenario @{steps=@(@{waitUntil='noMenu';timeoutMs=12000})}) -eq 12000) 'explicit conditional wait budget is retained'
+
 $identityTimestamp = '2026-09-28T13:30:13.0821265Z'
 $savedCulture = [Globalization.CultureInfo]::CurrentCulture
 try {

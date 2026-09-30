@@ -239,3 +239,26 @@ Both OS routes are captured and extracted. CSX runs and side-by-side quality
 and performance comparisons remain pending. Raw trace, settings, identity,
 route, image, replay, timing and extraction evidence remain local; no raw
 game evidence is bundled into the distributed automation package.
+
+## Image ownership correction, 2026-09-30
+
+CSX process 44312 completed its 6814-step Dragonsreach warm-up, but no
+Tracy connection or measured replay was made. Its local image runner sent
+a synchronous scenario containing 20.1 seconds of declared waits through
+a ten-second request timeout, then restored the camera while the scenario
+continued. Asynchronous admission and terminal-owner tracking corrected
+the local runner. Separate PNG publication failures persisted after that
+correction; these are renderer storage errors, not a reason to loosen the
+benchmark admission gate or substitute a derived eye image.
+
+The controller now reserves the existing receipt allowance beyond declared
+synchronous scenario pacing, including repeats and nested child timeouts.
+Asynchronous admission and status reads keep their short request budgets.
+The protocol requires the scenario transcript and every screenshot's
+terminal artifact receipt before camera cleanup and Tracy admission.
+
+Validation: `pwsh tools/devbench-control/Test-DevBenchControl.ps1` passed
+246 checks. New cases cover the 20.1-second image sequence, asynchronous
+admission, owner status, nested repeats, asynchronous child exclusion and
+conditional waits. Fixed-build in-game image qualification and the CSX
+benchmark remain pending; the rejected attempt is not a measurement.

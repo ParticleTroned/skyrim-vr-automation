@@ -1411,6 +1411,34 @@ function Test-DevBenchPerformanceWindow {
     }
 }
 
-Export-ModuleMember -Function Get-DevBenchDirectPerformanceGuard
+function Get-DevBenchSynchronousWaitMilliseconds {
+    [CmdletBinding()]
+    param([string]$Tool, [hashtable]$Arguments, [int]$Depth = 0)
+
+    if ($null -eq $Arguments -or ($Arguments.ContainsKey('async') -and $Arguments.async -eq $true)) { return 0.0 }
+    if ($Depth -gt 32) { throw 'Nested scenario wait budget exceeds the supported request depth.' }
+    $total = 0.0
+    if ($Arguments.ContainsKey('timeoutMs') -and $null -ne $Arguments.timeoutMs) {
+        $total = [double]$Arguments.timeoutMs
+    }
+    if ($Tool -eq 'scenario' -and $Arguments.ContainsKey('steps') -and (-not $Arguments.ContainsKey('action') -or $Arguments.action -eq 'run')) {
+        $stepsTotal = 0.0
+        foreach ($step in @($Arguments.steps)) {
+            if ($step.ContainsKey('wait')) { $stepsTotal += [double]$step.wait }
+            elseif ($step.ContainsKey('tool') -and $step.ContainsKey('args')) {
+                $stepsTotal += Get-DevBenchSynchronousWaitMilliseconds -Tool $step.tool -Arguments $step.args -Depth ($Depth + 1)
+            }
+            elseif ($step.ContainsKey('timeoutMs')) { $stepsTotal += [double]$step.timeoutMs }
+        }
+        $repeat = if ($Arguments.ContainsKey('repeat')) { [double]$Arguments.repeat } else { 1.0 }
+        $total = [Math]::Max($total, $stepsTotal * $repeat)
+    }
+    if ([double]::IsNaN($total) -or [double]::IsInfinity($total) -or $total -lt 0 -or $total -gt ([int]::MaxValue - 5) * 1000.0) {
+        throw 'Invalid synchronous server wait budget.'
+    }
+    return $total
+}
+
+Export-ModuleMember -Function Get-DevBenchDirectPerformanceGuard, Get-DevBenchSynchronousWaitMilliseconds
 
 Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchCallSemanticStatus, Test-DevBenchReadOnlyRequest, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfileShape, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow

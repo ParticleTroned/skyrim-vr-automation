@@ -163,6 +163,16 @@ measurement deadline. Use `-MaxTransientRetries 0` for ownership-bearing
 or otherwise non-replayable actions. If their response is lost, recover their
 existing owner/status instead of sending the action again.
 
+Synchronous `scenario` requests also account for their declared waits,
+repeats, nested synchronous scenarios and child `timeoutMs` budgets, plus
+the same receipt allowance. Asynchronous children do not extend the
+request: their admission reply returns before that work finishes. Declared
+waits cannot predict arbitrary tool execution time. Use `async:true` for
+image batches and other paced scenarios, retain the returned `runId`, and
+poll that owner to its terminal transcript. Check asynchronous screenshot
+requests separately. A transport timeout does not stop server-side work
+and must not release the camera or trigger a second mutation.
+
 Each controller invocation tracks every Streamable HTTP MCP session it opens,
 closes all of them before returning, and reports every outcome under
 `sessionCleanup.sessions`. This prevents retries from leaking an earlier

@@ -82,9 +82,8 @@ function Get-RequestTimeoutSeconds {
     return [int][Math]::Max(1, [Math]::Min($script:requestTimeoutSecondsForRpc, [Math]::Ceiling($remainingSeconds)))
 }
 
-function Set-ServerWaitBudgetAtDispatch([hashtable]$Arguments) {
-    if ($null -eq $Arguments -or -not $Arguments.ContainsKey('timeoutMs') -or $null -eq $Arguments.timeoutMs) { return }
-    $serverTimeoutMilliseconds = [double]$Arguments.timeoutMs
+function Set-ServerWaitBudgetAtDispatch([hashtable]$Arguments, [string]$Name) {
+    $serverTimeoutMilliseconds = Get-DevBenchSynchronousWaitMilliseconds -Tool $Name -Arguments $Arguments
     if ($serverTimeoutMilliseconds -le 0) { return }
     $script:serverTimeoutMilliseconds = $serverTimeoutMilliseconds
     $serverTimeoutSeconds = [int][Math]::Ceiling($serverTimeoutMilliseconds / 1000.0)
@@ -422,7 +421,7 @@ function Invoke-McpRequest {
 
 function Invoke-ToolRpc {
     param([string]$Name, [hashtable]$Arguments, [hashtable]$Headers, [switch]$Mutation)
-    Set-ServerWaitBudgetAtDispatch -Arguments $Arguments
+    Set-ServerWaitBudgetAtDispatch -Arguments $Arguments -Name $Name
     $rpc = Invoke-McpRequest -Endpoint $endpoint -Headers $Headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/call'; params = @{ name = $Name; arguments = $Arguments } } -Mutation:$Mutation
     if ($rpc.json.PSObject.Properties['error']) { throw "DevBench tools/call failed: $($rpc.json.error | ConvertTo-Json -Compress)" }
     if ($rpc.json.result.PSObject.Properties['isError'] -and $rpc.json.result.isError) {
