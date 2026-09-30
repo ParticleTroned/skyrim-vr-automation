@@ -2,6 +2,8 @@
 
 Protocol: `devbench-tracy-replay-v3`. This protocol uses the existing
 DevBench controller/direct tools, Tracy MCP and screenshot provider. The
+OS/CSX comparison additionally records fpsVR alongside Tracy as described
+below, using fpsVR's configured recording hotkey and raw CSV logger. The
 adjacent Python helper supplies admission checks and an independent stop
 timer inside the existing collector; it does not install another profiler,
 change instrumentation, or modify either renderer. Read this entire file
@@ -19,6 +21,16 @@ Tracy Python/helper paths, and an empty attempt evidence directory. Keep a
 separate campaign directory for immutable process claims and shared settings,
 route, image-pose and weather/time manifests. No drive letter, modlist name,
 MCP port, source commit, or form ID is a machine default.
+
+For the OS/CSX campaign, resolve fpsVR's installed settings, recording hotkey,
+command executable and raw CSV directory before the next start signal.
+Retain the exact binding, logger version and ownership as machine-local
+inputs. The shortcut means the recording key binding in fpsVR settings, not
+a desktop launcher. The user authorizes configuring a callable binding if
+none exists: preserve the settings, select an unused supported combination
+and verify the saved binding. Do not invent a setting key or assume a
+different FPS utility has fpsVR's controls or CSV schema. The user launches
+Skyrim; activate recording once the user reports being in game.
 
 Select one DevBench lane using `skills/devbench-control/SKILL.md`. Direct
 tools are mandatory when callable. Otherwise use the maintained controller,
@@ -106,6 +118,12 @@ of unsupported booleans. Any missing or failing gate blocks measurement.
    sample fails, do not connect. Restart only the proven task-owned idle
    collector if safe; otherwise report the shared-owner blocker. Recheck
    identity, instances, tasks and memory after any restart.
+8. **fpsVR recording proof (OS/CSX campaign).** Start the logger at the
+   user's in-game signal, before warm-up and images, using the workflow
+   below. Require the exact owned CSV to contain advancing sample timestamps
+   and increasing length before connecting Tracy. Reuse preparation time to
+   observe growth; do not add a pilot or an extra timed hold. Keep fpsVR
+   logging continuously through verified replay completion and Tracy stop.
 
 For Windows, resolve and preserve the process identity with the existing
 shell tool, then read memory using the helper in ordinary Python (no WMI
@@ -137,6 +155,61 @@ shared across workers. Use the helper's `eval_code` for every guard call;
 it clears the per-eval namespace even on errors. Clear temporary eval
 namespaces after extraction too, collect garbage before unloading, and
 repeat this physical-memory proof after each file reload.
+
+## Parallel fpsVR measurement for the OS/CSX campaign
+
+Reuse the established logger control and raw CSV handling in
+[`Invoke-SaveLoadTimingV2.ps1`](../gameft-sw/protocol/Invoke-SaveLoadTimingV2.ps1)
+and [`Show-SaveLoadTimingQuickReport.ps1`](../gameft-sw/protocol/Show-SaveLoadTimingQuickReport.ps1).
+Do not invoke the save-load assay for this route: its save selection,
+60-second windows and final-ten-second averages do not apply here. This
+campaign explicitly permits the configured recording hotkey after Skyrim
+is running; the separate `game-ft` hotkey policy is unchanged.
+
+1. Inventory fpsVR's existing process and logging state. Reuse an already
+   attached, actively recording instance. Otherwise invoke the verified
+   recording hotkey once. Prefer the established supported command
+   `fpsVRcmd.exe logging_startstop` when it controls that same recording
+   action without sending keys into Skyrim. Both are toggles, not idempotent
+   starts: never invoke both or toggle a proven active recording off. Verify
+   attachment and treat `Can't connect to fpsVR` as failure even when the
+   command exits zero. Do not launch an unattached standalone process or
+   restart the game, fpsVR or SteamVR as an in-run repair.
+2. Pin the raw `Frametimes#Raw#*.csv` path to this attempt. Preserve two
+   observations of byte length, last-write UTC and the latest complete
+   sample timestamp, plus fpsVR/Skyrim PIDs and start times. Require actual
+   file growth and advancing samples; a process, command acknowledgement
+   or touched file alone does not prove recording. Observe buffered flush
+   progress with reasonable startup margin instead of imposing a short
+   arbitrary deadline. An unproven logger blocks Tracy admission.
+3. Preserve UTC and monotonic/QPC markers for logger confirmation, Tracy
+   connection, replay dispatch, engine replay start/end, terminal receipt
+   and Tracy stop. Reset game hour/weather immediately at replay dispatch
+   as already required; starting fpsVR must not move that scene boundary.
+4. After Tracy stops, verify CSV coverage through replay completion. Stop
+   logging only when this attempt started it; leave a pre-existing recording
+   running. Archive the exact pinned CSV, hash it and retain its original
+   headers, columns, units, timestamps and recording-control receipts.
+   Do not select another CSV later merely because it is newest.
+5. Map fpsVR samples to the same engine replay start/end used for Tracy.
+   Preserve the CSV's recording-time header and `SteamVR Time`, the local
+   UTC offset and all clock anchors. Use shared producer frame/time markers
+   when available. Record clock precision, buffered-write/observation lag
+   and boundary uncertainty; the existing header-to-SteamVR-time mapping
+   alone does not prove frame-exact synchronization. Keep the raw CSV so
+   alignment can be refined without another game run.
+
+Report FPS and CPU/GPU frame times from fpsVR's actual fields over the
+matched replay window, with mean, median, p95 and p99, sample counts and
+coverage. Keep overall frame intervals from Tracy alongside them. If fpsVR
+also exposes a total frame-time field, retain its documented meaning; if it
+does not, label that metric unavailable from fpsVR. Never invent total time
+by adding CPU and GPU times, or label reciprocal FPS as measured busy time.
+Derive frame intervals from sample timestamps only after verifying that
+each row represents one application frame. Apply identical logger settings,
+overlay state, extraction and window rules to OS and CSX. Do not run report
+generation, CSV parsing of the full recording or trace extraction while
+the timed replay is active.
 
 ## Bounded measured capture
 
@@ -393,6 +466,34 @@ admission; retain its diagnostic and fix the cause before another benchmark.
 Do not silently replace a failed native eye capture with a crop or a later
 frame. Any changed acquisition protocol needs explicit campaign review and
 matching treatment of both forks.
+
+### UI qualification for the OS/CSX comparison
+
+For this comparison protocol, `uiExcluded:false` and the resulting
+`uiIncluded` warning are advisory during acquisition. They do not establish
+that a HUD or menu is visible. Do not block, retry or delay Tracy admission
+solely because DevBench marks this UI qualification inconclusive.
+
+After capture has stopped, inspect both eyes of every comparison image for
+visible HUD or menus, including images selected as golden references. Record
+the reviewed artifact path, SHA-256 and visual finding. Sequence review must
+cover the frames used in analysis; a clean still does not qualify an entire
+burst, and cropped images qualify only their visible regions.
+
+A clear visual finding of no HUD or menus **overrides DevBench's UI
+qualification** for those exact artifacts. Report
+`uiCheckStatus:passed_visual_review`, `uiBlocksComparison:false` and
+`overridesDevBenchUiQualification:true`. When the UI warning is the only
+inconclusive reason, mark the golden image **conclusive** with
+`inconclusive:false` in the comparison report. Do not continue presenting
+that warning as an unresolved comparison caveat. Apply the same rule to OS
+and CSX; review each new artifact independently.
+
+Preserve the original provider flags and DevBench verdict in raw receipts,
+clearly separate from the effective protocol assessment. Do not change SSIM
+scores or threshold outcomes. Visible HUD/menus or an uncertain visual
+review leave UI qualification unresolved; other scene, camera, artifact or
+scoring failures remain subject to their existing checks.
 
 The pinned exterior recording actually ends in `Riverwood02`, despite its
 `GuardianStonesToWhiterun` filename. Preserve the supplied path in both
