@@ -6,7 +6,9 @@ It includes physical memory admission, a collector-side stop timer, GPU
 timestamp gates, asynchronous replay, full trace validation and extraction.
 The helper runs inside the existing collector; it introduces no profiler or
 DevBench transport. Validate it with `python tests/test_tracy_replay_guard.py`
-from the repository root.
+from the repository root. Use the adjacent `tracy-replay-runner.js` for
+literal-alias connection ownership, pre-guard failure cleanup and immediate
+replay dispatch. Its mocked hand-off test is described in the protocol.
 
 `Invoke-DevBenchControl.ps1` lists and calls the MCP tools exposed by a running
 DevBench server, including CSX and Open Shaders. Supply runtime metadata with `-RuntimePath` or set

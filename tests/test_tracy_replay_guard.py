@@ -57,6 +57,7 @@ class GuardTests(unittest.TestCase):
                         "seconds": 10, "processStartedUtc": "2026-09-29T19:00:00Z",
                         "processClaimPath": str(self.path / "process.json"),
                         "receiptPath": str(self.path / "guard.json")}
+        guard.reserve_process(self.request)
         self.addCleanup(self.cleanup)
 
     def cleanup(self):
@@ -119,11 +120,52 @@ class GuardTests(unittest.TestCase):
             self.arm()
         self.assertFalse(self.worker.connected)
 
-    def test_bad_process_claim_still_disconnects(self):
+    def test_bad_process_claim_does_not_touch_unowned_worker(self):
         self.request["processClaimPath"] = "relative.json"
         with self.assertRaisesRegex(ValueError, "process_start_identity"):
             self.arm()
+        self.assertTrue(self.worker.connected)
+
+    def test_reservation_precedes_guard_and_blocks_reconnection(self):
+        self.assertFalse(hasattr(self.tracy, "_vr_replay_guards"))
+        with self.assertRaises(FileExistsError):
+            guard.reserve_process(self.request)
+
+    def test_abort_before_guard_disconnects_reserved_worker(self):
+        result = guard.dispatch(self.worker, self.tracy, dict(self.request, action="abort"))
+        self.assertEqual(result["stopReason"], "failure_before_guard")
         self.assertFalse(self.worker.connected)
+        self.assertTrue((self.path / "process.json").exists())
+
+    def test_abort_after_guard_preserves_failure_and_cancels_timer(self):
+        self.arm()
+        self.call("stop", reason="readiness_failed")
+        result = guard.dispatch(self.worker, self.tracy, dict(self.request, action="abort"))
+        self.assertEqual(result["stopReason"], "readiness_failed")
+        self.assertEqual(self.worker.stops, 1)
+        self.call("release")
+
+    def test_arm_and_abort_reject_wrong_pid_or_claim_owner(self):
+        for action in ("arm", "abort"):
+            for changes in ({"expectedPid": 99}, {"owner": "other"}):
+                with self.assertRaisesRegex(RuntimeError, "identity|claim_mismatch"):
+                    guard.dispatch(self.worker, self.tracy, dict(self.request, action=action, **changes))
+                self.assertTrue(self.worker.connected)
+
+    def test_abort_rejects_another_guard_owner(self):
+        self.arm()
+        other = dict(self.request, owner="other", action="abort",
+                     processClaimPath=str(self.path / "other.json"))
+        guard.reserve_process(other)
+        with self.assertRaisesRegex(RuntimeError, "owner_mismatch"):
+            guard.dispatch(self.worker, self.tracy, other)
+        self.assertTrue(self.worker.connected)
+
+    def test_abort_without_reservation_leaves_worker_untouched(self):
+        (self.path / "process.json").unlink()
+        with self.assertRaises(FileNotFoundError):
+            guard.dispatch(self.worker, self.tracy, dict(self.request, action="abort"))
+        self.assertTrue(self.worker.connected)
 
     @unittest.skipUnless(os.name == "nt", "Windows memory API")
     def test_live_read_only_memory_receipt(self):
@@ -290,8 +332,8 @@ class GuardTests(unittest.TestCase):
         self.worker.connected = True
         self.request["receiptPath"] = str(self.path / "second.json")
         with self.assertRaises(FileExistsError):
-            self.arm()
-        self.assertFalse(self.worker.connected)
+            guard.reserve_process(self.request)
+        self.assertTrue(self.worker.connected)
 
     def test_owner_and_release_guards(self):
         self.arm()
@@ -339,6 +381,7 @@ class GuardTests(unittest.TestCase):
 
     def test_packaged_helper_and_protocol_match_source(self):
         for relative in ("tools/devbench-control/tracy_replay_guard.py",
+                         "tools/devbench-control/tracy-replay-runner.js",
                          "tools/devbench-control/tracy-replay.md",
                          "skills/devbench-control/SKILL.md"):
             self.assertEqual((ROOT / relative).read_bytes(),

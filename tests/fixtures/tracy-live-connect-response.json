@@ -1,0 +1,12 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Connected to live instance as 'csx-dragonsreach-20260930-p40968' (16384MB memory limit). Before your first eval, read resources tracy://prompt (analysis guidance) and tracy://eval-guide (ctx object model, ns time units, srcloc IDs)."
+    }
+  ],
+  "structuredContent": {
+    "result": "Connected to live instance as 'csx-dragonsreach-20260930-p40968' (16384MB memory limit). Before your first eval, read resources tracy://prompt (analysis guidance) and tracy://eval-guide (ctx object model, ns time units, srcloc IDs)."
+  },
+  "isError": false
+}

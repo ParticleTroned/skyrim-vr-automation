@@ -265,3 +265,38 @@ function for slow preflight, paced requests and asynchronous admission. Only
 known asynchronous scenario/record semantics exclude a server wait; other
 tools retain their explicit timeout. Fixed-build in-game image qualification
 and the CSX benchmark remain pending; the rejected attempt is not a measurement.
+
+## Tracy connection hand-off correction, 2026-09-30
+
+CSX process 40968 completed warm-up and nine native screenshot publications
+with the corrected screenshot DLL (source `2467ba77cbfc1ed886a062cdea27b4f031b864ba`).
+The assistant then used the Tracy connection success sentence as an instance
+ID. Admission and the first cleanup call both addressed that invalid ID;
+no measured replay started. The correct literal alias was disconnected,
+unloaded and verified absent; collector private memory was 91865088 bytes.
+The user requested deletion of the entire attempt's images and capture data.
+Only the small failure/regression record and consumed-process marker remain.
+
+Protocol v3 and the maintained JavaScript hand-off bind the requested alias
+before connect. The process claim is flushed before any connection attempt,
+including lost responses. Cleanup verifies that claim and PID, and works
+before a collector guard exists. Other owners remain untouched. Textual
+Tracy errors cannot pass admission, and cleanup errors preserve the original
+failure. No renderer, screenshot encoding or profiler instrumentation changed.
+
+Review also moved image decoding, visual comparison and report work after
+capture stop. The prepared sequence continues from warm-up/images through
+memory proof, connection, GPU admission and replay without host analysis.
+World-time reset/inspection/replay remain adjacent steps in one scenario.
+The reference is each OS run's observed dispatch game hour: interior
+8.14944839477539 and exterior 14.362725257873535. Both were measured after
+the final time reset; neither includes the preceding preparation delay.
+These are dispatch-boundary observations, not first-rendered-frame clocks.
+
+Validation: `python tests/test_tracy_replay_guard.py` passed 37 tests.
+`testTracyReplayRunner` passed 14 mocked hand-off/parser cases in the existing
+functions JavaScript runtime, using the preserved actual connection response.
+Cases include text errors, pre-guard failure, lost connect response,
+reservation failure, missing admission, replay/finish errors and cleanup
+error retention. Source/package parity is part of the Python suite. No new
+live connection was attempted; the fresh-process CSX measurement is pending.

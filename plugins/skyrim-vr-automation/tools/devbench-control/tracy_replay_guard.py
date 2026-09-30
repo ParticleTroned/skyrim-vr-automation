@@ -285,6 +285,35 @@ class CaptureGuard:
         return dict(self.state)
 
 
+def process_identity(request):
+    """Identify a single connection attempt independently of guard admission."""
+    identity = {"pid": request["expectedPid"],
+                "startedUtc": request["processStartedUtc"], "owner": request["owner"]}
+    if (type(identity["pid"]) is not int or identity["pid"] <= 0
+            or not isinstance(identity["startedUtc"], str) or not identity["startedUtc"]
+            or not isinstance(identity["owner"], str) or not identity["owner"]
+            or not Path(request["processClaimPath"]).is_absolute()):
+        raise ValueError("process_start_identity_required")
+    return identity
+
+
+def reserve_process(request):
+    """Persist exclusive ownership before live_connect, including lost replies."""
+    identity = process_identity(request)
+    with Path(request["processClaimPath"]).open("x", encoding="utf-8") as output:
+        json.dump(identity, output, indent=2)
+        output.flush()
+        os.fsync(output.fileno())
+    return identity
+
+
+def require_process_claim(request):
+    identity = process_identity(request)
+    with Path(request["processClaimPath"]).open(encoding="utf-8") as source:
+        if json.load(source) != identity:
+            raise RuntimeError("capture_process_claim_mismatch")
+
+
 def dispatch(worker, tracy_module, request):
     """Operate only on the guard belonging to the explicitly named capture."""
     owner = request["owner"]
@@ -293,18 +322,26 @@ def dispatch(worker, tracy_module, request):
         guards = {}
         tracy_module._vr_replay_guards = guards
     action = request["action"]
+    if action == "abort":
+        if worker.get_pid() != request["expectedPid"]:
+            raise RuntimeError("capture_identity_or_connection_changed")
+        require_process_claim(request)
+        guard = guards.get(owner)
+        if guards and (guard is None or guard.state["pid"] != request["expectedPid"]):
+            raise RuntimeError("capture_guard_owner_mismatch")
+        if guard is not None:
+            return guard.stop("failure")
+        worker.disconnect()
+        return {"owner": owner, "pid": request["expectedPid"],
+                "stopReason": "failure_before_guard", "disconnectRequested": True}
     if action in ("arm", "prepare"):
         if guards:
             raise RuntimeError("capture_guard_already_owned")
+        if worker.get_pid() != request["expectedPid"]:
+            raise RuntimeError("capture_identity_or_connection_changed")
+        require_process_claim(request)
         try:
             require_fresh_preflight(request["preflight"])
-            claim_path = Path(request["processClaimPath"])
-            process_identity = {"pid": request["expectedPid"],
-                                "startedUtc": request["processStartedUtc"], "owner": owner}
-            if not process_identity["startedUtc"] or not claim_path.is_absolute():
-                raise ValueError("process_start_identity_required")
-            with claim_path.open("x", encoding="utf-8") as output:
-                json.dump(process_identity, output, indent=2)
             guard = CaptureGuard(worker, owner, request["expectedPid"],
                                  request["seconds"], request["receiptPath"])
         except Exception:

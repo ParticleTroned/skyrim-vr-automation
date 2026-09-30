@@ -1,11 +1,13 @@
 # Fixed-HMD DevBench replay with Tracy
 
-Protocol: `devbench-tracy-replay-v2`. This protocol uses the existing
+Protocol: `devbench-tracy-replay-v3`. This protocol uses the existing
 DevBench controller/direct tools, Tracy MCP and screenshot provider. The
 adjacent Python helper supplies admission checks and an independent stop
 timer inside the existing collector; it does not install another profiler,
 change instrumentation, or modify either renderer. Read this entire file
 before starting a route. Do not improvise repairs during a measurement.
+Use `tracy-replay-runner.js` for the connection/admission/replay/stop hand-off;
+it calls the existing MCP tools and adds no collector or transport.
 The [initial validation record](tracy-replay-validation-20260929.md) separates
 regression/synthetic checks from the still-required full game validation.
 
@@ -33,6 +35,16 @@ Do not reconnect to recover GPU timestamps. Keep the process claim outside
 the attempt directory so deleting a failed trace cannot erase this rule.
 
 ## Gates before connecting Tracy
+
+Prepare and validate the complete runner, callbacks, extraction scripts and
+reference manifests before warm-up or images. From warm-up through capture
+stop, execute the prepared sequence without returning to chat for analysis,
+script writing or visual review. Retain lightweight terminal screenshot
+receipts, PNG existence/size/hash and camera checks before admission; defer
+PNG decoding, contact sheets, visual comparison, prose and exports until
+after capture has stopped. No analysis may overlap the timed replay.
+Record stage UTC boundaries and actual delays, without adding a tight
+elapsed-time rejection rule. Do not shorten image settling or remove gates.
 
 Complete these in order; save observed values and receipts, not a checklist
 of unsupported booleans. Any missing or failing gate blocks measurement.
@@ -71,7 +83,11 @@ of unsupported booleans. Any missing or failing gate blocks measurement.
    transition percentage, dry/wet state and hour. A vanilla `fw` command can
    be remapped to different weather on each use; requested weather is not
    evidence of actual weather. Set and verify the shared start game hour,
-   timescale and scene immediately before the measured dispatch. Preserve
+   timescale and scene immediately before the measured dispatch. The target
+   is the reference run's observed dispatch hour, not a requested hour from
+   earlier preparation. Preserve both requested and observed reference
+   values, restore the same commands and cadence, and compare the new
+   observation against that reference. Preserve
    request UTC, observed game hour and terminal hour. Do not silently freeze
    time or use `tfc 1`. Store the realized shared values for the other fork.
 6. **Collector cleanup.** List Tracy instances AND background tasks. Finish
@@ -124,13 +140,59 @@ repeat this physical-memory proof after each file reload.
 
 ## Bounded measured capture
 
+Bind the exact requested alias before connecting. `live_connect` currently
+returns a descriptive success sentence in `structuredContent.result`, despite
+its description promising an ID. Never use that sentence as `instance_id`.
+The same rule applies to `load_capture`: specify and retain its alias.
+An MCP `isError:false` does not prove semantic success; Tracy can return
+`Error: ...` as ordinary text. The runner rejects those strings and requires
+the expected structured admission/completion fields.
+
+Before `live_connect`, call `reserve_process(prepare_request)` locally with
+the helper. It creates the campaign process claim exclusively and flushes it.
+Keep this claim even when connect fails or its response is lost; resolve that
+attempt without reconnecting. `prepare` verifies the exact reserved identity.
+Build all eval strings before entering the sequence, including `abort` with
+the same owner, expected PID, process start and claim path. Supply the already
+validated fresh memory proof to `prepare`.
+
+The maintained runner takes existing tool callbacks, not a new connection:
+
+```javascript
+const result = await runTracyReplay({
+    reserveProcess, // Calls helpers.reserve_process; returns its identity.
+    liveConnect: tools.mcp__tracy__live_connect,
+    eval: tools.mcp__tracy__eval,
+    replay: resetInspectReplayAndWait,
+}, { alias, expectedPid, address, port, memoryLimitMiB: 16384, codes });
+```
+
+`resetInspectReplayAndWait` is the prepared campaign callback on the selected
+DevBench lane. In one scenario it forces weather, resets game hour, waits the
+reference 100 ms, inspects scene and queues replay, with no host analysis
+between these steps. It retains the returned owner, polls that owner and
+returns `{verified:true}` only after the complete route and semantic checks
+below pass. The callback must finish all game-side verification before
+returning. Preserve the runner's raw journal even when `ok:false`.
+`ok:true` proves requested disconnect, not offline save/export completeness.
+Verify disconnection independently before unloading.
+
+On any failure after connect was attempted, the runner invokes `abort` using
+the literal alias, even if `prepare` never ran. `abort` requires the reserved
+process identity and rejects another PID/guard owner. It stops an existing
+owned guard or disconnects the reserved worker before a guard exists. Keep
+both the original error and any cleanup error; never retry connection to
+recover a lost reply. Verify the instance registry, finish owned cleanup and
+prove low memory before another fresh-process attempt.
+
 Prepare all call arguments, output paths, status handling and the `finally`
 cleanup before connecting. Verify the asynchronous warm-up already exercised
 the exact replay/status schemas. No settings investigation, image capture,
 large zone export, source editing or dependency repair belongs in this window.
 
 1. Preserve the empty-collector memory proof and process claim path
-   `<campaign>/processes/<pid>-<start-identity>.json`. It must not exist.
+   `<campaign>/processes/<pid>-<start-identity>.json`. It must not exist before
+   `reserve_process`; reserve it once before `live_connect`.
    Apply and verify the prepared world state before connecting. Call
    `live_connect` exactly once with a unique attempt alias and the pinned
    16384 MiB cap. Immediately call `prepare` through one Tracy `eval`:
@@ -148,7 +210,8 @@ large zone export, source editing or dependency repair belongs in this window.
    })
    ```
 
-   All directories must already exist. The exclusive claim prevents another
+   All directories must already exist. Reserve the process before connecting,
+   as described above. The exclusive claim prevents another
    capture in the same game process. The 180-second timer runs inside Tracy's
    Python process and disconnects independently of DevBench, the assistant
    and MCP response delivery. It is a ceiling, not a requested capture length.
@@ -210,7 +273,7 @@ large zone export, source editing or dependency repair belongs in this window.
    transport calls.
    Require `stopReason=replay_complete` and no failure/error fields. An
    existing deadline/failure remains a failure. On any caller exception use
-   `stop` with reason `failure` in `finally`; the independent deadline remains
+   the runner's `abort` path in `finally`; the independent deadline remains
    armed until stop. Do not wait for analysis or a user reply before stopping.
    A timer stop, spontaneous disconnect, memory cap, process change, missing
    terminal receipt or GPU error rejects the attempt. Never reconnect to
@@ -245,7 +308,8 @@ GPU gaps while rendering or classify every loading pause as collector loss.
 
 Every guard request has `owner` and `action`. `prepare` takes the arming
 fields shown above; `finish` needs only the owner. `stop` takes `reason` and
-`status` reads the timer receipt. Low-level `arm`, `observe`, `ready` and
+`status` reads the timer receipt. `abort` takes the reserved process identity
+and works before arming. Low-level `arm`, `observe`, `ready` and
 `admit` remain available for focused tests, but the measured route uses the
 combined operations. A caller cannot admit the same replay twice. The helper
 does not dispatch DevBench or stop Skyrim; its role is to bound collector
@@ -274,6 +338,20 @@ For the September OS/CSX campaign, the resolved Dragonsreach weather is
 Resolve its form ID from the current load order on each machine. Qualify and
 pin the exterior's realized clear weather before its OS measurement, then
 use the same editor ID and observed state for CSX.
+
+The completed OS reference dispatches reset time inside the same scenario
+immediately before the scene inspection and asynchronous replay admission.
+Their observed hours are **8.14944839477539** (interior, 08:08:58.014) and
+**14.362725257873535** (exterior, 14:21:45.811). These follow their requested
+hours in the route table by about 0.096 game seconds. The inspection and
+queue are adjacent scenario steps; no exact first-rendered-frame game-clock
+sample is exposed. Preserve this boundary uncertainty. Compare CSX's actual
+dispatch observation with these observed targets and retain the difference
+in game seconds, with the same timescale 1 and weather editor ID. Do not
+substitute a later weather check, screenshot hour or host wall clock. The
+exterior's eight in-replay weather samples were also clear; retain the same
+sampling cadence for CSX. These values are campaign references, not defaults
+for an unrelated route or machine.
 
 Keep interior weather observations as scene metadata. A weather reading
 taken after an interior replay does not establish a change during its
@@ -308,7 +386,7 @@ Dispatch paced image scenarios with `async:true`; keep short request
 timeouts for admission and status reads, not for the scenario's full
 duration. Retain the actual `runId` and poll that owner until its terminal
 transcript is saved. Then resolve every accepted screenshot request to its
-terminal artifact receipt, verify its physical PNG and hash, and only then
+terminal artifact receipt, verify its physical PNG existence/size and hash, and only then
 restore the camera. Do not restore it in an unconditional `finally` while
 server-side ownership is unresolved. A failed image write blocks Tracy
 admission; retain its diagnostic and fix the cause before another benchmark.
@@ -412,9 +490,18 @@ never delete shader caches, build outputs, saves or another task's evidence.
 ## Validation and known limits
 
 Run `python tests/test_tracy_replay_guard.py`. Its fake workers exercise
+pre-connection reservation, pre-guard abort and ownership rejection,
 memory admission, GPU progress/error rejection, exactly-once admission,
 transport-delay tolerance, independent deadline/disconnect,
 namespace-cycle cleanup and quantiles.
+Run `tests/Test-TracyReplayRunner.js` in the existing functions JavaScript
+runtime against `tracy-replay-runner.js` and the preserved fixture
+`tests/fixtures/tracy-live-connect-response.json`. Its
+`testTracyReplayRunner(runTracyReplay, tracyResult, fixture)` entry point
+injects mocks only: the actual success sentence, text errors, lost connection
+response, early eval failure, replay/finish failure and secondary cleanup
+failure must all retain the literal alias and correct call order. No live
+connection, game launch or new JavaScript installation is required.
 An existing small synthetic Tracy producer can verify arm/stop/save/unload
 against the actual bindings without launching Skyrim or a captured pilot.
 CPU-only synthetic data must fail the GPU gate; never waive that gate to
