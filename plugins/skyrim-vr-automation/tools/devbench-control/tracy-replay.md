@@ -589,9 +589,43 @@ an explicit `golden` path. SSIM reports similarity, not which renderer has
 better image quality. Inspect the same native center, mask-boundary and
 periphery regions in both eyes before interpreting the scores.
 
+When the effective runtime settings show an active FOV mask, make that
+three-region split mandatory for both static and temporal review. Confirm
+the submitted eye dimensions, FOV mask setting and actual center/transition/
+outer-fill geometry before placing native ROIs; retain their coordinates.
+Use one ROI within the center reconstruction, one across the transition and
+one within the outer fill in **each eye**. If the two builds do not have
+comparable active masks, mark the FOV comparison unmatched. For this
+campaign, label the center DLSS, the CSX outer fill TAA, and the OS outer
+fill bilinear plus temporal filtering; use the observed method names for
+other builds. Do not infer an active mask from a preset file alone.
+
+Score the transition on pixels inside the actual blend band, not on the
+whole coarse ROI that crosses it; otherwise center and outer pixels dilute
+transition shimmer. Score the outer fill beyond the blend band but only
+within normalized per-eye image coordinates `0.1 <= u,v <= 0.9`. This
+excludes the last 10% at each image border, where edge artifacts would
+contaminate the outer-fill result. Apply the same normalized bound to both
+builds and eyes, and record the retained pixel counts. For DevBench golden
+scores, whose regions are rectangles, choose narrow rectangles wholly
+inside each actual zone and the same safe image bounds; do not label a
+coarse mixed rectangle as a transition score. Select pixels or fitting
+subrectangles from the captured native ROIs when possible; this rule does
+not require more game images.
+
+For each of those three regions separately, review stationary-hold shimmer
+and edge stability, sweep ghost trails and recovery, and left/right temporal
+consistency. Report each eye before combining them; do not pool regions or
+let a stable center mask instability at the boundary or outer fill. Raw
+adjacent-frame change during a camera sweep measures scene motion as well
+as artifacts, so use it descriptively and inspect moving edges visually.
+If no FOV mask is active, omit FOV-specific labels and choose image regions
+for the actual rendering path instead. One three-region stereo burst per
+view supplies all of these checks; do not acquire three separate bursts.
+
 For temporal bursts, verify more than file count and sequence continuity.
 Capture one native-region stereo burst per matched view, using only the
-center, mask-boundary and periphery regions needed for this comparison.
+regions needed for that comparison.
 Use the observed render cadence and the pinned motion recipe to request
 enough frames for a short initial hold, the sweep and a short final hold;
 end the requested sequence after the final hold with a small timing margin
