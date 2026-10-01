@@ -213,10 +213,15 @@ is running; the separate `game-ft` hotkey policy is unchanged.
    clearly identified; do not send an unverified synthetic hotkey or repeat
    an ambiguous toggle. If neither control works, save a parseable snapshot
    of the pinned CSV immediately, mark logger stop unverified, and preserve
-   a final copy when it stabilizes. This failure does not erase the verified
-   Tracy capture or require another replay. Archive the exact pinned CSV,
-   its hash, original headers, columns, units, timestamps and receipts; do
-   not select another CSV later merely because it is newest.
+   a final copy when it stabilizes. If that CSV contains complete, parseable
+   samples through replay completion, accept the fpsVR measurements and
+   continue trace extraction and reporting. Mark only logger teardown as
+   unverified; it is a warning, not a capture failure, route stop or reason
+   to replay. A missing or incomplete replay-window CSV remains an fpsVR
+   evidence gap and must be reported separately from Tracy validity.
+   Archive the exact pinned CSV, its hash, original headers, columns, units,
+   timestamps and receipts; do not select another CSV later merely because
+   it is newest.
 5. Map fpsVR samples to the same engine replay start/end used for Tracy.
    Preserve the CSV's recording-time header and `SteamVR Time`, the local
    UTC offset and all clock anchors. Use shared producer frame/time markers
@@ -631,6 +636,12 @@ can finish successfully while the performance capture fails. Preserve that
 distinction. Failed data may be deleted when explicitly requested, after
 retaining the small failure classification and protocol regression record;
 never delete shader caches, build outputs, saves or another task's evidence.
+An unverified fpsVR logging stop does not block readiness when the pinned
+CSV covers the full replay, its numeric data are extracted, and the stop
+failure is recorded. Do not wait for fpsVR to exit solely to prove teardown.
+If recording continues into the next route, carry forward its owner and
+pinned file identity, use a distinct replay window, and do not toggle it
+without a newly observed logging state.
 
 ## Validation and known limits
 
