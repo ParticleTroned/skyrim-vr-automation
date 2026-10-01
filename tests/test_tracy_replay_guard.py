@@ -424,6 +424,8 @@ class GuardTests(unittest.TestCase):
         with Path(result["samplesPath"]).open(newline="", encoding="utf-8") as source:
             rows = list(csv.DictReader(source))
         self.assertEqual(result["missingRequired"], [])
+        self.assertEqual(result["requiredNotEmitted"], [])
+        self.assertEqual(result["requiredOutsideWindow"], [])
         self.assertEqual(result["sourceCountMismatches"], [])
         self.assertEqual(summary["series"]["VR::PoseToSubmitMs"]["selected"]["p99"], 1.99)
         self.assertEqual(summary["series"]["Game::MainUpdateCpu"]["selected"]["count"], 1)
@@ -450,14 +452,43 @@ class GuardTests(unittest.TestCase):
         self.assertFalse((self.path / "tracy-frame-timing-samples.csv").exists())
         self.assertFalse((self.path / "tracy-frame-timing-summary.json").exists())
 
+    def test_export_frame_timing_hash_failure_leaves_no_published_files(self):
+        worker = TimingWorker()
+        with patch.object(guard, "_sha256_file", side_effect=OSError("hash failed")):
+            with self.assertRaisesRegex(OSError, "hash failed"):
+                guard.export_frame_timing(worker, self.path)
+        self.assertFalse((self.path / "tracy-frame-timing-samples.csv").exists())
+        self.assertFalse((self.path / "tracy-frame-timing-summary.json").exists())
+        self.assertFalse(list(self.path.glob(".tracy-frame-timing-*.tmp")))
+        self.assertGreater(guard.export_frame_timing(worker, self.path)["rawRows"], 0)
+
     def test_export_frame_timing_marks_conditional_plots_without_fake_zero(self):
         worker = TimingWorker()
         del worker.plots["VR::AppPostSubmitGpuMs"]
+        del worker.plots["VR::CompositorRenderCpuMs"]
         result = guard.export_frame_timing(worker, self.path)
         self.assertIn("VR::AppPostSubmitGpuMs", result["plotsNotEmitted"])
         self.assertNotIn("VR::AppPostSubmitGpuMs", result["missingRequired"])
+        self.assertIn("VR::CompositorRenderCpuMs", result["plotsNotEmitted"])
+        self.assertNotIn("VR::CompositorRenderCpuMs", result["missingRequired"])
         summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
         self.assertEqual(summary["series"]["Tracy::FrameInterval"]["selected"]["count"], 2)
+
+    def test_export_frame_timing_distinguishes_absent_zone_and_window_gap(self):
+        worker = TimingWorker()
+        worker.get_all_gpu_zone_stats = lambda: {}
+        worker.get_gpu_zone_occurrences = lambda *_: []
+        result = guard.export_frame_timing(worker, self.path, 2200000, 2800000)
+        self.assertEqual(result["requiredNotEmitted"], ["Game::MainUpdateD3D11"])
+        self.assertEqual(result["requiredOutsideWindow"], ["Tracy::FrameInterval"])
+        self.assertIn("VR::PoseToSubmitMs", result["plotsOutsideWindow"])
+        self.assertEqual(set(result["missingRequired"]), {
+            "Tracy::FrameInterval", "Game::MainUpdateD3D11"})
+        summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(summary["series"]["Game::MainUpdateD3D11"]["availability"],
+                         "not_emitted")
+        self.assertEqual(summary["series"]["Tracy::FrameInterval"]["availability"],
+                         "outside_window")
 
     def test_frame_timing_eval_exports_and_releases_namespace(self):
         namespace = {"ctx": TimingWorker()}

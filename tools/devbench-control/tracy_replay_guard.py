@@ -44,10 +44,6 @@ FRAME_TIMING_UNITS = {
 }
 REQUIRED_FRAME_TIMINGS = (
     "Tracy::FrameInterval", "Game::MainUpdateCpu", "Game::MainUpdateD3D11",
-    "VR::PoseToSubmitMs", "VR::AppPreSubmitGpuMs", "VR::TotalRenderGpuMs",
-    "VR::CompositorRenderGpuMs", "VR::CompositorRenderCpuMs",
-    "VR::ClientFrameIntervalMs", "VR::FramePresents", "VR::DroppedFrames",
-    "VR::CompositorFrameIndex",
 )
 
 
@@ -264,6 +260,8 @@ def export_frame_timing(worker, output_directory, window_start_ns=None,
             "kind": kind, "unit": unit, "sourceCount": source_count,
             "exportedCount": len(records), "firstSampleNs": first_ns,
             "lastSampleNs": last_ns, "selected": _summarize_values(selected),
+            "availability": ("not_emitted" if not records else
+                             "outside_window" if not selected else "selected"),
             "selectedFirstSampleNs": selected_times[0] if selected_times else None,
             "selectedLastSampleNs": selected_times[-1] if selected_times else None,
             "selectedMaxGapNs": max((b - a for a, b in zip(
@@ -319,9 +317,19 @@ def export_frame_timing(worker, output_directory, window_start_ns=None,
             output.flush()
             os.fsync(output.fileno())
 
+        def availability(name):
+            return summaries.get(name, {}).get("availability", "not_emitted")
+
+        required_not_emitted = [name for name in REQUIRED_FRAME_TIMINGS
+                                if availability(name) == "not_emitted"]
+        required_outside_window = [name for name in REQUIRED_FRAME_TIMINGS
+                                   if availability(name) == "outside_window"]
         missing = [name for name in REQUIRED_FRAME_TIMINGS
-                   if name not in summaries or summaries[name]["selected"]["count"] == 0]
-        not_emitted = [name for name in FRAME_TIMING_UNITS if name not in summaries]
+                   if availability(name) != "selected"]
+        not_emitted = [name for name in FRAME_TIMING_UNITS
+                       if availability(name) == "not_emitted"]
+        outside_window = [name for name in FRAME_TIMING_UNITS
+                          if availability(name) == "outside_window"]
         mismatched = [name for name, item in summaries.items()
                       if not item["countMatchesSource"]]
         summary = {
@@ -330,13 +338,18 @@ def export_frame_timing(worker, output_directory, window_start_ns=None,
             "windowStartNs": window_start_ns, "windowEndNs": window_end_ns,
             "windowIsFullCapture": full_capture,
             "series": summaries, "missingRequired": missing,
+            "requiredNotEmitted": required_not_emitted,
+            "requiredOutsideWindow": required_outside_window,
             "plotsNotEmitted": not_emitted,
+            "plotsOutsideWindow": outside_window,
             "sourceCountMismatches": mismatched, "rawRows": row_count,
         }
         with temporary_summary.open("x", encoding="utf-8") as output:
             json.dump(summary, output, indent=2, allow_nan=False)
             output.flush()
             os.fsync(output.fileno())
+        samples_sha256 = _sha256_file(temporary_csv)
+        summary_sha256 = _sha256_file(temporary_summary)
         os.rename(temporary_csv, csv_path)
         try:
             os.rename(temporary_summary, summary_path)
@@ -344,9 +357,12 @@ def export_frame_timing(worker, output_directory, window_start_ns=None,
             csv_path.unlink()
             raise
         return {"samplesPath": str(csv_path), "summaryPath": str(summary_path),
-                "samplesSha256": _sha256_file(csv_path),
-                "summarySha256": _sha256_file(summary_path),
+                "samplesSha256": samples_sha256,
+                "summarySha256": summary_sha256,
                 "missingRequired": missing, "plotsNotEmitted": not_emitted,
+                "requiredNotEmitted": required_not_emitted,
+                "requiredOutsideWindow": required_outside_window,
+                "plotsOutsideWindow": outside_window,
                 "sourceCountMismatches": mismatched,
                 "rawRows": row_count}
     finally:

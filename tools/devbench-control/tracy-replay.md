@@ -622,14 +622,19 @@ count, mean, median, p95, p99, minimum and maximum for every selected
 series, with units, full-capture counts, first/last sample timestamps,
 selected-window endpoints and the largest selected sample gap.
 Verify its paths and SHA-256 receipt, `rawRows`, `missingRequired`,
-`sourceCountMismatches` and `plotsNotEmitted` before marking extraction
-complete. A conditional OpenVR plot such as post-submit GPU time can be
-absent when the renderer emits only zero/invalid samples; record that
-absence, never substitute zero. A required absent series or unexplained
-count mismatch makes the frame-timing analysis incomplete while preserving
-the valid raw capture and other metrics. Plot timestamps are sampling-call
-times and may lag the compositor frame they describe; do not claim
-frame-exact alignment to CPU/GPU zones or fpsVR from them alone.
+`sourceCountMismatches`, `requiredNotEmitted`,
+`requiredOutsideWindow`, `plotsNotEmitted` and `plotsOutsideWindow`
+before marking extraction complete. The required set is the primary Tracy
+frame interval and the two main-update zones in builds that expose them.
+VR and OpenVR timing plots are conditional: a valid null-HMD run may lack a
+field when its source does not emit a valid sample. Record each absence or empty
+selected window, never substitute zero. A missing required series or an
+unexplained count mismatch makes only the frame-timing analysis incomplete;
+preserve the valid raw capture and other metrics. The per-series
+`availability` distinguishes `not_emitted`, `outside_window` and `selected`.
+Plot timestamps are sampling-call times and may lag the compositor frame
+they describe; do not claim frame-exact alignment to CPU/GPU zones or fpsVR
+from them alone.
 
 Check the installed binding implementation before interpreting its counts.
 The inspected protocol-83 occurrence API uses positive-duration statistics
