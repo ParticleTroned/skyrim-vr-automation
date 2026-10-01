@@ -580,6 +580,33 @@ scores or threshold outcomes. Visible HUD/menus or an uncertain visual
 review leave UI qualification unresolved; other scene, camera, artifact or
 scoring failures remain subject to their existing checks.
 
+Score matched stills against the other build's verified full-stereo PNG by
+passing its exact path and identical named regions to DevBench `capture`.
+Retain that PNG and its hash; a separate golden registry is not required for
+an explicit `golden` path. SSIM reports similarity, not which renderer has
+better image quality. Inspect the same native center, mask-boundary and
+periphery regions in both eyes before interpreting the scores.
+
+For temporal bursts, verify more than file count and sequence continuity.
+Compare the first acquired frames with the matched still and inspect adjacent
+frames for a camera jump before the intended sweep. The replay can apply its
+first camera pose after sequence acquisition begins even when earlier camera
+readbacks matched. Preserve all raw frames, mark the last contaminated
+pre-roll frame, and exclude only that prefix from temporal quality analysis.
+Require usable stationary frames before the sweep, sweep frames, and usable
+stationary frames after it. If any phase is missing, repeat that view's burst
+before benchmarking the other build; do not treat a camera jump as shimmer.
+Apply the same phase gate independently to each build and route.
+
+Compare temporal images by the observed acquisition timestamps and motion
+phase, not matching frame ordinals or forcing equal frame counts across
+different frame rates. Preserve the exact motion recipe, camera readbacks,
+frame counters, eye/source metadata and excluded prefix. Without camera pose
+at each acquired frame or image-based registration, a burst supports visual
+assessment of shimmer, ghosting and stereo consistency, but not a
+pixel-aligned numeric ranking at identical poses. Pair each view with a
+burst from the other build before making a cross-build temporal claim.
+
 The pinned exterior recording actually ends in `Riverwood02`, despite its
 `GuardianStonesToWhiterun` filename. Preserve the supplied path in both
 forks and label the actual endpoint; do not silently extend it to Whiterun.
@@ -662,12 +689,20 @@ Verify its paths and SHA-256 receipt, `rawRows`, `missingRequired`,
 `requiredOutsideWindow`, `plotsNotEmitted` and `plotsOutsideWindow`
 before marking extraction complete. The required set is the primary Tracy
 frame interval and the two main-update zones in builds that expose them.
+Check that the export's selected start/end equal the finalized active-path
+bounds, not the broader DevBench replay bounds. A raw export made before the
+path markers were finalized must be reselected from its complete sample CSV
+or re-exported before reporting performance. The raw trace need not be
+recaptured for a window correction.
 VR and OpenVR timing plots are conditional: a valid null-HMD run may lack a
 field when its source does not emit a valid sample. Record each absence or empty
 selected window, never substitute zero. A missing required series or an
 unexplained count mismatch makes only the frame-timing analysis incomplete;
 preserve the valid raw capture and other metrics. The per-series
 `availability` distinguishes `not_emitted`, `outside_window` and `selected`.
+An optional plot with samples elsewhere in the capture but none inside the
+active path is `outside_window`; report it as unavailable for that path,
+without invalidating the required frame series.
 Plot timestamps are sampling-call times and may lag the compositor frame
 they describe; do not claim frame-exact alignment to CPU/GPU zones or fpsVR
 from them alone.
