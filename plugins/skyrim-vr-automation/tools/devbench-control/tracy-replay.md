@@ -245,15 +245,17 @@ game session; do not assign them to the replay without a timestamped source.
 The inspected fpsVR raw CSV records one row per used frame, as described by
 the [fpsVR developer](https://steamcommunity.com/app/908520/discussions/0/2968397584539930893/).
 Validate strict `SteamVR Time` increase and complete adjacent rows, then calculate the
-recorded delivered-frame interval as each consecutive timestamp difference
+recorded used-frame interval as each consecutive timestamp difference
 in milliseconds. Keep only pairs wholly inside the matched active-path window.
 Report its count, mean, median, p95, p99, minimum and maximum, and effective
-delivered FPS as interval count divided by their elapsed seconds. Label this
-as frame cadence including pacing and missed-frame delays, not application
-CPU/GPU busy time. The logged FPS column is a rolling reading; its mean can
-differ from delivered frames divided by elapsed time. If the CSV does not
-establish per-used-frame rows or has unexplained timestamp gaps, report
-cadence as uncertain instead of calling it measured total render time.
+used-frame FPS as interval count divided by their elapsed seconds. Label this
+as used-application-frame cadence including pacing and missed-frame delays,
+not HMD scanout cadence or application CPU/GPU busy time. Reprojection can
+display additional HMD frames between these rows. The logged FPS column is
+a rolling reading; its mean can differ from used frames divided by elapsed
+time. If the CSV does not establish per-used-frame rows or has unexplained
+timestamp gaps, report cadence as uncertain instead of calling it measured
+total render time.
 
 Keep Tracy frame intervals alongside fpsVR cadence. If fpsVR exposes a
 separate total application frame-time field, retain its documented meaning;
@@ -733,24 +735,42 @@ Verify its paths and SHA-256 receipt, `rawRows`, `missingRequired`,
 `sourceCountMismatches`, `requiredNotEmitted`,
 `requiredOutsideWindow`, `plotsNotEmitted` and `plotsOutsideWindow`
 before marking extraction complete. The required set is the primary Tracy
-frame interval and the two main-update zones in builds that expose them.
+frame interval and the two broad main-update zones in VR builds that expose
+them; CSX emits these zones only in VR.
 Check that the export's selected start/end equal the finalized active-path
 bounds, not the broader DevBench replay bounds. A raw export made before the
 path markers were finalized must be reselected from its complete sample CSV
 or re-exported before reporting performance. The raw trace need not be
 recaptured for a window correction.
 VR and OpenVR timing plots are conditional: a valid null-HMD run may lack a
-field when its source does not emit a valid sample. Record each absence or empty
-selected window, never substitute zero. A missing required series or an
-unexplained count mismatch makes only the frame-timing analysis incomplete;
-preserve the valid raw capture and other metrics. The per-series
-`availability` distinguishes `not_emitted`, `outside_window` and `selected`.
+field when its build does not instrument it or its source does not emit a
+valid sample. Record each absence or empty selected window, never substitute
+zero. CSX history-sampling builds retain OpenVR-reported zero compositor
+CPU/GPU and post-submit GPU timings; zero is data, not an absent series.
+A missing required series or an unexplained count mismatch makes only the
+frame-timing analysis incomplete; preserve the valid raw capture and other
+metrics.
+Per-series `availability` distinguishes `not_emitted`, `outside_window`
+and `selected`.
 An optional plot with samples elsewhere in the capture but none inside the
 active path is `outside_window`; report it as unavailable for that path,
 without invalidating the required frame series.
-Plot timestamps are sampling-call times and may lag the compositor frame
-they describe; do not claim frame-exact alignment to CPU/GPU zones or fpsVR
-from them alone.
+For the CSX history-sampling build, `VR::CompositorFrameIntervalMs` measures
+only consecutive compositor indices. `VR::ObservedTimingGapMs` appears only
+when indices are skipped; its absence can mean there were no skipped indices.
+It is not a per-frame interval distribution. `VR::FrameIndexAdvance` greater
+than one identifies missed history entries. Compare interval and gap
+statistics only with builds using the same semantics; retain source commit
+and Build ID for older traces. Interpret `VR::ReprojectionFlags` bitwise per
+sample, not as a mean flag value. `VR::OpenVRCpuFrameMs` is render-to-submit
+elapsed time plus compositor CPU time, not whole-process CPU busy time.
+Preserve fpsVR as an independent player-facing measurement until parity is
+demonstrated on matched runs.
+Plot timestamps are sampling-call times. Backfilled compositor entries can
+share a timestamp, so selected-path plot boundaries may include or exclude
+source frames near those boundaries. Use the compositor frame-interval and
+index-advance plots for cadence. Do not infer cadence from plot timestamp
+gaps or claim frame-exact alignment to CPU/GPU zones or fpsVR from them alone.
 
 Check the installed binding implementation before interpreting its counts.
 The inspected protocol-83 occurrence API uses positive-duration statistics

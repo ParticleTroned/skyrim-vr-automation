@@ -428,6 +428,8 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(result["requiredOutsideWindow"], [])
         self.assertEqual(result["sourceCountMismatches"], [])
         self.assertEqual(summary["series"]["VR::PoseToSubmitMs"]["selected"]["p99"], 1.99)
+        self.assertEqual(summary["series"]["VR::OpenVRCpuFrameMs"]["unit"], "ms")
+        self.assertEqual(summary["series"]["VR::ReprojectionFlags"]["unit"], "flags")
         self.assertEqual(summary["series"]["Game::MainUpdateCpu"]["selected"]["count"], 1)
         self.assertEqual(summary["series"]["VR::AdditionalMetric"]["unit"], "native")
         self.assertEqual(result["rawRows"], len(rows))
@@ -473,6 +475,16 @@ class GuardTests(unittest.TestCase):
         self.assertNotIn("VR::CompositorRenderCpuMs", result["missingRequired"])
         summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
         self.assertEqual(summary["series"]["Tracy::FrameInterval"]["selected"]["count"], 2)
+
+    def test_export_frame_timing_preserves_reported_zero(self):
+        worker = TimingWorker()
+        worker.plots["VR::CompositorRenderGpuMs"] = [(2000000, 0.0), (3000000, 0.0)]
+        result = guard.export_frame_timing(worker, self.path, 2000000, 4000000)
+        summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
+        series = summary["series"]["VR::CompositorRenderGpuMs"]
+        self.assertEqual(series["selected"]["count"], 2)
+        self.assertEqual(series["selected"]["mean"], 0.0)
+        self.assertEqual(series["availability"], "selected")
 
     def test_export_frame_timing_distinguishes_absent_zone_and_window_gap(self):
         worker = TimingWorker()
