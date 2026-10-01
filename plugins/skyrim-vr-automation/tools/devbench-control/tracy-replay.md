@@ -516,7 +516,9 @@ taken after an interior replay does not establish a change during its
 measurement window and must not alone invalidate the run or require a
 repeat. Distinguish that observation from measured lighting/image changes.
 
-Capture PNG full stereo plus both separate eyes when exposed. Keep HUD,
+Capture one PNG full-stereo still per matched view. Its same-frame left and
+right halves supply the separate-eye review; save additional eye files only
+for a specific diagnostic that the stereo file cannot answer. Keep HUD,
 exposure, torch/equipment, null pose, projected FOV, hour/weather and temporal
 settling identical. Save actual camera transforms and dimensions alongside
 requested values: camera pitch/yaw may clamp or differ in VR. A screenshot
@@ -588,6 +590,15 @@ better image quality. Inspect the same native center, mask-boundary and
 periphery regions in both eyes before interpreting the scores.
 
 For temporal bursts, verify more than file count and sequence continuity.
+Capture one native-region stereo burst per matched view, using only the
+center, mask-boundary and periphery regions needed for this comparison.
+Use the observed render cadence and the pinned motion recipe to request
+enough frames for a short initial hold, the sweep and a short final hold;
+end the requested sequence after the final hold with a small timing margin
+rather than extending it for a round frame count. Do not collect duplicate
+full-frame sequences, preview videos or extra viewpoints without a specific
+question they answer. A longer saved reference burst may be trimmed to the
+overlapping useful phase; equal raw frame counts are not required.
 Compare the first acquired frames with the matched still and inspect adjacent
 frames for a camera jump before the intended sweep. The replay can apply its
 first camera pose after sequence acquisition begins even when earlier camera
