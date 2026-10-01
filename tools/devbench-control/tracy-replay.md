@@ -593,6 +593,44 @@ events in the verified trace and export exact duration histograms plus
 per-frame counts/totals computed from every exposed occurrence. Record this
 storage choice explicitly; do not truncate samples.
 
+For captures with `Game::MainUpdateCpu`, `Game::MainUpdateD3D11` and `VR::`
+plots, use the existing guard helper's `frame_timing_eval_code` after saving
+and reloading the completed trace. Supply an existing absolute evidence
+directory and, when established, both route-window bounds in Tracy
+nanoseconds. Without those bounds the helper labels its statistics as the
+**full capture**, not the walking route. It writes the complete raw
+`tracy-frame-timing-samples.csv` once, including frame boundaries, both
+main-update zones, Tracy's `Frame` plot, and every `VR::` and `OpenVR::`
+plot exposed by the trace. Preserve those plot names separately: their
+sampling points and definitions need not be identical. The
+`inSelectedWindow` column preserves the selected subset without losing
+the raw samples needed to revise an uncertain route boundary later.
+
+```python
+import runpy
+helpers = runpy.run_path(helper_path)
+code = helpers["frame_timing_eval_code"](
+    helper_path, evidence_directory, route_start_ns, route_end_ns)
+# Pass code to Tracy MCP eval on the saved, disconnected capture's instance.
+```
+
+The exporter requests each selected plot's recorded count plus one from
+`get_plot_samples`, checks exact counts, and rejects truncation. It requests
+the enclosing CPU/GPU occurrences above their recorded counts and retains
+CPU thread IDs where the binding exposes them. The summary JSON contains
+count, mean, median, p95, p99, minimum and maximum for every selected
+series, with units, full-capture counts, first/last sample timestamps,
+selected-window endpoints and the largest selected sample gap.
+Verify its paths and SHA-256 receipt, `rawRows`, `missingRequired`,
+`sourceCountMismatches` and `plotsNotEmitted` before marking extraction
+complete. A conditional OpenVR plot such as post-submit GPU time can be
+absent when the renderer emits only zero/invalid samples; record that
+absence, never substitute zero. A required absent series or unexplained
+count mismatch makes the frame-timing analysis incomplete while preserving
+the valid raw capture and other metrics. Plot timestamps are sampling-call
+times and may lag the compositor frame they describe; do not claim
+frame-exact alignment to CPU/GPU zones or fpsVR from them alone.
+
 Check the installed binding implementation before interpreting its counts.
 The inspected protocol-83 occurrence API uses positive-duration statistics
 indexes, merges source locations by name and exposes no per-occurrence GPU

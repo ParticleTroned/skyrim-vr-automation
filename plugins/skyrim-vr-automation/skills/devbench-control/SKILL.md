@@ -118,7 +118,9 @@ game process, asynchronous replay, GPU readiness and full-capture acceptance
 checks. An empty instance list or scheduler completion cannot establish a
 clean collector or a complete performance result. Do not repair or reconnect
 mid-measurement, or declare the next route ready before extraction and image
-validation finish.
+validation finish. For builds with main-update Tracy zones and VR timing plots,
+run the protocol's offline frame-timing export and verify every available
+series and its count before reporting the comparison.
 
 The bundled fallback entry point is:
 

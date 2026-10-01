@@ -3,6 +3,8 @@
 
 import gc
 import ctypes
+import csv
+import hashlib
 import json
 import math
 import os
@@ -12,6 +14,41 @@ import time
 
 
 MIB = 1024 ** 2
+
+FRAME_TIMING_UNITS = {
+    "Frame": "ms",
+    "OpenVR::Frame index": "index",
+    "OpenVR::CPU frame including pose wait (ms)": "ms",
+    "OpenVR::CPU frame excluding pose wait (ms)": "ms",
+    "OpenVR::Application GPU total (ms)": "ms",
+    "OpenVR::Scene GPU (ms)": "ms",
+    "OpenVR::Post-submit GPU (ms)": "ms",
+    "OpenVR::Compositor GPU (ms)": "ms",
+    "OpenVR::Render GPU including compositor (ms)": "ms",
+    "OpenVR::Present CPU (ms)": "ms",
+    "OpenVR::Submit CPU (ms)": "ms",
+    "OpenVR::Frame interval (ms)": "ms",
+    "VR::PoseToSubmitMs": "ms",
+    "VR::AppPreSubmitGpuMs": "ms",
+    "VR::AppPostSubmitGpuMs": "ms",
+    "VR::TotalRenderGpuMs": "ms",
+    "VR::CompositorRenderGpuMs": "ms",
+    "VR::CompositorRenderCpuMs": "ms",
+    "VR::ClientFrameIntervalMs": "ms",
+    "VR::CompositorFrameIntervalMs": "ms",
+    "VR::ObservedTimingGapMs": "ms",
+    "VR::FramePresents": "count",
+    "VR::DroppedFrames": "count",
+    "VR::CompositorFrameIndex": "index",
+    "VR::FrameIndexAdvance": "count",
+}
+REQUIRED_FRAME_TIMINGS = (
+    "Tracy::FrameInterval", "Game::MainUpdateCpu", "Game::MainUpdateD3D11",
+    "VR::PoseToSubmitMs", "VR::AppPreSubmitGpuMs", "VR::TotalRenderGpuMs",
+    "VR::CompositorRenderGpuMs", "VR::CompositorRenderCpuMs",
+    "VR::ClientFrameIntervalMs", "VR::FramePresents", "VR::DroppedFrames",
+    "VR::CompositorFrameIndex",
+)
 
 
 def windows_memory(collector_pid):
@@ -132,20 +169,206 @@ def require_gpu_ready(before, after, expected_pid):
 
 def summarize_ns(values):
     """Retain the count and use linear-interpolated quantiles in milliseconds."""
-    if not values:
-        return {"count": 0, "meanMs": None, "medianMs": None, "p95Ms": None, "p99Ms": None}
     if any(not math.isfinite(v) or v <= 0 for v in values):
         raise ValueError("invalid_duration")
+    result = _summarize_values([value / 1e6 for value in values])
+    return {"count": result["count"], "meanMs": result["mean"],
+            "medianMs": result["median"], "p95Ms": result["p95"],
+            "p99Ms": result["p99"]}
+
+
+def _summarize_values(values):
+    if any(type(value) not in (int, float) or not math.isfinite(value)
+           for value in values):
+        raise ValueError("invalid_timing_value")
+    if not values:
+        return {"count": 0, "mean": None, "median": None,
+                "p95": None, "p99": None, "min": None, "max": None}
     ordered = sorted(values)
 
     def percentile(q):
         position = (len(ordered) - 1) * q
         lo = math.floor(position)
         hi = math.ceil(position)
-        return (ordered[lo] + (ordered[hi] - ordered[lo]) * (position - lo)) / 1e6
+        return ordered[lo] + (ordered[hi] - ordered[lo]) * (position - lo)
 
-    return {"count": len(values), "meanMs": sum(values) / len(values) / 1e6,
-            "medianMs": percentile(.5), "p95Ms": percentile(.95), "p99Ms": percentile(.99)}
+    return {"count": len(values), "mean": sum(values) / len(values),
+            "median": percentile(.5), "p95": percentile(.95),
+            "p99": percentile(.99), "min": ordered[0], "max": ordered[-1]}
+
+
+def _zone_stat_count(stats, name):
+    return sum(item.count for label, item in stats.items()
+               if label == name or label.startswith(name + " (")
+               or label.startswith(name + " <"))
+
+
+def _sha256_file(path):
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def export_frame_timing(worker, output_directory, window_start_ns=None,
+                        window_end_ns=None):
+    """Export all native frame spans and VR plots after capture, without MCP arrays."""
+    directory = Path(output_directory)
+    if not directory.is_absolute() or not directory.is_dir():
+        raise ValueError("existing_absolute_evidence_directory_required")
+    if worker.is_connected() or not worker.is_background_done():
+        raise RuntimeError("completed_trace_required")
+    first_event = worker.get_first_time()
+    capture_end = worker.get_last_time()
+    if (window_start_ns is None) != (window_end_ns is None):
+        raise ValueError("both_window_boundaries_required")
+    full_capture = window_start_ns is None
+    if not full_capture and (type(window_start_ns) is not int
+                             or type(window_end_ns) is not int
+                             or not 0 <= window_start_ns < window_end_ns <= capture_end):
+        raise ValueError("window_outside_capture")
+
+    csv_path = directory / "tracy-frame-timing-samples.csv"
+    summary_path = directory / "tracy-frame-timing-summary.json"
+    if csv_path.exists() or summary_path.exists():
+        raise FileExistsError("frame_timing_export_already_exists")
+    temporary_csv = directory / (".tracy-frame-timing-%d.csv.tmp" % time.time_ns())
+    temporary_summary = directory / (".tracy-frame-timing-%d.json.tmp" % time.time_ns())
+    summaries = {}
+    row_count = 0
+
+    def add_series(writer, name, kind, unit, records, source_count):
+        nonlocal row_count
+        selected = []
+        selected_times = []
+        first_ns = None
+        last_ns = None
+        for timestamp, duration, value, thread_id in records:
+            if (type(timestamp) is not int or timestamp < 0
+                    or type(value) not in (int, float) or not math.isfinite(value)):
+                raise ValueError("invalid_timing_sample:" + name)
+            if duration is not None and (type(duration) is not int or duration <= 0):
+                raise ValueError("invalid_timing_duration:" + name)
+            in_window = full_capture or (
+                window_start_ns <= timestamp <= window_end_ns and
+                (duration is None or timestamp + duration <= window_end_ns))
+            writer.writerow((name, kind, timestamp, "" if duration is None else duration,
+                             value, unit, "" if thread_id is None else thread_id,
+                             int(in_window)))
+            row_count += 1
+            first_ns = timestamp if first_ns is None else min(first_ns, timestamp)
+            last_ns = timestamp if last_ns is None else max(last_ns, timestamp)
+            if in_window:
+                selected.append(value)
+                selected_times.append(timestamp)
+        selected_times.sort()
+        summaries[name] = {
+            "kind": kind, "unit": unit, "sourceCount": source_count,
+            "exportedCount": len(records), "firstSampleNs": first_ns,
+            "lastSampleNs": last_ns, "selected": _summarize_values(selected),
+            "selectedFirstSampleNs": selected_times[0] if selected_times else None,
+            "selectedLastSampleNs": selected_times[-1] if selected_times else None,
+            "selectedMaxGapNs": max((b - a for a, b in zip(
+                selected_times, selected_times[1:])), default=None),
+            "countMatchesSource": source_count == len(records),
+        }
+
+    try:
+        with temporary_csv.open("x", newline="", encoding="utf-8") as output:
+            writer = csv.writer(output)
+            writer.writerow(("name", "kind", "timestampNs", "durationNs",
+                             "value", "unit", "threadId", "inSelectedWindow"))
+            boundaries = worker.get_frame_boundaries()
+            frames = [(begin, finish - begin, (finish - begin) / 1e6, None)
+                      for begin, finish in boundaries if finish > begin]
+            add_series(writer, "Tracy::FrameInterval", "frame", "ms",
+                       frames, len(boundaries))
+
+            frame_limit = worker.get_frame_count() + 2
+            for name, kind, stats, method in (
+                    ("Game::MainUpdateCpu", "cpu_zone", worker.get_all_zone_stats(),
+                     worker.get_zone_occurrences_with_thread),
+                    ("Game::MainUpdateD3D11", "gpu_zone",
+                     worker.get_all_gpu_zone_stats(), worker.get_gpu_zone_occurrences)):
+                count = _zone_stat_count(stats, name)
+                limit = max(count + 1, frame_limit, 1024)
+                occurrences = method(name, limit)
+                if len(occurrences) >= limit:
+                    raise RuntimeError("zone_export_truncated:" + name)
+                if kind == "cpu_zone":
+                    records = [(begin, duration, duration / 1e6, thread)
+                               for begin, duration, thread in occurrences]
+                else:
+                    records = [(begin, duration, duration / 1e6, None)
+                               for begin, duration in occurrences]
+                add_series(writer, name, kind, "ms", records, count)
+                del occurrences, records
+
+            for plot in sorted(worker.get_plots(), key=lambda item: item.name):
+                if not (plot.name == "Frame" or plot.name.startswith("VR::")
+                        or plot.name.startswith("OpenVR::")):
+                    continue
+                limit = plot.count + 1
+                samples = worker.get_plot_samples(plot.name, limit)
+                if len(samples) != plot.count:
+                    raise RuntimeError("plot_export_count_mismatch:" + plot.name)
+                records = [(timestamp, None, value, None)
+                           for timestamp, value in samples]
+                add_series(writer, plot.name, "plot",
+                           FRAME_TIMING_UNITS.get(plot.name, "native"),
+                           records, plot.count)
+                del samples, records
+            output.flush()
+            os.fsync(output.fileno())
+
+        missing = [name for name in REQUIRED_FRAME_TIMINGS
+                   if name not in summaries or summaries[name]["selected"]["count"] == 0]
+        not_emitted = [name for name in FRAME_TIMING_UNITS if name not in summaries]
+        mismatched = [name for name, item in summaries.items()
+                      if not item["countMatchesSource"]]
+        summary = {
+            "schema": "skyrim-vr-tracy-frame-timing-v1",
+            "captureFirstEventNs": first_event, "captureLastEventNs": capture_end,
+            "windowStartNs": window_start_ns, "windowEndNs": window_end_ns,
+            "windowIsFullCapture": full_capture,
+            "series": summaries, "missingRequired": missing,
+            "plotsNotEmitted": not_emitted,
+            "sourceCountMismatches": mismatched, "rawRows": row_count,
+        }
+        with temporary_summary.open("x", encoding="utf-8") as output:
+            json.dump(summary, output, indent=2, allow_nan=False)
+            output.flush()
+            os.fsync(output.fileno())
+        os.rename(temporary_csv, csv_path)
+        try:
+            os.rename(temporary_summary, summary_path)
+        except Exception:
+            csv_path.unlink()
+            raise
+        return {"samplesPath": str(csv_path), "summaryPath": str(summary_path),
+                "samplesSha256": _sha256_file(csv_path),
+                "summarySha256": _sha256_file(summary_path),
+                "missingRequired": missing, "plotsNotEmitted": not_emitted,
+                "sourceCountMismatches": mismatched,
+                "rawRows": row_count}
+    finally:
+        temporary_csv.unlink(missing_ok=True)
+        temporary_summary.unlink(missing_ok=True)
+
+
+def frame_timing_eval_code(helper_path, output_directory,
+                           window_start_ns=None, window_end_ns=None):
+    """Keep raw timing arrays in the collector and return only export receipts."""
+    request = {"directory": str(output_directory), "start": window_start_ns,
+               "end": window_end_ns}
+    return (
+        "try:\n"
+        " import gc, json, runpy\n"
+        f" _helpers = runpy.run_path({str(helper_path)!r})\n"
+        f" _request = json.loads({json.dumps(request)!r})\n"
+        " print(json.dumps(_helpers['export_frame_timing']("
+        "ctx, _request['directory'], _request['start'], _request['end'])))\n"
+        "finally:\n"
+        " globals().clear()\n"
+    )
 
 
 class CaptureGuard:

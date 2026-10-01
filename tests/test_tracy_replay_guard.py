@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import gc
+import csv
+from contextlib import redirect_stdout
+import hashlib
 import importlib.util
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -37,6 +41,40 @@ class Worker:
     def disconnect(self):
         self.connected = False
         self.stops += 1
+
+
+class TimingWorker(Worker):
+    def __init__(self):
+        super().__init__()
+        self.connected = False
+        self.plots = {
+            name: [(2000000, 1.0), (3000000, 2.0)]
+            for name in guard.FRAME_TIMING_UNITS
+        }
+        self.plots["VR::AdditionalMetric"] = [(2000000, 4.0)]
+
+    def is_background_done(self): return True
+    def get_first_time(self): return 1500000
+    def get_last_time(self): return 5000000
+    def get_frame_count(self): return 2
+    def get_frame_boundaries(self):
+        return [(1000000, 2000000), (2000000, 3000000)]
+    def get_all_zone_stats(self):
+        return {"Game::MainUpdateCpu (0x1)[64] <7>": SimpleNamespace(count=2)}
+    def get_all_gpu_zone_stats(self):
+        return {"Game::MainUpdateD3D11": SimpleNamespace(count=2)}
+    def get_zone_occurrences_with_thread(self, name, max_samples):
+        self.cpu_limit = max_samples
+        return [(1200000, 300000, 13), (2200000, 400000, 13)]
+    def get_gpu_zone_occurrences(self, name, max_samples):
+        self.gpu_limit = max_samples
+        return [(1300000, 200000), (2300000, 250000)]
+    def get_plots(self):
+        return [SimpleNamespace(name=name, count=len(samples))
+                for name, samples in self.plots.items()]
+    def get_plot_samples(self, name, max_samples):
+        self.plot_limit = max_samples
+        return self.plots[name][:max_samples]
 
 
 class GuardTests(unittest.TestCase):
@@ -378,6 +416,59 @@ class GuardTests(unittest.TestCase):
         self.assertAlmostEqual(result["p99Ms"], 3.97)
         self.assertIsNone(guard.summarize_ns([])["p99Ms"])
         with self.assertRaises(ValueError): guard.summarize_ns([0])
+
+    def test_export_frame_timing_keeps_complete_raw_samples_and_window_stats(self):
+        worker = TimingWorker()
+        result = guard.export_frame_timing(worker, self.path, 2000000, 4000000)
+        summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
+        with Path(result["samplesPath"]).open(newline="", encoding="utf-8") as source:
+            rows = list(csv.DictReader(source))
+        self.assertEqual(result["missingRequired"], [])
+        self.assertEqual(result["sourceCountMismatches"], [])
+        self.assertEqual(summary["series"]["VR::PoseToSubmitMs"]["selected"]["p99"], 1.99)
+        self.assertEqual(summary["series"]["Game::MainUpdateCpu"]["selected"]["count"], 1)
+        self.assertEqual(summary["series"]["VR::AdditionalMetric"]["unit"], "native")
+        self.assertEqual(result["rawRows"], len(rows))
+        self.assertEqual(result["samplesSha256"], hashlib.sha256(
+            Path(result["samplesPath"]).read_bytes()).hexdigest())
+        self.assertEqual(summary["series"]["VR::PoseToSubmitMs"]["selectedMaxGapNs"],
+                         1000000)
+        self.assertGreater(worker.plot_limit, 2)
+        self.assertGreater(worker.cpu_limit, 2)
+        with self.assertRaises(FileExistsError):
+            guard.export_frame_timing(worker, self.path)
+
+    def test_export_frame_timing_rejects_truncated_plot_without_publication(self):
+        worker = TimingWorker()
+        worker.plots["VR::PoseToSubmitMs"] = [(2000000, 1.0), (3000000, 2.0)]
+        original = worker.get_plot_samples
+        worker.get_plot_samples = lambda name, max_samples: (
+            original(name, max_samples)[:1] if name == "VR::PoseToSubmitMs"
+            else original(name, max_samples))
+        with self.assertRaisesRegex(RuntimeError, "plot_export_count_mismatch"):
+            guard.export_frame_timing(worker, self.path)
+        self.assertFalse((self.path / "tracy-frame-timing-samples.csv").exists())
+        self.assertFalse((self.path / "tracy-frame-timing-summary.json").exists())
+
+    def test_export_frame_timing_marks_conditional_plots_without_fake_zero(self):
+        worker = TimingWorker()
+        del worker.plots["VR::AppPostSubmitGpuMs"]
+        result = guard.export_frame_timing(worker, self.path)
+        self.assertIn("VR::AppPostSubmitGpuMs", result["plotsNotEmitted"])
+        self.assertNotIn("VR::AppPostSubmitGpuMs", result["missingRequired"])
+        summary = json.loads(Path(result["summaryPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(summary["series"]["Tracy::FrameInterval"]["selected"]["count"], 2)
+
+    def test_frame_timing_eval_exports_and_releases_namespace(self):
+        namespace = {"ctx": TimingWorker()}
+        output = StringIO()
+        code = guard.frame_timing_eval_code(HELPER, self.path, 2000000, 4000000)
+        with redirect_stdout(output):
+            exec(code, namespace)
+        self.assertEqual(namespace, {})
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["missingRequired"], [])
+        self.assertTrue(Path(receipt["samplesPath"]).is_file())
 
     def test_packaged_helper_and_protocol_match_source(self):
         for relative in ("tools/devbench-control/tracy_replay_guard.py",
