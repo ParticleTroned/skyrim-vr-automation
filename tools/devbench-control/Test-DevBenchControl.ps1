@@ -63,11 +63,13 @@ $capabilitiesPayload = '{"contract":{"name":"devbench.input","version":{"major":
 $stopPayload = '{"action":"stop","path":"recording.json","meta":{"correlationId":"owned"},"limitReached":false}' | ConvertFrom-Json
 $listPayload = '{"count":1,"dir":"recordings","recordings":[{"file":"recording.json"}]}' | ConvertFrom-Json
 $foveationPayload = '{"action":"foveation_configure","transitionSucceeded":true,"settingsChanged":true,"noOp":false,"executionClaimed":false,"neuralRendering":{"foveation":{"settings":{"fovOnlyCenterScale":0.95}}}}' | ConvertFrom-Json
+$renderScalePayload = @{action='status'; producer=@{buildId=('a' * 64)}; status=@{frame=42; modeStatus='Active'; controller=@{state='Active'}}} | ConvertTo-Json -Depth 5 | ConvertFrom-Json
 $actionCases = @(
     @{tool='input'; args=@{action='capabilities'}; payload=$capabilitiesPayload},
     @{tool='record'; args=@{action='stop';expectedCorrelationId='owned'}; payload=$stopPayload},
     @{tool='recordings'; args=@{action='list'}; payload=$listPayload},
-    @{tool='communityshaders.neural_rendering'; args=@{action='foveation_configure';fovOnlyCenterScale=0.95}; payload=$foveationPayload}
+    @{tool='communityshaders.neural_rendering'; args=@{action='foveation_configure';fovOnlyCenterScale=0.95}; payload=$foveationPayload},
+    @{tool='communityshaders.renderscale'; args=@{action='status'}; payload=$renderScalePayload}
 )
 foreach ($case in $actionCases) {
     $accepted = Get-DevBenchCallSemanticStatus -ToolName $case.tool -Arguments $case.args -Content @($case.payload)
@@ -114,6 +116,16 @@ $foveationPayload.transitionSucceeded = $false
 Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.neural_rendering @{action='foveation_configure'} @($foveationPayload)).ok) 'failed FOV transitions remain failures'
 $foveationPayload.transitionSucceeded = 'true'
 Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.neural_rendering @{action='foveation_configure'} @($foveationPayload)).ok) 'FOV success requires a typed transition result'
+foreach ($frame in @('42', -1, $true, 4.5, $null)) {
+    $renderScalePayload.status.frame = $frame
+    Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.renderscale @{action='status'} @($renderScalePayload)).ok) 'render-scale observation requires a nonnegative integer frame'
+}
+$renderScalePayload.status.frame = 42
+$renderScalePayload.status.modeStatus = 'Inactive'
+$renderScalePayload.status.controller.state = 'Idle'
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.renderscale @{action='status'} @($renderScalePayload)).ok) 'read success does not require active render scale or claim physical readiness'
+$renderScalePayload.producer.buildId = ''
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.renderscale @{action='status'} @($renderScalePayload)).ok) 'render-scale read requires producer identity'
 $queuedConsole = Get-DevBenchCallSemanticStatus console @{action='exec'} @([pscustomobject]@{queued=$true;command='coc Example'})
 Assert-Test (-not $queuedConsole.known) 'queued console dispatch still does not establish completed scene transition'
 

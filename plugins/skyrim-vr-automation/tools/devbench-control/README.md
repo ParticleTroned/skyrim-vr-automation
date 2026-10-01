@@ -279,6 +279,10 @@ larger PowerShell orchestration host. A missing runtime file, identity mismatch,
 or unreachable endpoint is a blocked result.
 
 `DevBenchControl.psm1` exports two lossless render-scale telemetry normalizers.
+The exact `communityshaders.renderscale/status` response is recognized by its
+action, producer Build ID, integer frame and controller observation even when
+the service has no generic `ok` field. This establishes a successful read,
+not render-scale readiness; explicit service errors still fail the call.
 `Get-DevBenchResourcePublicationTelemetry` retains publication generations,
 expected/published dimensions, completion/deferred setup, and D3D identity.
 `Get-DevBenchRenderScalePreparationTelemetry` retains the complete bounded

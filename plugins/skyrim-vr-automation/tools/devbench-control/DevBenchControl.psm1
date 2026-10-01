@@ -195,6 +195,7 @@ function Get-DevBenchActionContract {
         'recordings/list' { 'recordings-list' }
         'record/stop' { 'record-stop' }
         'communityshaders.neural_rendering/foveation_configure' { 'foveation-settings-transition' }
+        'communityshaders.renderscale/status' { 'renderscale-status-read' }
         default { return $null }
     }
     $reasons = [Collections.Generic.List[string]]::new()
@@ -207,6 +208,23 @@ function Get-DevBenchActionContract {
     if ($null -ne $reportedAction -and [string]$reportedAction -cne $action) { $reasons.Add('content.action differs from the requested action') }
 
     switch ($contract) {
+        'renderscale-status-read' {
+            $status = Get-DevBenchTelemetryMember $Payload 'status'
+            $frame = Get-DevBenchTelemetryMember $status 'frame'
+            $mode = Get-DevBenchTelemetryMember $status 'modeStatus'
+            $controller = Get-DevBenchTelemetryMember $status 'controller'
+            $state = Get-DevBenchTelemetryMember $controller 'state'
+            $producer = Get-DevBenchTelemetryMember $Payload 'producer'
+            $buildId = Get-DevBenchTelemetryMember $producer 'buildId'
+            if ($reportedAction -cne 'status' -or $status -isnot [pscustomobject] -or
+                ($frame -isnot [int] -and $frame -isnot [long]) -or $frame -lt 0 -or
+                $mode -isnot [string] -or [string]::IsNullOrWhiteSpace($mode) -or
+                $controller -isnot [pscustomobject] -or $state -isnot [string] -or [string]::IsNullOrWhiteSpace($state) -or
+                $buildId -isnot [string] -or $buildId -notmatch '^[0-9a-f]{64}$') {
+                $reasons.Add('render-scale status requires its action, producer, frame and controller observation')
+            }
+            $evidence.Add('content.action'); $evidence.Add('content.producer.buildId'); $evidence.Add('content.status.frame')
+        }
         'input-capabilities' {
             $identity = Get-DevBenchTelemetryMember $Payload 'contract'
             $version = Get-DevBenchTelemetryMember $identity 'version'
