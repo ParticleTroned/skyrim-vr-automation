@@ -10,6 +10,11 @@ from the repository root. Use the adjacent `tracy-replay-runner.js` for
 literal-alias connection ownership, pre-guard failure cleanup and immediate
 replay dispatch. Its mocked hand-off test is described in the protocol.
 
+For offline review of saved stereo stills and bursts, use the
+[image-analysis workflow](image-quality-analysis.md). It selects receipt
+artifacts and reviewed phases, reports each eye separately, and reuses
+DevBench reference scoring without a live game connection.
+
 `Invoke-DevBenchControl.ps1` lists and calls the MCP tools exposed by a running
 DevBench server, including CSX and Open Shaders. Supply runtime metadata with `-RuntimePath` or set
 `CSX_DEVBENCH_RUNTIME_PATH`; no machine-specific path is compiled into the

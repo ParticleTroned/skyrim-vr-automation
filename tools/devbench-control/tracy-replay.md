@@ -598,9 +598,12 @@ outer-fill geometry before placing native ROIs; retain their coordinates.
 Use one ROI within the center reconstruction, one across the transition and
 one within the outer fill in **each eye**. If the two builds do not have
 comparable active masks, mark the FOV comparison unmatched. For this
-campaign, label the center DLSS, the CSX outer fill TAA, and the OS outer
-fill bilinear plus temporal filtering; use the observed method names for
-other builds. Do not infer an active mask from a preset file alone.
+campaign, label the center DLSS and the CSX outer fill TAA. Read the OS
+stretch/filter selection from effective settings: Gaussian blur plus
+temporal smoothing differs from bilinear plus temporal filtering. Use the
+observed method names for each build. Do not infer an active mask from a
+preset file alone, or equal geometry from equal numeric FOV settings.
+Inward rectangular and outward squircle feathers need independent regions.
 
 Score the transition on pixels inside the actual blend band, not on the
 whole coarse ROI that crosses it; otherwise center and outer pixels dilute
@@ -611,7 +614,10 @@ contaminate the outer-fill result. Apply the same normalized bound to both
 builds and eyes, and record the retained pixel counts. For DevBench golden
 scores, whose regions are rectangles, choose narrow rectangles wholly
 inside each actual zone and the same safe image bounds; do not label a
-coarse mixed rectangle as a transition score. Select pixels or fitting
+coarse mixed rectangle as a transition score. If the actual bands do not
+overlap, score each build's band at identical screen coordinates in both
+images and label its owner explicitly; do not claim a shared-band score.
+Select pixels or fitting
 subrectangles from the captured native ROIs when possible; this rule does
 not require more game images.
 
@@ -643,7 +649,17 @@ pre-roll frame, and exclude only that prefix from temporal quality analysis.
 Require usable stationary frames before the sweep, sweep frames, and usable
 stationary frames after it. If any phase is missing, repeat that view's burst
 before benchmarking the other build; do not treat a camera jump as shimmer.
-Apply the same phase gate independently to each build and route.
+Also inspect the end: replay can release the camera while acquisition
+continues. Exclude any reset and subsequent tail without discarding a
+complete usable hold-sweep-hold segment. Save reviewed phase ordinals and
+their acquisition timestamps; an adjacent comparison is eligible only when
+both frames belong to the same phase. Never reuse fixed elapsed-time hold
+windows between runs. Apply this gate independently to each build and route.
+
+Use the [saved-image analyzer](image-quality-analysis.md) for receipt-based
+selection, per-eye regional measurements and existing DevBench SSIM scoring.
+It has no live-game or performance-capture dependency. Keep raw receipts and
+old reports; write corrected results into a separate derived output tree.
 
 Compare temporal images by the observed acquisition timestamps and motion
 phase, not matching frame ordinals or forcing equal frame counts across
