@@ -6,6 +6,8 @@ enables only when needed, and restores and verifies the exact prior state in a
 `finally` path. Each accepted sample has a strictly advancing frame ID and
 finite GPU/CPU metrics. A unique capture directory retains the raw JSON,
 summary, timer CSV, DevBench invocation journals, and recovery receipt.
+Raw samples are saved before deriving summaries. CPU-only and inactive timers
+retain zero sample counts and null statistics for unobserved timing domains.
 
 Only one capture may own a given runtime metadata target at once. The collector
 uses a deterministic, bounded lease and verifies the complete DevBench process,

@@ -194,7 +194,9 @@ if ($action -eq 'enable' -and $env:CSX_PROFILER_TEST_BREAK_MIRROR -eq '1') {
     'blocked-evidence-directory' | Set-Content -LiteralPath $EvidenceDirectory -Encoding utf8
 }
 $timer = [pscustomobject]@{name='Synthetic';activeGpu=$true;activeCpu=$true;hasGpu=$true;hasCpu=$true;gpuMs=1.0;topLevelMs=1.0;cpuMs=0.1}
-$status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.1;acquiredSlots=1;slotRefusals=0;timers=@($timer)}
+$cpuOnly = [pscustomobject]@{name='CpuOnly';activeGpu=$false;activeCpu=$true;hasGpu=$false;hasCpu=$true;gpuMs=0.0;topLevelMs=0.0;cpuMs=0.2}
+$inactive = [pscustomobject]@{name='Inactive';activeGpu=$false;activeCpu=$false;hasGpu=$true;hasCpu=$true;gpuMs=0.0;topLevelMs=0.0;cpuMs=0.0}
+$status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.3;acquiredSlots=1;slotRefusals=0;timers=@($timer,$cpuOnly,$inactive)}
 if ($env:CSX_PROFILER_TEST_LEGACY_TIMING -ne '1') {
     $semantics = if ($env:CSX_PROFILER_TEST_TIMING_DRIFT -eq '1' -and $state.calls -ge 3) { 'legacy_unspecified' } else { 'gpu_cpu_self_time' }
     $status | Add-Member -NotePropertyName timingSemantics -NotePropertyValue $semantics
@@ -220,6 +222,10 @@ $semantic = if ($optionalUnavailable) { [pscustomobject]@{known=$true;ok=$false;
     $finalProfilerState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     Assert-Test ($measurement.ok -and $measurement.summary.uniqueFreshFrames -eq 3 -and $measurement.summary.profilerStateRestored) 'measurement uses fresh frames and records verified state restoration'
     Assert-Test (-not $finalProfilerState.enabled) 'measurement restores the exact prior profiler enable state'
+    $cpuOnlySummary = @($measurement.summary.timers | Where-Object name -eq 'CpuOnly')[0]
+    $inactiveSummary = @($measurement.summary.timers | Where-Object name -eq 'Inactive')[0]
+    Assert-Test ($cpuOnlySummary.gpuMs.count -eq 0 -and $null -eq $cpuOnlySummary.gpuMs.mean -and $cpuOnlySummary.cpuMs.count -eq 3) 'CPU-only timers retain CPU samples and unavailable GPU statistics'
+    Assert-Test ($inactiveSummary.gpuMs.count -eq 0 -and $inactiveSummary.cpuMs.count -eq 0 -and $null -eq $inactiveSummary.topLevelMs.mean) 'inactive timers produce empty statistics without failing strict-mode reporting'
     $measuredRecords = @(Get-Content -LiteralPath $measurement.rawPath -Raw | ConvertFrom-Json)
     $measurementReceipt = Get-Content -LiteralPath $measurement.receiptPath -Raw | ConvertFrom-Json
     Assert-Test (@($measuredRecords.runtimeIdentityFingerprint | Sort-Object -Unique).Count -eq 1 -and @($measurementReceipt.runtimeIdentityObservations).Count -ge 7) 'measurement binds every accepted response and sample to one verified runtime identity'

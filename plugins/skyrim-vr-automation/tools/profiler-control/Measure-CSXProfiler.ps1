@@ -530,6 +530,8 @@ if ($captureFailure) { throw "$captureFailure Profiler state was restored. Recei
 if ($records.Count -ne $Samples -or @($records.frame | Sort-Object -Unique).Count -ne $Samples) { throw 'Profiler capture did not produce the requested number of unique fresh frames.' }
 
 $endedUtc = [DateTime]::UtcNow
+$rawPath = Join-Path $runDirectory "$safeLabel.raw.json"
+Write-JsonAtomic $rawPath @($records)
 $timerRows = foreach ($record in $records) {
     foreach ($timer in $record.timers) {
         [pscustomobject][ordered]@{
@@ -543,7 +545,7 @@ $timerSummaries = foreach ($group in ($timerRows | Group-Object name | Sort-Obje
     $activeGpu = @($group.Group | Where-Object { $_.activeGpu -and $_.hasGpu })
     [pscustomobject][ordered]@{
         name = $group.Name; observedSamples = $group.Count; activeGpuSamples = $activeGpu.Count
-        gpuMs = Get-MetricSummary ([double[]]@($activeGpu.gpuMs)); topLevelMs = Get-MetricSummary ([double[]]@($activeGpu.topLevelMs))
+        gpuMs = Get-MetricSummary ([double[]]@($activeGpu | ForEach-Object gpuMs)); topLevelMs = Get-MetricSummary ([double[]]@($activeGpu | ForEach-Object topLevelMs))
         cpuMs = Get-MetricSummary ([double[]]@($group.Group | Where-Object { $_.activeCpu -and $_.hasCpu } | ForEach-Object cpuMs))
     }
 }
@@ -577,10 +579,8 @@ $summary = [pscustomobject][ordered]@{
     resolvedTotalMs = Get-MetricSummary ([double[]]@($records.resolvedTotalMs)); resolvedCpuTotalMs = Get-MetricSummary ([double[]]@($records.resolvedCpuTotalMs))
     maxSlotRefusals = [int](($records | Measure-Object slotRefusals -Maximum).Maximum); timers = @($timerSummaries)
 }
-$rawPath = Join-Path $runDirectory "$safeLabel.raw.json"
 $summaryPath = Join-Path $runDirectory "$safeLabel.summary.json"
 $csvPath = Join-Path $runDirectory "$safeLabel.timers.csv"
-Write-JsonAtomic $rawPath @($records)
 Write-JsonAtomic $summaryPath $summary
 $timerSummaries | ForEach-Object {
     [pscustomobject][ordered]@{ name = $_.name; timingSemantics = $timingSemantics; observedSamples = $_.observedSamples; activeGpuSamples = $_.activeGpuSamples; gpuMeanMs = $_.gpuMs.mean; gpuMedianMs = $_.gpuMs.median; gpuP95Ms = $_.gpuMs.p95; gpuP99Ms = $_.gpuMs.p99; gpuMaxMs = $_.gpuMs.max; topLevelMeanMs = $_.topLevelMs.mean; cpuMeanMs = $_.cpuMs.mean }
