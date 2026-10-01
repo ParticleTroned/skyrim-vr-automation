@@ -217,21 +217,23 @@ is running; the separate `game-ft` hotkey policy is unchanged.
    samples through replay completion, accept the fpsVR measurements and
    continue trace extraction and reporting. Mark only logger teardown as
    unverified; it is a warning, not a capture failure, route stop or reason
-   to replay. A missing or incomplete replay-window CSV remains an fpsVR
+   to replay. A missing or incomplete active-path CSV remains an fpsVR
    evidence gap and must be reported separately from Tracy validity.
    Archive the exact pinned CSV, its hash, original headers, columns, units,
    timestamps and receipts; do not select another CSV later merely because
    it is newest.
-5. Map fpsVR samples to the same engine replay start/end used for Tracy.
+5. Map fpsVR samples to the same active-path start/end used for Tracy.
    Preserve the CSV's recording-time header and `SteamVR Time`, the local
    UTC offset and all clock anchors. Use shared producer frame/time markers
    when available. Record clock precision, buffered-write/observation lag
    and boundary uncertainty; the existing header-to-SteamVR-time mapping
    alone does not prove frame-exact synchronization. Keep the raw CSV so
-   alignment can be refined without another game run.
+   alignment can be refined without another game run. Keep setup and terminal
+   samples only in the raw archive and capture-integrity checks; do not use
+   them in reported performance statistics.
 
 Parse the complete header and every numeric column, retaining field names,
-units, missing/invalid-row counts and raw data. For each replay-window field,
+units, missing/invalid-row counts and raw data. For each active-path field,
 report count, mean, median, p95 and p99; report p1 and p5 for FPS as its slow
 tail. At minimum include logged FPS, CPU/GPU frame times, GPU/CPU usage and
 all reported CPU-core usage columns. Usage is whole-system context, not a
@@ -244,7 +246,7 @@ The inspected fpsVR raw CSV records one row per used frame, as described by
 the [fpsVR developer](https://steamcommunity.com/app/908520/discussions/0/2968397584539930893/).
 Validate strict `SteamVR Time` increase and complete adjacent rows, then calculate the
 recorded delivered-frame interval as each consecutive timestamp difference
-in milliseconds. Keep only pairs wholly inside the matched replay window.
+in milliseconds. Keep only pairs wholly inside the matched active-path window.
 Report its count, mean, median, p95, p99, minimum and maximum, and effective
 delivered FPS as interval count divided by their elapsed seconds. Label this
 as frame cadence including pacing and missed-frame delays, not application
@@ -421,12 +423,13 @@ large zone export, source editing or dependency repair belongs in this window.
    Unexplained differences remain a failed verification. Finish extraction
    from one loaded trace at a time, then unload and prove low memory again.
 
-Check positive GPU coverage throughout the walking portion and beyond its
+Check positive GPU coverage throughout the active path and beyond its
 terminal boundary. A zero-sample interval during initial scene restoration
 requires a preserved enclosing frame interval with no intervening frame
-marks, wholly before the walking portion. Retain that loading pause in the
-full-replay statistics and report it separately. Do not waive unexplained
-GPU gaps while rendering or classify every loading pause as collector loss.
+marks, wholly before the active path. Retain that loading pause as an
+integrity diagnostic outside the performance statistics. Do not waive
+unexplained GPU gaps while rendering or classify every loading pause as
+collector loss.
 
 Every guard request has `owner` and `action`. `prepare` takes the arming
 fields shown above; `finish` needs only the owner. `stop` takes `reason` and
@@ -450,6 +453,39 @@ Pin the actual installed files; different hashes require review before use.
 These flat recordings contain no tracked-head motion. They are usable for a
 controlled VR-to-VR comparison only with the same qualified fixed HMD and
 pose-interpolated player path. They do not establish flat/VR equivalence.
+
+For **both routes**, the performance window is the active player path only.
+Exclude COC and scene restoration, menu acceptance, weather/hour reset,
+equipment and camera setup, stationary lead-in, and terminal waits/cleanup.
+Start at the first material player-position change when recorded poses are
+available. If the recording has no poses, use the first locomotion input and
+label the movement-onset uncertainty. For poses, choose and record a
+displacement threshold above that recording's coordinate precision and
+stationary jitter; do not use a fixed threshold across unrelated recordings.
+End when the last route movement reaches its endpoint, before stationary
+camera motion and terminal waits. Retain pauses, turns, loading, and slow
+frames *within* that path; never select favorable subsections. Camera
+yaw/pitch changes alone do not establish locomotion.
+
+Pin the recipe hash, zero-based step/pose markers, positions, and observed
+replay step timings before comparing builds; apply the same markers to every
+build under comparison. Use per-step replay receipts to map the markers to
+wall time where available. A recipe's metadata duration or nominal pose
+`wait` is not an observed replay duration. Use shared frame markers if
+available; otherwise preserve the clock-alignment uncertainty and boundary
+sensitivity. Archive the entire replay for integrity, but report fpsVR and
+Tracy performance only for the active path.
+
+Reconcile the sum of step `elapsedMs` with the terminal replay `elapsedMs`.
+If they differ, retain the unattributed time and include its possible
+placement in boundary sensitivity; never silently equate recipe time or
+step sums with wall time. If step receipts are unavailable, retain bracketing
+status timestamps and label the path boundaries approximate.
+
+Derive the markers again for each pinned recording revision and preserve them
+in that run's evidence. This applies to both the interior and exterior routes
+and to any measured renderer build.
+
 Use the installed recipe's restoration mode consistently. Cell restoration
 does not necessarily restore recorded hour/weather; anchored restoration
 can re-trigger weather replacements. Preserve resolved editor IDs and
@@ -598,7 +634,7 @@ plots, use the existing guard helper's `frame_timing_eval_code` after saving
 and reloading the completed trace. Supply an existing absolute evidence
 directory and, when established, both route-window bounds in Tracy
 nanoseconds. Without those bounds the helper labels its statistics as the
-**full capture**, not the walking route. It writes the complete raw
+**full capture**, not the active path. It writes the complete raw
 `tracy-frame-timing-samples.csv` once, including frame boundaries, both
 main-update zones, Tracy's `Frame` plot, and every `VR::` and `OpenVR::`
 plot exposed by the trace. Preserve those plot names separately: their
@@ -680,7 +716,7 @@ distinction. Failed data may be deleted when explicitly requested, after
 retaining the small failure classification and protocol regression record;
 never delete shader caches, build outputs, saves or another task's evidence.
 An unverified fpsVR logging stop does not block readiness when the pinned
-CSV covers the full replay, its numeric data are extracted, and the stop
+CSV covers the active path, its numeric data are extracted, and the stop
 failure is recorded. Do not wait for fpsVR to exit solely to prove teardown.
 If recording continues into the next route, carry forward its owner and
 pinned file identity, use a distinct replay window, and do not toggle it
