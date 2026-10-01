@@ -1,6 +1,6 @@
 # Fixed-HMD DevBench replay with Tracy
 
-Protocol: `devbench-tracy-replay-v3`. This protocol uses the existing
+Protocol: `devbench-tracy-replay-v4`. This protocol uses the existing
 DevBench controller/direct tools, Tracy MCP and screenshot provider. The
 OS/CSX comparison additionally records fpsVR alongside Tracy as described
 below, using fpsVR's configured recording hotkey and raw CSV logger. The
@@ -30,13 +30,20 @@ a desktop launcher. The user authorizes configuring a callable binding if
 none exists: preserve the settings, select an unused supported combination
 and verify the saved binding. Do not invent a setting key or assume a
 different FPS utility has fpsVR's controls or CSV schema. The user launches
-Skyrim; activate recording once the user reports being in game.
+Skyrim. Prepare fpsVR when the user reports being in game, but start its raw
+CSV recording only after warm-up and images are complete, immediately before
+Tracy admission.
 
 Select one DevBench lane using `skills/devbench-control/SKILL.md`. Direct
 tools are mandatory when callable. Otherwise use the maintained controller,
 never ad hoc HTTP. Every measured call on that lane uses the performance
 neutrality guard. Use zero mutation retries. A missing CSX Build ID is allowed
 for Open Shaders; process and physical DLL hash verification remain mandatory.
+
+For new OS/CSX captures, enable each renderer's normal Tracy instrumentation
+and leave `TRACY_COMPARISON=OFF` where that option exists. Do not use the
+historical shared-zone filter. Record the effective build options and all
+native zone names/counts; equal zone sets are not an admission requirement.
 
 Run exactly the requested campaign order. For the OS/CSX comparison that is
 OS interior, OS exterior, CSX interior, CSX exterior. Each measured route
@@ -118,10 +125,10 @@ of unsupported booleans. Any missing or failing gate blocks measurement.
    sample fails, do not connect. Restart only the proven task-owned idle
    collector if safe; otherwise report the shared-owner blocker. Recheck
    identity, instances, tasks and memory after any restart.
-8. **fpsVR recording proof (OS/CSX campaign).** Start the logger at the
-   user's in-game signal, before warm-up and images, using the workflow
-   below. Require the exact owned CSV to contain advancing sample timestamps
-   and increasing length before connecting Tracy. Reuse preparation time to
+8. **fpsVR recording proof (OS/CSX campaign).** After warm-up, images and
+   their cleanup, start the logger using the workflow below. Require the
+   exact owned CSV to contain advancing sample timestamps and increasing
+   length before connecting Tracy. Use the remaining admission checks to
    observe growth; do not add a pilot or an extra timed hold. Keep fpsVR
    logging continuously through verified replay completion and Tracy stop.
 
@@ -166,15 +173,17 @@ Do not invoke the save-load assay for this route: its save selection,
 campaign explicitly permits the configured recording hotkey after Skyrim
 is running; the separate `game-ft` hotkey policy is unchanged.
 
-1. Inventory fpsVR's existing process and logging state. Reuse an already
-   attached, actively recording instance. Otherwise invoke the verified
-   recording hotkey once. Prefer the established supported command
+1. Inventory fpsVR's process, desktop logging status and any growing CSV
+   before warm-up. Keep an already active recording and identify its owner;
+   otherwise start recording after images and their cleanup, immediately
+   before Tracy admission. Prefer the established supported command
    `fpsVRcmd.exe logging_startstop` when it controls that same recording
-   action without sending keys into Skyrim. Both are toggles, not idempotent
-   starts: never invoke both or toggle a proven active recording off. Verify
-   attachment and treat `Can't connect to fpsVR` as failure even when the
-   command exits zero. Do not launch an unattached standalone process or
-   restart the game, fpsVR or SteamVR as an in-run repair.
+   action without sending keys into Skyrim. Use the configured hotkey only
+   when its delivery and resulting logging state can be observed. Both are
+   toggles, not idempotent starts: never invoke both or toggle a proven
+   active recording off. Treat `Can't connect to fpsVR` as failure even
+   when the command exits zero. Do not launch an unattached standalone
+   process or restart Skyrim, fpsVR or SteamVR as an in-run repair.
 2. Pin the raw `Frametimes#Raw#*.csv` path to this attempt. Preserve two
    observations of byte length, last-write UTC and the latest complete
    sample timestamp, plus fpsVR/Skyrim PIDs and start times. Require actual
@@ -186,11 +195,28 @@ is running; the separate `game-ft` hotkey policy is unchanged.
    connection, replay dispatch, engine replay start/end, terminal receipt
    and Tracy stop. Reset game hour/weather immediately at replay dispatch
    as already required; starting fpsVR must not move that scene boundary.
-4. After Tracy stops, verify CSV coverage through replay completion. Stop
-   logging only when this attempt started it; leave a pre-existing recording
-   running. Archive the exact pinned CSV, hash it and retain its original
-   headers, columns, units, timestamps and recording-control receipts.
-   Do not select another CSV later merely because it is newest.
+4. Put fpsVR stop in the prepared runner's finalization path so it executes
+   after Tracy finishes or aborts, before trace save, reload or analysis.
+   Request it immediately after Tracy's stop or abort handling if this
+   attempt started logging. Leave a pre-existing recording running. Preserve
+   Tracy and fpsVR cleanup failures separately; one must not hide the other. The
+   stop is a state change:
+   require a successful command or an observed desktop `Stopped` state,
+   then verify the pinned CSV's last complete sample and byte length stay
+   fixed across two post-flush observations while Skyrim remains active.
+   Space these observations using the measured pre-run CSV flush cadence,
+   not an arbitrary short timeout.
+   Preserve the command output, exit code, fpsVR PID/start time, desktop
+   status if available, and the two observations. A zero exit code alone
+   is not proof. If the command says `Can't connect to fpsVR`, inspect the
+   desktop logging state and stop there only if the active recording is
+   clearly identified; do not send an unverified synthetic hotkey or repeat
+   an ambiguous toggle. If neither control works, save a parseable snapshot
+   of the pinned CSV immediately, mark logger stop unverified, and preserve
+   a final copy when it stabilizes. This failure does not erase the verified
+   Tracy capture or require another replay. Archive the exact pinned CSV,
+   its hash, original headers, columns, units, timestamps and receipts; do
+   not select another CSV later merely because it is newest.
 5. Map fpsVR samples to the same engine replay start/end used for Tracy.
    Preserve the CSV's recording-time header and `SteamVR Time`, the local
    UTC offset and all clock anchors. Use shared producer frame/time markers
@@ -199,17 +225,35 @@ is running; the separate `game-ft` hotkey policy is unchanged.
    alone does not prove frame-exact synchronization. Keep the raw CSV so
    alignment can be refined without another game run.
 
-Report FPS and CPU/GPU frame times from fpsVR's actual fields over the
-matched replay window, with mean, median, p95 and p99, sample counts and
-coverage. Keep overall frame intervals from Tracy alongside them. If fpsVR
-also exposes a total frame-time field, retain its documented meaning; if it
-does not, label that metric unavailable from fpsVR. Never invent total time
-by adding CPU and GPU times, or label reciprocal FPS as measured busy time.
-Derive frame intervals from sample timestamps only after verifying that
-each row represents one application frame. Apply identical logger settings,
-overlay state, extraction and window rules to OS and CSX. Do not run report
-generation, CSV parsing of the full recording or trace extraction while
-the timed replay is active.
+Parse the complete header and every numeric column, retaining field names,
+units, missing/invalid-row counts and raw data. For each replay-window field,
+report count, mean, median, p95 and p99; report p1 and p5 for FPS as its slow
+tail. At minimum include logged FPS, CPU/GPU frame times, GPU/CPU usage and
+all reported CPU-core usage columns. Usage is whole-system context, not a
+Skyrim thread timer. Report each timing's share above the observed HMD
+refresh budget when its meaning supports that threshold.
+Session-history reprojection and dropped-frame totals describe the entire
+game session; do not assign them to the replay without a timestamped source.
+
+The inspected fpsVR raw CSV records one row per used frame, as described by
+the [fpsVR developer](https://steamcommunity.com/app/908520/discussions/0/2968397584539930893/).
+Validate strict `SteamVR Time` increase and complete adjacent rows, then calculate the
+recorded delivered-frame interval as each consecutive timestamp difference
+in milliseconds. Keep only pairs wholly inside the matched replay window.
+Report its count, mean, median, p95, p99, minimum and maximum, and effective
+delivered FPS as interval count divided by their elapsed seconds. Label this
+as frame cadence including pacing and missed-frame delays, not application
+CPU/GPU busy time. The logged FPS column is a rolling reading; its mean can
+differ from delivered frames divided by elapsed time. If the CSV does not
+establish per-used-frame rows or has unexplained timestamp gaps, report
+cadence as uncertain instead of calling it measured total render time.
+
+Keep Tracy frame intervals alongside fpsVR cadence. If fpsVR exposes a
+separate total application frame-time field, retain its documented meaning;
+otherwise state that total application render time is unavailable. Never
+invent it by adding CPU and GPU times or taking reciprocal logged FPS.
+Apply identical logger settings, overlay state, extraction and window rules
+to OS and CSX. Do not parse the full CSV or extract traces during replay.
 
 ## Bounded measured capture
 
@@ -565,7 +609,7 @@ these distinct:
 Do not label frame intervals as CPU busy time, add overlapping/inclusive
 zones into a GPU frame total, or infer missing CPU/GPU numbers. If a common
 whole-frame scope does not exist, report that metric as unavailable and show
-the shared frame intervals and matching passes that do exist. Map equivalent
+the frame intervals and comparable passes that do exist. Map equivalent
 pass scopes explicitly; report unmatched zones separately, including work
 from nominally disabled features. Give both cost per invocation and cost per
 frame where occurrence attribution permits it. Show compact side-by-side
