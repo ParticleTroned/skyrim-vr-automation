@@ -204,7 +204,7 @@ foreach ($invalid in @('1.0', $true, [double]::NaN, [double]::PositiveInfinity))
 foreach ($action in @('drive', 'setPov', 'freecam')) {
     Assert-Test (-not (Test-DevBenchReadOnlyRequest -ToolName camera -Arguments @{ action = $action })) 'camera mutation never inherits read-only admission'
     $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = $action } -Content @($camera)
-    Assert-Test (-not $result.known) 'camera get observation cannot verify a camera mutation'
+    Assert-Test (-not $result.known -or -not $result.ok) 'camera get observation cannot verify a camera mutation'
 }
 foreach ($invalidField in @(
     @{ field = 'pov'; value = 'unknown' }, @{ field = 'pov'; value = $true },
@@ -260,6 +260,56 @@ foreach ($change in @(@{ action = 'open' }, @{ producer = [pscustomobject]@{ bui
 foreach ($action in @('open', 'close', 'toggle', 'set_path')) {
     $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = $action } -Content @($csxMenu)
     Assert-Test (-not $result.known) 'CSX menu observation cannot verify a menu mutation'
+}
+
+$completedActions = @(
+    @{ tool='camera'; args=@{action='freecam'; on=$true}; payload=@{action='freecam'; queued=$false; on=$true; freeCam=$true} },
+    @{ tool='camera'; args=@{action='freecam'; on=$false}; payload=@{action='freecam'; queued=$false; on=$false; freeCam=$false} },
+    @{ tool='camera'; args=@{action='freecam'}; payload=@{action='freecam'; queued=$false; on=$true; freeCam=$true} },
+    @{ tool='camera'; args=@{action='drive'; x=1.5; y=2; z=3; pitch=0; yaw=1}; payload=@{action='drive'; queued=$false} },
+    @{ tool='console'; args=@{action='exec'; command='tai'; capture=$true}; payload=@{command='tai'; queued=$false; capturing=$true; completed=$true} },
+    @{ tool='console'; args=@{command='tai'; capture=$true}; payload=@{command='tai'; queued=$false; capturing=$true; completed=$true} }
+)
+foreach ($fixture in $completedActions) {
+    $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$fixture.payload)
+    Assert-Test ($result.known -and $result.ok) 'completed main-thread or fenced action satisfies its narrow acknowledgement contract'
+    foreach ($field in $fixture.payload.Keys) {
+        $bad = $fixture.payload.Clone(); $bad.Remove($field)
+        $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) "completed action rejects missing $field"
+        $bad = $fixture.payload.Clone(); $bad[$field] = 'invalid'
+        $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) "completed action rejects malformed $field"
+    }
+    $bad = $fixture.payload.Clone(); $bad.queued = $true
+    $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+    Assert-Test ($result.known -and -not $result.ok) 'queued work is not a completed action'
+    foreach ($failure in @(@{error='service failure'}, @{ok=$false})) {
+        $bad = $fixture.payload.Clone(); foreach ($field in $failure.Keys) { $bad[$field] = $failure[$field] }
+        $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) 'explicit service failure overrides a completed acknowledgement'
+    }
+}
+$wrongState = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{action='freecam'; on=$false} -Content @([pscustomobject]@{action='freecam';queued=$false;on=$true;freeCam=$true})
+Assert-Test ($wrongState.known -and -not $wrongState.ok) 'freecam acknowledgement must match requested state'
+$incompleteFence = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='exec';command='tai';capture=$true} -Content @([pscustomobject]@{command='tai';queued=$false;capturing=$true;completed=$false})
+Assert-Test ($incompleteFence.known -and -not $incompleteFence.ok) 'incomplete console fence remains a failure'
+$unfenced = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='exec';command='tai'} -Content @([pscustomobject]@{command='tai';queued=$true;capturing=$false})
+Assert-Test (-not $unfenced.known) 'unfenced console queue remains unverified'
+foreach ($lines in @(@(), @('All AI Processing is Off'), @('line one','line two'))) {
+    $read = @{markersFound=$true;sawBegin=$true;sawEnd=$true;count=$lines.Count;lines=$lines;source='sampler';lossPossible=$true}
+    $result = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='read'} -Content @([pscustomobject]$read)
+    Assert-Test ($result.known -and $result.ok) 'fenced read retains empty, single and multiple text lines with loss diagnostics'
+    foreach ($field in $read.Keys) {
+        $bad = $read.Clone(); $bad.Remove($field)
+        $result = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='read'} -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) "fenced read rejects missing $field"
+    }
+    foreach ($change in @(@{count=-1},@{count=($lines.Count+1)},@{count=[double]$lines.Count},@{lines='not an array'},@{lines=@(1);count=1},@{markersFound=$false},@{sawBegin=$false},@{sawEnd=$false},@{lossPossible='false'},@{source='unknown'},@{error='service failure'})) {
+        $bad=$read.Clone(); foreach($field in $change.Keys){$bad[$field]=$change[$field]}
+        $result = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='read'} -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) 'malformed or incomplete fenced reads remain failures'
+    }
 }
 
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })

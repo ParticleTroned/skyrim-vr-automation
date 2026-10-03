@@ -192,8 +192,16 @@ function Get-DevBenchActionContract {
 
     $action = if ($Arguments.Contains('action')) { [string]$Arguments['action'] } else { '' }
     if ($ToolName -eq 'camera' -and $action -eq '') { $action = 'get' }
+    if ($ToolName -eq 'console' -and $action -eq '') { $action = 'exec' }
     $contract = switch ("$ToolName/$action") {
         'camera/get' { 'camera-state-read' }
+        'camera/freecam' { 'camera-completed-action' }
+        'camera/drive' { 'camera-completed-action' }
+        'console/exec' {
+            if (-not $Arguments.Contains('capture') -or $Arguments['capture'] -isnot [bool] -or -not $Arguments['capture']) { return $null }
+            'console-fenced-completion'
+        }
+        'console/read' { 'console-fenced-read' }
         'input/capabilities' { 'input-capabilities' }
         'recordings/list' { 'recordings-list' }
         'record/stop' { 'record-stop' }
@@ -212,6 +220,53 @@ function Get-DevBenchActionContract {
     if ($null -ne $reportedAction -and [string]$reportedAction -cne $action) { $reasons.Add('content.action differs from the requested action') }
 
     switch ($contract) {
+        'camera-completed-action' {
+            $queued = Get-DevBenchTelemetryMember $Payload 'queued'
+            if ($reportedAction -cne $action -or $queued -isnot [bool] -or $queued) {
+                $reasons.Add('camera action requires its exact completed main-thread acknowledgement')
+            }
+            if ($action -eq 'freecam') {
+                $expected = if ($Arguments.Contains('on')) { $Arguments['on'] } else { $true }
+                $on = Get-DevBenchTelemetryMember $Payload 'on'
+                $freeCam = Get-DevBenchTelemetryMember $Payload 'freeCam'
+                if ($expected -isnot [bool] -or $on -isnot [bool] -or $freeCam -isnot [bool] -or $on -ne $expected -or $freeCam -ne $expected) {
+                    $reasons.Add('freecam acknowledgement must match the requested state')
+                }
+                $evidence.Add('content.on'); $evidence.Add('content.freeCam')
+            }
+            $evidence.Add('content.action'); $evidence.Add('content.queued')
+        }
+        'console-fenced-completion' {
+            $queued = Get-DevBenchTelemetryMember $Payload 'queued'
+            $completed = Get-DevBenchTelemetryMember $Payload 'completed'
+            $capturing = Get-DevBenchTelemetryMember $Payload 'capturing'
+            $command = Get-DevBenchTelemetryMember $Payload 'command'
+            if (-not $Arguments.Contains('command') -or $Arguments['command'] -isnot [string] -or [string]::IsNullOrWhiteSpace($Arguments['command']) -or
+                $command -isnot [string] -or $command -cne $Arguments['command'] -or
+                $queued -isnot [bool] -or $queued -or $completed -isnot [bool] -or -not $completed -or $capturing -isnot [bool] -or -not $capturing) {
+                $reasons.Add('console capture requires the exact command and a completed synchronous fence')
+            }
+            $evidence.Add('content.command'); $evidence.Add('content.queued'); $evidence.Add('content.completed'); $evidence.Add('content.capturing')
+        }
+        'console-fenced-read' {
+            foreach ($field in @('markersFound', 'sawBegin', 'sawEnd')) {
+                $value = Get-DevBenchTelemetryMember $Payload $field
+                if ($value -isnot [bool] -or -not $value) { $reasons.Add("console read requires a true $field") }
+                $evidence.Add("content.$field")
+            }
+            $lines = $null
+            $linesProperty = $Payload.PSObject.Properties['lines']
+            if ($linesProperty) { $lines = $linesProperty.Value }
+            $count = Get-DevBenchTelemetryMember $Payload 'count'
+            $source = Get-DevBenchTelemetryMember $Payload 'source'
+            $lossPossible = Get-DevBenchTelemetryMember $Payload 'lossPossible'
+            if ($lines -isnot [array] -or @($lines | Where-Object { $_ -isnot [string] }).Count -gt 0 -or
+                ($count -isnot [int] -and $count -isnot [long]) -or $count -lt 0 -or $count -ne @($lines).Count -or
+                $source -isnot [string] -or $source -cnotin @('buffer', 'sampler') -or $lossPossible -isnot [bool]) {
+                $reasons.Add('console read requires counted text lines and typed source/loss diagnostics')
+            }
+            $evidence.Add('content.lines'); $evidence.Add('content.source'); $evidence.Add('content.lossPossible')
+        }
         'camera-state-read' {
             $pov = Get-DevBenchTelemetryMember $Payload 'pov'
             $freeCam = Get-DevBenchTelemetryMember $Payload 'freeCam'

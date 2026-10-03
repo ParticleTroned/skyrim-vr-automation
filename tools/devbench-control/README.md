@@ -95,6 +95,15 @@ service errors and mismatched recording owners still fail. FOV acceptance
 proves the settings transition only; callers must observe a subsequent safe
 frame to establish rendering. Recording paths identify saved output but do
 not verify its physical contents. Queued console work remains unverified.
+Exact `camera freecam/drive` acknowledgements require `queued=false` and
+the requested action; free-camera state must match the requested boolean.
+This proves completed main-thread work, not a rendered viewpoint: read
+`camera get`, allow a rendered frame and inspect the acquired image.
+Console `exec capture=true` requires the exact command and a completed
+synchronous fence. `console read` requires both markers, counted text lines
+and source/loss diagnostics. Neither proves the command's intended effect;
+check the captured text and relevant game state. Sampler line loss remains
+explicit. Missing fields, queued work and service errors are not successes.
 CSX menu status requires the matching action, producer Build ID, integer
 runtime type and boolean menu/loading observations. This validates the read
 only; it does not prove a menu transition, rendering readiness or success of
