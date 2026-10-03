@@ -183,6 +183,7 @@ function Test-DevBenchReadOnlyRequest {
     if ($ToolName -eq 'record') { return $action -eq 'status' }
     if ($ToolName -eq 'input') { return $action -in @('observe', 'status', 'capabilities') }
     if ($ToolName -eq 'recordings') { return $action -eq 'list' }
+    if ($ToolName -eq 'camera') { return $action -in @('', 'get') }
     return $false
 }
 
@@ -190,7 +191,9 @@ function Get-DevBenchActionContract {
     param([string]$ToolName, [Collections.IDictionary]$Arguments, $Payload)
 
     $action = if ($Arguments.Contains('action')) { [string]$Arguments['action'] } else { '' }
+    if ($ToolName -eq 'camera' -and $action -eq '') { $action = 'get' }
     $contract = switch ("$ToolName/$action") {
+        'camera/get' { 'camera-state-read' }
         'input/capabilities' { 'input-capabilities' }
         'recordings/list' { 'recordings-list' }
         'record/stop' { 'record-stop' }
@@ -208,6 +211,28 @@ function Get-DevBenchActionContract {
     if ($null -ne $reportedAction -and [string]$reportedAction -cne $action) { $reasons.Add('content.action differs from the requested action') }
 
     switch ($contract) {
+        'camera-state-read' {
+            $pov = Get-DevBenchTelemetryMember $Payload 'pov'
+            $freeCam = Get-DevBenchTelemetryMember $Payload 'freeCam'
+            $stateId = Get-DevBenchTelemetryMember $Payload 'stateId'
+            if ($pov -isnot [string] -or $pov -cnotin @('first', 'third', 'vanity', 'other') -or
+                $freeCam -isnot [bool] -or ($stateId -isnot [int] -and $stateId -isnot [long]) -or
+                $stateId -lt 0 -or $stateId -gt [uint32]::MaxValue) {
+                $reasons.Add('camera state requires typed POV, free-camera state and state ID')
+            }
+            foreach ($field in @('camX', 'camY', 'camZ', 'camPitch', 'camYaw')) {
+                $value = Get-DevBenchTelemetryMember $Payload $field
+                if (($value -isnot [int] -and $value -isnot [long] -and $value -isnot [double] -and $value -isnot [decimal]) -or
+                    [double]::IsNaN([double]$value) -or [double]::IsInfinity([double]$value)) {
+                    $reasons.Add("camera state requires a finite numeric $field")
+                }
+            }
+            $owned = $Payload.PSObject.Properties['freeCamOwned']
+            if ($null -ne $owned -and $owned.Value -isnot [bool]) { $reasons.Add('freeCamOwned must be a boolean when present') }
+            $evidence.Add('content.pov'); $evidence.Add('content.freeCam'); $evidence.Add('content.stateId')
+            $evidence.Add('content.camX'); $evidence.Add('content.camY'); $evidence.Add('content.camZ')
+            $evidence.Add('content.camPitch'); $evidence.Add('content.camYaw')
+        }
         'renderscale-status-read' {
             $status = Get-DevBenchTelemetryMember $Payload 'status'
             $frame = Get-DevBenchTelemetryMember $status 'frame'

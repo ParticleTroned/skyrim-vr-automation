@@ -183,6 +183,47 @@ Assert-Test ($readFailure.known -and -not $readFailure.ok -and $readFailure.outc
 $incompleteMenu = Get-DevBenchCallSemanticStatus -ToolName menu -Arguments @{ action = 'list' } -Content @([pscustomobject]@{ openMenus = @() })
 Assert-Test (-not $incompleteMenu.known) 'read-only adapters require the tool-specific response shape'
 
+$camera = [pscustomobject]@{ pov = 'other'; freeCam = $false; stateId = 9; camX = -231.7; camY = -26.9; camZ = 197.6; camPitch = 0.0; camYaw = 1.98; freeCamOwned = $false }
+foreach ($cameraArgs in @(@{}, @{ action = 'get' })) {
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments $cameraArgs -Content @($camera)
+    Assert-Test ($result.known -and $result.ok -and $result.outcome -eq 'camera-state-read-satisfied') 'camera get validates its documented state without a generic success marker'
+    Assert-Test (Test-DevBenchReadOnlyRequest -ToolName camera -Arguments $cameraArgs) 'camera get is explicitly read-only'
+}
+foreach ($field in @('pov', 'freeCam', 'stateId', 'camX', 'camY', 'camZ', 'camPitch', 'camYaw')) {
+    $badCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+    $badCamera.PSObject.Properties.Remove($field)
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($badCamera)
+    Assert-Test ($result.known -and -not $result.ok) "camera get rejects missing $field"
+}
+foreach ($invalid in @('1.0', $true, [double]::NaN, [double]::PositiveInfinity)) {
+    $badCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+    $badCamera.camX = $invalid
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($badCamera)
+    Assert-Test ($result.known -and -not $result.ok) 'camera get rejects untyped and nonfinite coordinates'
+}
+foreach ($action in @('drive', 'setPov', 'freecam')) {
+    Assert-Test (-not (Test-DevBenchReadOnlyRequest -ToolName camera -Arguments @{ action = $action })) 'camera mutation never inherits read-only admission'
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = $action } -Content @($camera)
+    Assert-Test (-not $result.known) 'camera get observation cannot verify a camera mutation'
+}
+foreach ($invalidField in @(
+    @{ field = 'pov'; value = 'unknown' }, @{ field = 'pov'; value = $true },
+    @{ field = 'freeCam'; value = 'false' }, @{ field = 'stateId'; value = -1 },
+    @{ field = 'stateId'; value = 4294967296L }, @{ field = 'stateId'; value = 9.5 },
+    @{ field = 'freeCamOwned'; value = $null }, @{ field = 'freeCamOwned'; value = 'false' }
+)) {
+    $badCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+    $badCamera.($invalidField.field) = $invalidField.value
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($badCamera)
+    Assert-Test ($result.known -and -not $result.ok) "camera get rejects malformed $($invalidField.field)"
+}
+$olderCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+$olderCamera.PSObject.Properties.Remove('freeCamOwned')
+$olderCameraResult = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($olderCamera)
+Assert-Test ($olderCameraResult.known -and $olderCameraResult.ok) 'camera get accepts a valid older producer without optional ownership telemetry'
+$cameraError = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @([pscustomobject]@{ error = 'camera unavailable' })
+Assert-Test ($cameraError.known -and -not $cameraError.ok) 'camera service errors remain failures'
+
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })
 Assert-Test ($ready.ready -and -not $ready.retryable -and $ready.statePath -eq 'content.result.state') 'service readiness prefers result.state'
 $waiting = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'compiling' } })

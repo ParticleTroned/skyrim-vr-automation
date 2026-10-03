@@ -88,7 +88,8 @@ They do not broaden the mutation boundary.
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
 Narrow adapters recognize input capability contracts, recording inventories,
-correlated recorder-stop receipts and NR `foveation_configure` settings
+correlated recorder-stop receipts, finite typed `camera get` observations,
+and NR `foveation_configure` settings
 transitions without requiring a generic `ok`. Missing/malformed fields,
 service errors and mismatched recording owners still fail. FOV acceptance
 proves the settings transition only; callers must observe a subsequent safe
