@@ -262,6 +262,9 @@ function Get-CompositeObservation($State, [switch]$CaptureOnDemand) {
     else { foreach ($issue in @(Get-RecordingIssues $record.value ([string]$State.sessionId) -RequireRunning)) { $issues.Add($issue) } }
     $screenshotReceipt = $null
     $screenshotError = $null
+    $latest = $null
+    $frameSubmission = $null
+    $observationId = [guid]::NewGuid().ToString('N')
     try {
         if ([string]$State.visualMode -eq 'sequence' -and $State.screenshot.requestId) {
             $screenshotReceipt = Get-ScreenshotReceipt -RequestId ([string]$State.screenshot.requestId) -State $State
@@ -276,9 +279,11 @@ function Get-CompositeObservation($State, [switch]$CaptureOnDemand) {
         if ($screenshotReceipt -and [string]$screenshotReceipt.state -in @('completed','completed_with_warnings') -and -not $latest) {
             $issues.Add('Completed screenshot request has no committed HMD PNG to observe.')
         }
+        if ($latest) {
+            $frameSubmission = New-CaptureInteractionFrameSubmission -LatestFrame $latest -SessionDirectory ([string]$State.sessionDirectory) -FramesDirectory ([string]$State.framesDirectory) -ObservationId $observationId
+        }
     }
-    catch { $screenshotError = $_.Exception.Message; $latest = $null; $issues.Add($screenshotError) }
-    $observationId = [guid]::NewGuid().ToString('N')
+    catch { $screenshotError = $_.Exception.Message; $frameSubmission = $null; $issues.Add($screenshotError) }
     $observation = [pscustomobject][ordered]@{
         contractVersion = '1.0.0'
         observationId = $observationId
@@ -287,7 +292,7 @@ function Get-CompositeObservation($State, [switch]$CaptureOnDemand) {
         ok = $issues.Count -eq 0
         errors = @($issues)
         latestFrame = $latest
-        frameSubmission = $(if ($latest) { [pscustomobject][ordered]@{ kind = 'image-file'; path = [string]$latest.path; mimeType = 'image/png'; view = [string]$latest.view; observationId = $observationId; ordinal = $latest.ordinal; engineFrame = $latest.engineFrame } } else { $null })
+        frameSubmission = $frameSubmission
         screenshot = [pscustomobject][ordered]@{ mode = [string]$State.visualMode; receipt = $screenshotReceipt; error = $screenshotError }
         recording = $record
         game = $game

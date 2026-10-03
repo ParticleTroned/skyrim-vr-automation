@@ -19,6 +19,11 @@ only session orchestrator. Read its `README.md` before the first mutation.
 4. Call `observe` and inspect `data.observation`. When a frame is present, use
    the image-viewing tool on `frameSubmission.path`; do not infer the current
    screen from an earlier frame or an uncommitted artifact.
+   The controller automatically supplies a file of at most 4 MiB: the
+   verified original PNG when it fits, otherwise a full-resolution JPEG
+   marked as a lossy viewing derivative. `frameSubmission.original` retains
+   the PNG path, SHA-256 and HMD acquisition. Use that original for pixel
+   comparisons and retained evidence; never treat the JPEG as lossless.
 5. Prefer a catalogued `-ActionName`. Named controller actions preserve the
    currently observed HMD/controller poses and mutate only the declared bounded
    input, then wait for the exact sequence generation to finish. Use

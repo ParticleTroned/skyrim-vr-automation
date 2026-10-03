@@ -201,6 +201,138 @@ function ConvertTo-CaptureInteractionUtcBoundary {
     return $parsed.ToUniversalTime()
 }
 
+function Resolve-CaptureInteractionOwnedPath([string]$Root, [string]$Path) {
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    $resolved = [IO.Path]::GetFullPath($Path)
+    if (-not $resolved.StartsWith($rootPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Viewing artifact path escaped the owned capture directory.'
+    }
+    for ($cursor = $resolved; $cursor; $cursor = [IO.Path]::GetDirectoryName($cursor)) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Viewing artifact paths must not traverse reparse points.'
+            }
+        }
+    }
+    return $resolved
+}
+
+function New-CaptureInteractionFrameSubmission {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$LatestFrame,
+        [Parameter(Mandatory)][string]$SessionDirectory,
+        [Parameter(Mandatory)][string]$FramesDirectory,
+        [Parameter(Mandatory)][string]$ObservationId,
+        [ValidateRange(1, 4194304)][int]$MaximumBytes = 4194304
+    )
+
+    if (-not (Get-CaptureInteractionProperty $LatestFrame 'committed' $false) -or
+        (Get-CaptureInteractionProperty $LatestFrame 'format') -ne 'png' -or
+        (Get-CaptureInteractionProperty $LatestFrame 'colourContract') -ne 'sdr_srgb' -or
+        (Get-CaptureInteractionProperty (Get-CaptureInteractionProperty $LatestFrame 'acquisition') 'sourceKind') -ne 'hmd_submission') {
+        throw 'Viewing submission requires a committed SDR PNG with verified HMD acquisition.'
+    }
+    $framesRoot = Resolve-CaptureInteractionOwnedPath $SessionDirectory $FramesDirectory
+    $sourcePath = Resolve-CaptureInteractionOwnedPath $framesRoot ([string]$LatestFrame.path)
+    $viewRoot = Resolve-CaptureInteractionOwnedPath $SessionDirectory (Join-Path $SessionDirectory 'viewing')
+    $source = [IO.File]::Open($sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $decoded = $null
+    try {
+        if ($source.Length -lt 24 -or $source.Length -gt 134217728 -or $source.Length -ne $LatestFrame.bytes) {
+            throw 'Original PNG byte length is invalid, exceeds 128 MiB, or differs from its capture receipt.'
+        }
+        $sourceHash = (Get-FileHash -InputStream $source -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($sourceHash -ne [string]$LatestFrame.sha256) { throw 'Original PNG SHA-256 differs from its capture receipt.' }
+        $source.Position = 0
+        $header = [byte[]]::new(24)
+        $source.ReadExactly($header, 0, $header.Length)
+        if ([Convert]::ToHexString($header[0..7]) -ne '89504E470D0A1A0A' -or [Text.Encoding]::ASCII.GetString($header, 12, 4) -ne 'IHDR') {
+            throw 'Original capture is not a PNG image.'
+        }
+        $widthBytes = [byte[]]$header[16..19]; [Array]::Reverse($widthBytes)
+        $heightBytes = [byte[]]$header[20..23]; [Array]::Reverse($heightBytes)
+        $width = [BitConverter]::ToUInt32($widthBytes, 0)
+        $height = [BitConverter]::ToUInt32($heightBytes, 0)
+        if ($width -lt 1 -or $height -lt 1 -or $width -gt 16384 -or $height -gt 16384 -or
+            [long]$width * $height -gt 67108864 -or $width -ne $LatestFrame.width -or $height -ne $LatestFrame.height) {
+            throw 'Original PNG dimensions differ from the receipt or exceed the 16384-axis/64-megapixel decode bound.'
+        }
+        Add-Type -AssemblyName System.Drawing.Common
+        $source.Position = 0
+        $decoded = [Drawing.Image]::FromStream($source, $false, $true)
+        if ($decoded.Width -ne $width -or $decoded.Height -ne $height) { throw 'Decoded PNG dimensions differ from its header.' }
+        $submissionPath = $sourcePath
+        $submissionHash = $sourceHash
+        $submissionBytes = $source.Length
+        $mimeType = 'image/png'
+        $quality = $null
+        $attemptedQualities = [Collections.Generic.List[int]]::new()
+        if ($source.Length -gt $MaximumBytes) {
+            $encoder = @([Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg')[0]
+            $encodedBytes = $null
+            foreach ($candidateQuality in @(95, 90, 85, 80, 70, 60, 50, 40, 30, 20, 10)) {
+                $attemptedQualities.Add($candidateQuality)
+                $buffer = [IO.MemoryStream]::new()
+                $parameters = [Drawing.Imaging.EncoderParameters]::new(1)
+                try {
+                    $parameters.Param[0] = [Drawing.Imaging.EncoderParameter]::new([Drawing.Imaging.Encoder]::Quality, [long]$candidateQuality)
+                    $decoded.Save($buffer, $encoder, $parameters)
+                    if ($buffer.Length -le $MaximumBytes) {
+                        $encodedBytes = $buffer.ToArray()
+                        $quality = $candidateQuality
+                        break
+                    }
+                }
+                finally { $parameters.Dispose(); $buffer.Dispose() }
+            }
+            if ($null -eq $encodedBytes) {
+                throw "No full-resolution viewing JPEG fits the $MaximumBytes-byte limit at qualities 95 through 10; original PNG remains intact."
+            }
+            $submissionHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($encodedBytes)).ToLowerInvariant()
+            $submissionBytes = $encodedBytes.Length
+            $mimeType = 'image/jpeg'
+            New-Item -ItemType Directory -Path $viewRoot -Force | Out-Null
+            $submissionPath = Resolve-CaptureInteractionOwnedPath $SessionDirectory (Join-Path $viewRoot "view-$sourceHash-q$quality.jpg")
+            if (-not (Test-Path -LiteralPath $submissionPath)) {
+                $temporary = Resolve-CaptureInteractionOwnedPath $SessionDirectory (Join-Path $viewRoot ('.view-' + [guid]::NewGuid().ToString('N') + '.tmp'))
+                try {
+                    $output = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                    try { $output.Write($encodedBytes, 0, $encodedBytes.Length); $output.Flush($true) }
+                    finally { $output.Dispose() }
+                    try { [IO.File]::Move($temporary, $submissionPath, $false) }
+                    catch [IO.IOException] { if (-not [IO.File]::Exists($submissionPath)) { throw } }
+                }
+                finally { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } }
+            }
+            $written = Get-Item -LiteralPath $submissionPath
+            if ($written.Length -ne $submissionBytes -or (Get-FileHash -LiteralPath $submissionPath -Algorithm SHA256).Hash -ne $submissionHash) {
+                throw 'Existing viewing artifact conflicts with the deterministic encoding; no file was overwritten.'
+            }
+        }
+        return [pscustomobject][ordered]@{
+            kind = 'image-file'; path = $submissionPath; mimeType = $mimeType
+            view = [string]$LatestFrame.view; observationId = $ObservationId
+            ordinal = $LatestFrame.ordinal; engineFrame = $LatestFrame.engineFrame
+            width = $width; height = $height; bytes = $submissionBytes; sha256 = $submissionHash
+            maximumBytes = $MaximumBytes
+            original = [pscustomobject][ordered]@{
+                path = $sourcePath; mimeType = 'image/png'; sha256 = $sourceHash; bytes = $source.Length
+                width = $width; height = $height; requestId = $LatestFrame.requestId
+                acquisition = $LatestFrame.acquisition; colourContract = 'sdr_srgb'
+            }
+            viewing = [pscustomobject][ordered]@{
+                derivative = $null -ne $quality; purpose = 'view_only'; lossy = $null -ne $quality
+                fullResolution = $true; resized = $false; retouched = $false
+                jpegQuality = $quality; attemptedQualities = @($attemptedQualities)
+                encoding = if ($null -ne $quality) { 'System.Drawing JPEG; alpha omitted; no color-management transform' } else { 'original PNG bytes' }
+            }
+        }
+    }
+    finally { if ($decoded) { $decoded.Dispose() }; $source.Dispose() }
+}
+
 function Get-CaptureInteractionSaveCandidates {
     [CmdletBinding()]
     param(
@@ -224,4 +356,4 @@ function Get-CaptureInteractionSaveCandidates {
     })
 }
 
-Export-ModuleMember -Function Get-CaptureInteractionActionCatalog, Get-CaptureInteractionProperty, New-CaptureInteractionFrames, Find-CaptureInteractionScreenshotReceipt, Get-CaptureInteractionLatestFrame, ConvertTo-CaptureInteractionUtcBoundary, Get-CaptureInteractionSaveCandidates
+Export-ModuleMember -Function Get-CaptureInteractionActionCatalog, Get-CaptureInteractionProperty, New-CaptureInteractionFrames, Find-CaptureInteractionScreenshotReceipt, Get-CaptureInteractionLatestFrame, New-CaptureInteractionFrameSubmission, ConvertTo-CaptureInteractionUtcBoundary, Get-CaptureInteractionSaveCandidates

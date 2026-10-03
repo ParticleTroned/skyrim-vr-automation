@@ -50,8 +50,10 @@ elseif ($Tool -eq 'communityshaders.screenshot') {
         $descriptor = if ($arguments.action -eq 'capture') { $arguments.capture } else { $arguments.sequence.capture }
         if ($descriptor.source.kind -ne 'hmd_submission' -or $descriptor.source.fallback -ne 'reject') { throw 'Unexpected capture source.' }
         $image = Join-Path $descriptor.destination.directory 'frame-left.png'
-        [IO.File]::WriteAllBytes($image, [byte[]](1,2,3))
-        $child = @{ ordinal=4; requestId='child-4'; state='completed'; scheduledEngineFrame=44; actual=@{acquisition=@{sourceKind='hmd_submission';engineFrame=48;compositorCycle=52}}; artifacts=@(@{path=$image;bytes=3;committed=$true;sha256=(Get-FileHash -LiteralPath $image).Hash;actual=@{view='left_eye';format='png';colourContract='sdr_srgb';width=100;height=100}}) }
+        Add-Type -AssemblyName System.Drawing.Common
+        $bitmap = [Drawing.Bitmap]::new(100, 100)
+        try { $bitmap.Save($image, [Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+        $child = @{ ordinal=4; requestId='child-4'; state='completed'; scheduledEngineFrame=44; actual=@{acquisition=@{sourceKind='hmd_submission';engineFrame=48;compositorCycle=52}}; artifacts=@(@{path=$image;bytes=(Get-Item -LiteralPath $image).Length;committed=$true;sha256=(Get-FileHash -LiteralPath $image).Hash;actual=@{view='left_eye';format='png';colourContract='sdr_srgb';width=100;height=100}}) }
         $data.manifestPath = Join-Path $descriptor.destination.directory 'sequence.manifest.json'
         @{requestId='req-1';children=@($child)} | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $data.manifestPath -Encoding utf8
         $value = @{ok=$true;result=@{requestId='req-1';state='running';terminal=$false}}

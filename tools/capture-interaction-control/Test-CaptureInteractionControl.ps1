@@ -67,6 +67,69 @@ try {
     try { $null = Get-CaptureInteractionLatestFrame -Receipt $receipt } catch { $rejectedSource = $true }
     Assert-Test $rejectedSource 'source mismatch cannot be presented as an HMD frame'
 
+    Add-Type -AssemblyName System.Drawing.Common
+    $viewSession = Join-Path $root 'viewing-fixture'
+    $viewFrames = Join-Path $viewSession 'frames'
+    New-Item -ItemType Directory -Path $viewFrames -Force | Out-Null
+    $viewOriginal = Join-Path $viewFrames 'noise.png'
+    $bitmap = [Drawing.Bitmap]::new(256, 256, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    try {
+        $locked = $bitmap.LockBits([Drawing.Rectangle]::new(0,0,256,256), [Drawing.Imaging.ImageLockMode]::WriteOnly, $bitmap.PixelFormat)
+        try {
+            $pixels = [byte[]]::new($locked.Stride * 256)
+            [Random]::new(7).NextBytes($pixels)
+            [Runtime.InteropServices.Marshal]::Copy($pixels, 0, $locked.Scan0, $pixels.Length)
+        }
+        finally { $bitmap.UnlockBits($locked) }
+        $bitmap.Save($viewOriginal, [Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally { $bitmap.Dispose() }
+    $originalHash = (Get-FileHash -LiteralPath $viewOriginal).Hash
+    $viewFrame = [pscustomobject]@{
+        path=$viewOriginal;view='left_eye';format='png';colourContract='sdr_srgb';width=256;height=256
+        bytes=(Get-Item -LiteralPath $viewOriginal).Length;sha256=$originalHash;committed=$true
+        ordinal=8;engineFrame=25;requestId='frame-8';acquisition=[pscustomobject]@{sourceKind='hmd_submission';engineFrame=25}
+    }
+    $originalSubmission = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-original'
+    Assert-Test ($originalSubmission.path -eq $viewOriginal -and $originalSubmission.mimeType -eq 'image/png' -and -not $originalSubmission.viewing.derivative -and $originalSubmission.original.sha256 -eq $originalHash) 'small verified PNGs are submitted losslessly with original provenance'
+    $viewSubmission = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-jpeg' -MaximumBytes 32768
+    Assert-Test ($viewSubmission.mimeType -eq 'image/jpeg' -and $viewSubmission.bytes -le 32768 -and $viewSubmission.viewing.derivative -and $viewSubmission.viewing.lossy -and $viewSubmission.viewing.jpegQuality -lt 95 -and $viewSubmission.viewing.attemptedQualities.Count -le 11) 'large viewing images use a bounded deterministic JPEG quality fallback'
+    $preview = [Drawing.Image]::FromFile($viewSubmission.path)
+    try { Assert-Test ($preview.Width -eq 256 -and $preview.Height -eq 256) 'viewing derivatives preserve full image dimensions' }
+    finally { $preview.Dispose() }
+    $previewWriteTime = (Get-Item -LiteralPath $viewSubmission.path).LastWriteTimeUtc
+    $repeatSubmission = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-repeat' -MaximumBytes 32768
+    Assert-Test ($repeatSubmission.path -eq $viewSubmission.path -and $repeatSubmission.sha256 -eq $viewSubmission.sha256 -and (Get-Item -LiteralPath $viewSubmission.path).LastWriteTimeUtc -eq $previewWriteTime) 'matching deterministic viewing artifacts are reused without rewriting'
+    Assert-Test ((Get-FileHash -LiteralPath $viewOriginal).Hash -eq $originalHash -and $viewSubmission.original.acquisition.sourceKind -eq 'hmd_submission' -and $viewSubmission.original.requestId -eq 'frame-8') 'viewing conversion preserves original bytes and HMD acquisition identity'
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-too-small' -MaximumBytes 1 } catch { $viewRejected = $_.Exception.Message -match 'No full-resolution viewing JPEG fits' }
+    Assert-Test $viewRejected 'an impossible byte budget fails explicitly without resizing the image'
+    $viewFrame.sha256 = ('0' * 64)
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-wrong-hash' } catch { $viewRejected = $_.Exception.Message -match 'SHA-256' }
+    Assert-Test $viewRejected 'viewing artifacts cannot be made from mismatched original bytes'
+    $viewFrame.sha256 = $originalHash
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession (Join-Path $viewSession 'different-frames') 'view-outside' } catch { $viewRejected = $_.Exception.Message -match 'escaped' }
+    Assert-Test $viewRejected 'viewing sources must remain inside the owned frames directory'
+    [IO.File]::WriteAllBytes($viewSubmission.path, [byte[]](1,2,3))
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-conflict' -MaximumBytes 32768 } catch { $viewRejected = $_.Exception.Message -match 'conflicts' }
+    Assert-Test ($viewRejected -and (Get-Item -LiteralPath $viewSubmission.path).Length -eq 3) 'conflicting existing derivatives fail without overwriting evidence'
+    $corruptOriginal = Join-Path $viewFrames 'corrupt.png'
+    [IO.File]::WriteAllBytes($corruptOriginal, [byte[]]::new(24))
+    $corruptFrame = $viewFrame | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $corruptFrame.path = $corruptOriginal
+    $corruptFrame.bytes = 24
+    $corruptFrame.sha256 = (Get-FileHash -LiteralPath $corruptOriginal).Hash
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $corruptFrame $viewSession $viewFrames 'view-corrupt' } catch { $viewRejected = $_.Exception.Message -match 'not a PNG' }
+    Assert-Test $viewRejected 'a matching file hash cannot make malformed bytes a viewing image'
+    $viewFrame.width = 257
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-dimensions' } catch { $viewRejected = $_.Exception.Message -match 'dimensions differ' }
+    Assert-Test $viewRejected 'viewing submission requires the encoded dimensions to match the capture receipt'
+
     $saveRoot = Join-Path $root 'saves'
     New-Item -ItemType Directory -Path $saveRoot -Force | Out-Null
     $utcBoundary = ConvertTo-CaptureInteractionUtcBoundary -Value '2026-08-26T09:30:58.715Z'
@@ -87,6 +150,7 @@ try {
     Assert-Test ($started.ok -and $started.state -eq 'session-started' -and $started.data.screenshot.requestId -eq 'req-1') 'sequence session starts recording and screenshot capture under one session'
     $observed = & $entry observe -SessionDirectory $session -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact | ConvertFrom-Json -Depth 100
     Assert-Test ($observed.ok -and $observed.data.observation.latestFrame.ordinal -eq 4) 'observe composites runtime state and the latest committed frame'
+    Assert-Test ($observed.data.observation.frameSubmission.mimeType -eq 'image/png' -and $observed.data.observation.frameSubmission.original.sha256 -eq $observed.data.observation.latestFrame.sha256) 'observe automatically supplies a bounded viewing artifact with its original source hash'
     Assert-Test (Test-Path -LiteralPath $observed.data.observationPath -PathType Leaf) 'observe persists a latest-observation receipt'
     $env:CAPTURE_INTERACTION_SESSION_PATH = $started.data.statePath
     $acted = & $entry act -SessionDirectory $session -ActionName accept -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact | ConvertFrom-Json -Depth 100

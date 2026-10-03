@@ -39,6 +39,26 @@ submit to an image-capable model. It is deliberately the newest completed
 artifact, not the oldest unprocessed member of a backlog. Stereo artifacts and
 the CSX frame manifest remain intact for evidence.
 
+Frame submission automatically stays within a 4 MiB binary file budget.
+The controller verifies the original PNG's size, SHA-256, dimensions and HMD
+acquisition before selecting it. A PNG within the budget is used unchanged.
+Larger images receive a full-resolution JPEG in the session's `viewing`
+directory, trying qualities 95, 90, 85, 80, 70, 60, 50, 40, 30, 20 and 10 in
+that order until one fits. No resizing, retouching or color-management
+transform is performed; JPEG is lossy and omits alpha. If none fits, the
+observation reports a clear error and preserves the original evidence.
+
+`frameSubmission.original` links the exact PNG, hash, dimensions and HMD
+acquisition. `frameSubmission.viewing` identifies the view-only derivative,
+quality and attempted encodings; the submission also records its own hash,
+size and MIME type. Pixel comparisons must use the original PNG. The source
+stays open read-only during conversion, paths must stay inside their owned
+directories without reparse points, and existing derivatives are reused only
+when their bytes match the deterministic encoding. Conflicts fail without
+overwriting. Decoding is bounded to 128 MiB source files, 16384 pixels per
+axis and 64 megapixels. These are viewing limits, not capture resolution
+changes or a replacement for the stereo evidence contract.
+
 Named actions are declared in `actions.v1.json`. Controller actions first use
 the read-only DevBench tracked-set observation, preserve all three current
 poses, neutralize stale input state, and then compile a bounded atomic sequence.
