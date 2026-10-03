@@ -89,12 +89,16 @@ call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
 Narrow adapters recognize input capability contracts, recording inventories,
 correlated recorder-stop receipts, finite typed `camera get` observations,
-and NR `foveation_configure` settings
+typed `communityshaders.menu status` observations, and NR `foveation_configure` settings
 transitions without requiring a generic `ok`. Missing/malformed fields,
 service errors and mismatched recording owners still fail. FOV acceptance
 proves the settings transition only; callers must observe a subsequent safe
 frame to establish rendering. Recording paths identify saved output but do
 not verify its physical contents. Queued console work remains unverified.
+CSX menu status requires the matching action, producer Build ID, integer
+runtime type and boolean menu/loading observations. This validates the read
+only; it does not prove a menu transition, rendering readiness or success of
+`open`, `close`, `toggle` or `set_path`. Producer verification remains required.
 The `communityshaders.profiler` bridge has a contract-specific adapter because
 its legacy response does not carry a generic top-level `ok`: `status` must
 contain a frame-bearing status object, while `enable` and `disable` must report

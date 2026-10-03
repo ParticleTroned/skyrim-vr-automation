@@ -224,6 +224,44 @@ Assert-Test ($olderCameraResult.known -and $olderCameraResult.ok) 'camera get ac
 $cameraError = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @([pscustomobject]@{ error = 'camera unavailable' })
 Assert-Test ($cameraError.known -and -not $cameraError.ok) 'camera service errors remain failures'
 
+$csxMenu = [pscustomobject]@{ action = 'status'; producer = [pscustomobject]@{ buildId = ('a' * 64) }; status = [pscustomobject]@{
+    runtimeType = 1; menuEnabled = $false; menuSessionOpen = $false; mainMenuOpen = $false; loadingMenuOpen = $false
+} }
+$menuResult = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($csxMenu)
+Assert-Test ($menuResult.known -and $menuResult.ok -and $menuResult.outcome -eq 'csx-menu-status-read-satisfied') 'CSX menu status validates its typed observation without a generic success marker'
+foreach ($field in @('runtimeType', 'menuEnabled', 'menuSessionOpen', 'mainMenuOpen', 'loadingMenuOpen')) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.status.PSObject.Properties.Remove($field)
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) "CSX menu status rejects missing $field"
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.status.$field = 'false'
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) "CSX menu status rejects untyped $field"
+}
+foreach ($field in @('action', 'producer', 'status')) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.PSObject.Properties.Remove($field)
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) "CSX menu status rejects missing $field"
+}
+foreach ($invalid in @(-1, 4294967296L, 1.5, $true, $null)) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.status.runtimeType = $invalid
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) 'CSX menu status rejects invalid runtime type'
+}
+foreach ($change in @(@{ action = 'open' }, @{ producer = [pscustomobject]@{ buildId = 'bad' } }, @{ error = 'unavailable' }, @{ errors = @('unavailable') })) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    foreach ($field in $change.Keys) { $badMenu | Add-Member -NotePropertyName $field -NotePropertyValue $change[$field] -Force }
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) 'CSX menu status rejects mismatched action, bad identity and service errors'
+}
+foreach ($action in @('open', 'close', 'toggle', 'set_path')) {
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = $action } -Content @($csxMenu)
+    Assert-Test (-not $result.known) 'CSX menu observation cannot verify a menu mutation'
+}
+
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })
 Assert-Test ($ready.ready -and -not $ready.retryable -and $ready.statePath -eq 'content.result.state') 'service readiness prefers result.state'
 $waiting = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'compiling' } })

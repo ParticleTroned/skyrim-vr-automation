@@ -199,6 +199,7 @@ function Get-DevBenchActionContract {
         'record/stop' { 'record-stop' }
         'communityshaders.neural_rendering/foveation_configure' { 'foveation-settings-transition' }
         'communityshaders.renderscale/status' { 'renderscale-status-read' }
+        'communityshaders.menu/status' { 'csx-menu-status-read' }
         default { return $null }
     }
     $reasons = [Collections.Generic.List[string]]::new()
@@ -249,6 +250,24 @@ function Get-DevBenchActionContract {
                 $reasons.Add('render-scale status requires its action, producer, frame and controller observation')
             }
             $evidence.Add('content.action'); $evidence.Add('content.producer.buildId'); $evidence.Add('content.status.frame')
+        }
+        'csx-menu-status-read' {
+            $status = Get-DevBenchTelemetryMember $Payload 'status'
+            $producer = Get-DevBenchTelemetryMember $Payload 'producer'
+            $buildId = Get-DevBenchTelemetryMember $producer 'buildId'
+            $runtimeType = Get-DevBenchTelemetryMember $status 'runtimeType'
+            if ($reportedAction -cne 'status' -or $status -isnot [pscustomobject] -or
+                $buildId -isnot [string] -or $buildId -notmatch '^[0-9a-f]{64}$' -or
+                ($runtimeType -isnot [int] -and $runtimeType -isnot [long]) -or $runtimeType -lt 0 -or $runtimeType -gt [uint32]::MaxValue) {
+                $reasons.Add('CSX menu status requires its action, producer and typed runtime observation')
+            }
+            foreach ($field in @('menuEnabled', 'menuSessionOpen', 'mainMenuOpen', 'loadingMenuOpen')) {
+                if ((Get-DevBenchTelemetryMember $status $field) -isnot [bool]) {
+                    $reasons.Add("CSX menu status requires a boolean $field")
+                }
+                $evidence.Add("content.status.$field")
+            }
+            $evidence.Add('content.action'); $evidence.Add('content.producer.buildId'); $evidence.Add('content.status.runtimeType')
         }
         'input-capabilities' {
             $identity = Get-DevBenchTelemetryMember $Payload 'contract'
