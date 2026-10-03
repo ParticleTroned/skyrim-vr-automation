@@ -92,8 +92,10 @@ earlier; retained limit diagnostics must be checked throughout a run.
 
 Sequence receipts reference a partial or final manifest instead of inlining
 children. Observation reads that manifest only inside the owned frames directory
-and verifies its request identity. Image metadata comes from each committed
-artifact's `actual` object; source and acquired frame come from the child's
+and verifies its request identity. The declared sequence manifest artifact is
+packaging, not a candidate image. Child image paths resolve relative to the
+observed manifest directory and must stay inside it. Image metadata comes from
+each committed artifact's `actual` object; source and acquired frame come from the child's
 `actual.acquisition`. A scheduled frame is retained separately. Source or
 encoding mismatches suppress image submission and preserve the offending receipt.
 This observation pointer does not replace an assay's full stereo-pair,

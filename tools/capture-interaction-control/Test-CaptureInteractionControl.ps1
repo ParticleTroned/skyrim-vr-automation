@@ -42,6 +42,26 @@ try {
     ) }
     $partialLatest = Get-CaptureInteractionLatestFrame -Receipt $partialReceipt -PreferredView left_eye
     Assert-Test ($partialLatest.path -eq 'current-right.png') 'latest-frame selection never prefers an older eye over the newest committed frame'
+    $manifestPath = Join-Path $root 'frames/sequence.json'
+    $sequenceReceipt = [pscustomobject]@{
+        requestId='sequence'; kind='sequence'; state='completed'; actual=[pscustomobject]@{}
+        manifest=[pscustomobject]@{finalPath=$manifestPath;partialPath="$manifestPath.partial"}
+        observedManifest=[pscustomobject]@{path=$manifestPath}
+        artifacts=@([pscustomobject]@{path=$manifestPath;committed=$true})
+        children=$receipt.children
+    }
+    $sequenceLatest = Get-CaptureInteractionLatestFrame -Receipt $sequenceReceipt
+    Assert-Test ($sequenceLatest.path -eq (Join-Path $root 'frames/latest.png') -and $sequenceLatest.engineFrame -eq 25) 'sequence packaging manifests are not images and child image paths resolve against the observed manifest'
+    $sequenceReceipt.artifacts[0].path = Join-Path $root 'frames/unknown.json'
+    $rejectedPackaging = $false
+    try { $null = Get-CaptureInteractionLatestFrame -Receipt $sequenceReceipt } catch { $rejectedPackaging = $true }
+    Assert-Test $rejectedPackaging 'unrecognized committed sequence artifacts remain invalid'
+    $sequenceReceipt.artifacts[0].path = $manifestPath
+    $sequenceReceipt.children[1].artifacts[1].path = '../escaped.png'
+    $rejectedEscape = $false
+    try { $null = Get-CaptureInteractionLatestFrame -Receipt $sequenceReceipt } catch { $rejectedEscape = $true }
+    Assert-Test $rejectedEscape 'relative image paths cannot escape the observed manifest directory'
+    $sequenceReceipt.children[1].artifacts[1].path = 'latest.png'
     $acquisition.acquisition.sourceKind = 'desktop_mirror'
     $rejectedSource = $false
     try { $null = Get-CaptureInteractionLatestFrame -Receipt $receipt } catch { $rejectedSource = $true }

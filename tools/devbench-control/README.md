@@ -34,6 +34,9 @@ expectations. Pass `-EvidenceDirectory` to preserve this binding with the run.
 Each invocation writes a uniquely named binding receipt, so parallel calls do
 not overwrite one another. Use `-EvidenceLabel` to give that receipt a stable
 human-readable label within the unique filename.
+Process-start identity comparisons normalize explicit UTC/offset strings and
+JSON-materialized dates without losing fractional-second ticks. Ambiguous
+timestamps remain invalid.
 The controller also persists an invocation journal before dispatch. It records
 the requested tool and arguments, dispatch boundary, last verified runtime
 identity, transport retries, and terminal result. If the target exits during a
@@ -55,7 +58,9 @@ one evidence record.
 Mutation-capable calls require that complete identity. The controller keeps a
 strict, action-sensitive allowlist for read-only inspection: built-in
 `inspect` kinds, `menu list`, `record status`, and tracked-input
-observation/status. Those calls may proceed when listener and process identity
+observation/status/capabilities, `communityshaders.menu status` and
+`depth_culling_snapshot`, and `communityshaders.renderscale status`. Those
+calls may proceed when listener and process identity
 are verified even if build or deployed-artifact provenance is unavailable.
 They do not broaden the mutation boundary.
 
@@ -71,6 +76,20 @@ Structured responses from allowlisted read-only calls establish a successful
 read contract. `record start` has a separate adapter that requires
 `action=start`, `recording=true`, and the requested correlation ID before
 `-RequireSuccess` accepts the result.
+`record stop` requires `expectedCorrelationId` to match the persisted
+`devbench-recording-3` metadata, a recording path, and consistent sample counts,
+duration and limit state. A successfully persisted limited recording still
+retains its truncation fields for the caller to classify.
+Legacy input capabilities require the versioned `devbench.input` contract and
+keyboard/tracked-set capability shapes. CSX menu and render-scale reads require
+their exact action, producer, and diagnostic schema. Device unavailability or
+an inactive diagnostic subsystem does not make the read itself fail. Only the
+reviewed read actions receive this treatment; arbitrary JSON remains unknown.
+Depth-culling setters additionally verify the requested settings against the
+returned configured policy or telemetry state. Reset requires an acknowledged
+current measurement window. These mutations retain complete runtime identity
+requirements, and explicit errors, producer mismatches, and missing or
+contradictory acknowledgements remain failures.
 Replay completion receipts containing only scheduler facts such as `done`,
 `runId`, and `stepsRun` are classified as
 `scheduler-complete-unverified`, not semantic success. A replay response must

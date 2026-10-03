@@ -136,11 +136,21 @@ function Get-CaptureInteractionLatestFrame {
         [string]$PreferredView = 'left_eye'
     )
     $items = [Collections.Generic.List[object]]::new()
+    $observedManifest = Get-CaptureInteractionProperty $Receipt 'observedManifest'
+    $observedManifestPath = Get-CaptureInteractionProperty $observedManifest 'path'
+    $manifestDirectory = if ($observedManifestPath) { [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$observedManifestPath)) } else { $null }
     function VisitArtifact($Current) {
         if ($null -eq $Current -or $Current -is [string] -or $Current -is [ValueType]) { return }
         $acquisition = Get-CaptureInteractionProperty (Get-CaptureInteractionProperty $Current 'actual') 'acquisition'
         foreach ($artifact in @(Get-CaptureInteractionProperty $Current 'artifacts' @())) {
             if ([bool](Get-CaptureInteractionProperty $artifact 'committed' $false)) {
+                $artifactPath = [string](Get-CaptureInteractionProperty $artifact 'path')
+                $manifest = Get-CaptureInteractionProperty $Current 'manifest'
+                $declaredManifestPaths = @((Get-CaptureInteractionProperty $manifest 'finalPath'), (Get-CaptureInteractionProperty $manifest 'partialPath'))
+                if ((Get-CaptureInteractionProperty $Current 'kind') -eq 'sequence' -and
+                    -not [string]::IsNullOrWhiteSpace($artifactPath) -and $artifactPath -in $declaredManifestPaths) {
+                    continue
+                }
                 $actual = Get-CaptureInteractionProperty $artifact 'actual'
                 if ([string](Get-CaptureInteractionProperty $acquisition 'sourceKind') -ne 'hmd_submission') {
                     throw 'Committed screenshot artifact lacks an actual hmd_submission acquisition.'
@@ -149,8 +159,16 @@ function Get-CaptureInteractionLatestFrame {
                     [string](Get-CaptureInteractionProperty $actual 'colourContract') -ne 'sdr_srgb') {
                     throw 'Committed screenshot artifact is not an actual sdr_srgb PNG.'
                 }
+                if ($manifestDirectory) {
+                    if (-not [IO.Path]::IsPathRooted($artifactPath)) { $artifactPath = Join-Path $manifestDirectory $artifactPath }
+                    $artifactPath = [IO.Path]::GetFullPath($artifactPath)
+                    $artifactRoot = $manifestDirectory.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+                    if (-not $artifactPath.StartsWith($artifactRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'Screenshot artifact escaped the observed manifest directory.'
+                    }
+                }
                 $items.Add([pscustomobject][ordered]@{
-                    path = [string]$artifact.path
+                    path = $artifactPath
                     view = [string](Get-CaptureInteractionProperty $actual 'view' '')
                     format = [string]$actual.format
                     colourContract = [string]$actual.colourContract
