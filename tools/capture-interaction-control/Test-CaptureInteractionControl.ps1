@@ -140,6 +140,21 @@ try {
     Assert-Test ($saveCandidates.Count -eq 1 -and $saveCandidates[0].name -eq 'Save3_Test_WhiterunWorld.ess') 'save boundary parsing and comparison remain UTC-safe in non-UTC local time'
 
     $fake = Join-Path $PSScriptRoot 'tests/Invoke-FakeCaptureDevBench.ps1'
+    $burstRegions = '[{"x":2,"y":3,"width":4,"height":6},{"x":8,"y":9,"width":4,"height":2}]'
+    $burstPlan = New-CaptureInteractionBurstPlan -RegionsJson $burstRegions -FrameCount 3 -MaximumBytes 768 -StartDelayFrames 60
+    Assert-Test ($burstPlan.rawPayloadBytes -eq 768 -and $burstPlan.atlasWidth -eq 8 -and $burstPlan.atlasHeight -eq 8 -and $burstPlan.startDelayFrames -eq 60) 'burst memory covers both native eyes and every frame with vertical region stacking'
+    $campaignPlan = New-CaptureInteractionBurstPlan -RegionsJson '[{"x":512,"y":650,"width":768,"height":512}]' -FrameCount 160
+    Assert-Test ($campaignPlan.rawPayloadBytes -eq 503316480) '160-frame native stereo campaign atlas fits the 512 MiB bound exactly as planned'
+    foreach ($invalidRegions in @('[]', '{}', '[{"x":0,"y":0,"width":4,"height":6,"extra":1}]', '[{"x":0,"y":0,"width":4.0,"height":6}]', '[{"x":false,"y":0,"width":4,"height":6}]', '[{"x":0,"y":0,"width":"4","height":6}]', '[{"x":16383,"y":0,"width":4,"height":6}]', '[{"x":0,"y":0,"width":4,"height":6},{"x":0,"y":0,"width":5,"height":6}]', '[{"x":0,"y":0,"width":4,"height":16384},{"x":0,"y":0,"width":4,"height":1}]')) {
+        $rejected = $false
+        try { $null = New-CaptureInteractionBurstPlan -RegionsJson $invalidRegions -FrameCount 3 } catch { $rejected = $true }
+        Assert-Test $rejected 'burst regions reject malformed shape, non-integers, unknown fields and incompatible bounds'
+    }
+    foreach ($invalidPlan in @(@{FrameCount=241}, @{FrameCount=3;MaximumBytes=767}, @{FrameCount=3;StartDelayFrames=216000})) {
+        $rejected = $false
+        try { $null = New-CaptureInteractionBurstPlan -RegionsJson $burstRegions @invalidPlan } catch { $rejected = $true }
+        Assert-Test $rejected 'burst plan rejects frame, payload and delay-span overflow'
+    }
     $runtime = Join-Path $root 'runtime.json'
     '{}' | Set-Content -LiteralPath $runtime -Encoding utf8
     $env:CAPTURE_INTERACTION_FAKE_ROOT = $root
@@ -165,6 +180,68 @@ try {
     $wrongIdentity = & $entry observe -SessionDirectory $session -ExpectedRuntimeIdentityJson '{"pid":456}' -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
     Assert-Test (-not $wrongIdentity.ok -and $wrongIdentity.errors[0] -match 'identity') 'a resumed command cannot replace the persisted runtime identity'
     Remove-Item Env:CAPTURE_INTERACTION_EXPECTED_IDENTITY
+
+    Remove-Item -LiteralPath (Join-Path $root 'fake-state.json')
+    $startCallsBefore = @(Get-Content -LiteralPath (Join-Path $root 'calls.log') | Where-Object { $_ -eq 'record/start' }).Count
+    foreach ($badOptions in @(
+        @{VisualMode='none';BurstRegionsJson=$burstRegions;MaximumFrames=3},
+        @{VisualMode='sequence';BurstMaximumBytes=768},
+        @{VisualMode='sequence';BurstStartDelayFrames=60},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions;MaximumFrames=3;FrameIntervalMs=50},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions;MaximumFrames=3;FrameStartDelayMs=2000},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions;MaximumFrames=3;PreferredView='left_eye'},
+        @{VisualMode='none';FrameStartDelayMs=2000}
+    )) {
+        $rejectedStart = & $entry start -SessionDirectory (Join-Path $root 'invalid-burst') -RuntimePath $runtime -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit @badOptions | ConvertFrom-Json -Depth 100
+        Assert-Test (-not $rejectedStart.ok) 'incompatible burst and delay options are rejected before starting a recording'
+    }
+    $env:CAPTURE_INTERACTION_SCENARIO = 'no-burst'
+    $noBurst = & $entry start -SessionDirectory (Join-Path $root 'no-burst') -RuntimePath $runtime -VisualMode sequence -MaximumFrames 3 -BurstRegionsJson $burstRegions -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+    Assert-Test (-not $noBurst.ok -and $noBurst.errors[0] -match 'capability') 'burst admission requires the exact native runtime capability'
+    $startCallsAfter = @(Get-Content -LiteralPath (Join-Path $root 'calls.log') | Where-Object { $_ -eq 'record/start' }).Count
+    Assert-Test ($startCallsBefore -eq $startCallsAfter) 'invalid burst inputs and unsupported runtime leave recording unchanged'
+    Remove-Item Env:CAPTURE_INTERACTION_SCENARIO
+    foreach ($burstScenario in @('burst-complete','burst-gap')) {
+        Remove-Item -LiteralPath (Join-Path $root 'fake-state.json')
+        $env:CAPTURE_INTERACTION_SCENARIO = $burstScenario
+        $burstSession = Join-Path $root $burstScenario
+        $burstStarted = & $entry start -SessionDirectory $burstSession -RuntimePath $runtime -VisualMode sequence -MaximumFrames 3 -BurstRegionsJson $burstRegions -BurstMaximumBytes 768 -BurstStartDelayFrames 60 -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+        Assert-Test ($burstStarted.ok -and $burstStarted.data.preferredView -eq 'side_by_side') 'native burst admission automatically selects the stereo atlas view'
+        $burstCall = @(Get-Content -LiteralPath (Join-Path $root 'calls.ndjson') | ConvertFrom-Json -Depth 80 | Where-Object { $_.tool -eq 'communityshaders.screenshot' -and $_.arguments.action -eq 'sequence_start' })[-1].arguments.sequence
+        Assert-Test ($burstCall.burst.maximumBytes -eq 768 -and $burstCall.schedule.basis -eq 'game_frames' -and $burstCall.schedule.intervalFrames -eq 1 -and $burstCall.schedule.startDelayFrames -eq 60 -and -not $burstCall.PSObject.Properties['failurePolicy']) 'burst forwards the exact native schedule, budget and shared failure contract'
+        $burstObserved = & $entry observe -SessionDirectory $burstSession -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+        $expectedComplete = $burstScenario -eq 'burst-complete'
+        Assert-Test ($burstObserved.ok -eq $expectedComplete -and $burstObserved.data.observation.screenshot.burst.continuityVerified -eq $expectedComplete -and $burstObserved.data.observation.latestFrame.view -eq 'side_by_side') 'burst observation retains native atlas evidence and rejects a reported continuity gap'
+        if ($expectedComplete) {
+            $receipt = $burstObserved.data.observation.screenshot.receipt
+            $receipt.observedManifest.document.children[1].ordinal = 1
+            $duplicate = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $duplicate.continuityVerified) 'duplicate frame ordinals cannot prove complete burst coverage'
+            $receipt.observedManifest.document.children[1].ordinal = 2
+            $receipt.observedManifest.document.children[1].actual.acquisition.engineFrame = 101
+            $frameGap = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $frameGap.continuityVerified) 'native acquired frame identities must cover the reported continuity span'
+            $receipt.observedManifest.document.children[1].actual.acquisition.engineFrame = 102
+            $receipt.observedManifest.document.continuity.lastEngineFrame = 104
+            $mismatch = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $mismatch.continuityVerified) 'receipt and final manifest continuity must agree'
+            $receipt.observedManifest.document.continuity.lastEngineFrame = 103
+            $receipt.manifest.finalPath = $null
+            $partial = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $partial.continuityVerified) 'a partial manifest cannot qualify native burst continuity'
+        }
+        $burstStopped = & $entry stop -SessionDirectory $burstSession -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+        Assert-Test ($burstStopped.ok -eq $expectedComplete -and $burstStopped.data.screenshot.burst.continuityVerified -eq $expectedComplete -and $burstStopped.data.recording.stopReceipt.path -eq 'recording.json') 'burst stop preserves continuity failure while still finalizing the owned recording'
+    }
+    Remove-Item Env:CAPTURE_INTERACTION_SCENARIO
+    Remove-Item -LiteralPath (Join-Path $root 'fake-state.json')
+    $delayedSession = Join-Path $root 'delayed-sequence'
+    $delayed = & $entry start -SessionDirectory $delayedSession -RuntimePath $runtime -VisualMode sequence -MaximumFrames 3 -FrameStartDelayMs 2000 -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+    Assert-Test $delayed.ok 'ordinary sequences support an explicit millisecond start delay'
+    $delayedCall = @(Get-Content -LiteralPath (Join-Path $root 'calls.ndjson') | ConvertFrom-Json -Depth 80 | Where-Object { $_.tool -eq 'communityshaders.screenshot' -and $_.arguments.action -eq 'sequence_start' })[-1].arguments.sequence
+    Assert-Test ($delayedCall.schedule.basis -eq 'wall_clock' -and $delayedCall.schedule.startDelayMs -eq 2000) 'ordinary sequence delay is forwarded without guessing a rendered frame count'
+    $null = & $entry stop -SessionDirectory $delayedSession -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit
 
     function Start-FixtureSession([string]$Name, [string]$Mode = 'none') {
         Remove-Item -LiteralPath (Join-Path $root 'fake-state.json') -ErrorAction SilentlyContinue

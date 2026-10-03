@@ -16,6 +16,12 @@ only session orchestrator. Read its `README.md` before the first mutation.
 3. Choose `none` for state/input capture only, `on-demand` for a frame at each
    `observe`, or `sequence` for continuous stereo evidence. Do not emulate a
    sequence with repeated still requests.
+   For every-rendered-frame temporal evidence, use `BurstRegionsJson` with
+   explicit `MaximumFrames` (1–240) and the bounded native stereo atlas
+   contract in the README. Bursts use `BurstStartDelayFrames`, not a guessed
+   millisecond cadence. Require final `screenshot.burst.continuityVerified`,
+   original-artifact verification and recorded motion overlap before claiming
+   temporal qualification; sparse ordinary sequences cannot prove it.
 4. Call `observe` and inspect `data.observation`. When a frame is present, use
    the image-viewing tool on `frameSubmission.path`; do not infer the current
    screen from an earlier frame or an uncommitted artifact.

@@ -110,6 +110,57 @@ headroom in the 60,000-sample recording budget at the default 50 ms interval.
 Input activity shares a separate tracking/activity budget and can exhaust it
 earlier; retained limit diagnostics must be checked throughout a run.
 
+For consecutive native temporal evidence, opt into a bounded region atlas:
+
+```powershell
+pwsh -NoProfile -File .\Invoke-CaptureInteraction.ps1 start `
+  -SessionDirectory D:\CodexScratch\...\burst `
+  -RuntimePath D:\CSX-MO2-Sessions\...\devbench-runtime.json `
+  -VisualMode sequence -MaximumFrames 160 `
+  -BurstRegionsJson '[{"x":512,"y":650,"width":768,"height":512}]' `
+  -BurstMaximumBytes 536870912 -BurstStartDelayFrames 60
+```
+
+Choose coordinates from the actual native eye reference; the example is not
+a portable scene fixture. Regions use integer pixels relative to each oriented
+eye. One to eight equal-width regions stack vertically in array order, with
+the left eye atlas beside the right. The controller selects `side_by_side`
+automatically and requests native HMD SDR PNG with rejected source fallback.
+Explicit conflicting views are rejected. No crop resampling or resizing occurs.
+
+Burst admission requires an explicit 1–240 frame count and advertised native
+region-atlas/deferred-encoding support. The complete raw stereo payload is
+`width * sum(heights) * 8 * frameCount`, bounded by `BurstMaximumBytes`
+(1–536870912 bytes), with a 128 MiB per-frame ceiling. Regions and atlas axes
+are also bounded to native texture limits. The example consumes 503316480
+raw bytes. Driver padding and encoding scratch are additional memory; actual
+source bounds remain subject to native acquisition validation. All local
+parameter and capability checks occur before starting the recording.
+
+Bursts use `game_frames`, `intervalFrames=1` and optional
+`BurstStartDelayFrames` (0–216000, including the complete sequence span).
+They reject `FrameIntervalMs` and `FrameStartDelayMs`. Ordinary wall-clock
+sequences accept `FrameStartDelayMs` from 0 through 60000, included in their
+recording-budget check. All burst/delay options are restricted to `start`
+with `VisualMode sequence`. The tool never guesses FPS to convert delays.
+Burst acquisition duration depends on rendered frames and pauses: admission
+checks recording headroom for finalization, but does not promise a wall-clock
+duration. Continue checking recording limits, and correlate actual acquired
+frames with the owned motion receipts.
+
+`observe` reports `data.observation.screenshot.burst`; final `stop` retains
+`data.screenshot.burst`. `continuityVerified` requires a completed native
+request, matching complete continuity in the receipt and published final
+manifest, every requested frame ordinal, and committed native stereo PNG
+atlas metadata with the expected dimensions. An incomplete terminal burst
+makes observation/stop fail while retaining evidence and finalizing the owned
+recording. Explicit `abort` retains incomplete evidence without claiming
+continuity. A running/draining request is never reported as continuity-verified.
+This check does not hash every artifact (`artifactFilesVerified` remains
+false), assess image quality, or prove motion overlap. An assay must verify
+all original images and motion coverage before temporal qualification.
+`status` reads the saved session; use `observe` for fresh continuity evidence.
+
 Sequence receipts reference a partial or final manifest instead of inlining
 children. Observation reads that manifest only inside the owned frames directory
 and verifies its request identity. The declared sequence manifest artifact is

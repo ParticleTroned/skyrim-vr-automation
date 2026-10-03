@@ -21,6 +21,115 @@ function Get-CaptureInteractionProperty($Object, [string]$Name, $Default = $null
     return $Default
 }
 
+function New-CaptureInteractionBurstPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RegionsJson,
+        [Parameter(Mandatory)][ValidateRange(1, 240)][int]$FrameCount,
+        [ValidateRange(1, 536870912)][long]$MaximumBytes = 536870912,
+        [ValidateRange(0, 216000)][int]$StartDelayFrames = 0
+    )
+    if ([long]$StartDelayFrames + $FrameCount - 1 -gt 216000) { throw 'Burst delay and frame count exceed the native sequence frame span.' }
+    try { $regions = ConvertFrom-Json -InputObject $RegionsJson -AsHashtable -NoEnumerate -Depth 20 -ErrorAction Stop }
+    catch { throw "BurstRegionsJson is invalid JSON: $($_.Exception.Message)" }
+    if ($regions -isnot [array] -or $regions.Count -lt 1 -or $regions.Count -gt 8) { throw 'BurstRegionsJson must be an array of one to eight regions.' }
+    $width = 0L
+    $height = 0L
+    foreach ($region in $regions) {
+        if ($region -isnot [Collections.IDictionary] -or $region.Count -ne 4) { throw 'Each burst region requires exactly x, y, width and height.' }
+        foreach ($key in @('x', 'y', 'width', 'height')) {
+            $number = $region[$key]
+            $minimum = if ($key -in @('x', 'y')) { 0 } else { 1 }
+            $maximum = if ($key -in @('x', 'y')) { 16383 } else { 16384 }
+            if (($number -isnot [int] -and $number -isnot [long]) -or $number -lt $minimum -or $number -gt $maximum) { throw "Burst region $key must be an integer within $minimum..$maximum." }
+        }
+        if (($width -ne 0 -and $region.width -ne $width) -or $region.x + $region.width -gt 16384 -or
+            $region.y + $region.height -gt 16384 -or $height + $region.height -gt 16384) {
+            throw 'Burst regions must have equal widths and fit native texture and atlas bounds.'
+        }
+        $width = [long]$region.width
+        $height += [long]$region.height
+    }
+    $frameBytes = $width * $height * 8L
+    $payloadBytes = $frameBytes * $FrameCount
+    if ($frameBytes -gt 134217728 -or $payloadBytes -gt $MaximumBytes) { throw 'Burst exceeds the raw stereo payload budget; reduce regions or MaximumFrames.' }
+    return [pscustomobject][ordered]@{
+        descriptor = [ordered]@{ regions = $regions; maximumBytes = $MaximumBytes }
+        frameCount = $FrameCount; startDelayFrames = $StartDelayFrames
+        atlasWidth = $width * 2; atlasHeight = $height; rawPayloadBytes = $payloadBytes
+    }
+}
+
+function Get-CaptureInteractionBurstEvidence {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Receipt, [Parameter(Mandatory)]$Plan)
+    $terminal = [string](Get-CaptureInteractionProperty $Receipt 'state') -in @('completed','completed_with_warnings','stopped','cancelled','cancelled_partial','failed','failed_partial','rejected')
+    $continuity = Get-CaptureInteractionProperty $Receipt 'continuity'
+    $observed = Get-CaptureInteractionProperty $Receipt 'observedManifest'
+    $document = Get-CaptureInteractionProperty $observed 'document'
+    $manifestContinuity = Get-CaptureInteractionProperty $document 'continuity'
+    $manifest = Get-CaptureInteractionProperty $Receipt 'manifest'
+    $manifestPublished = -not [string]::IsNullOrWhiteSpace([string](Get-CaptureInteractionProperty $manifest 'finalPath')) -and
+        [string](Get-CaptureInteractionProperty $manifest 'finalPath') -eq [string](Get-CaptureInteractionProperty $observed 'path')
+    $errors = [Collections.Generic.List[string]]::new()
+    $count = [int]$Plan.frameCount
+    if ($terminal) {
+        if ([string]$Receipt.state -notin @('completed','completed_with_warnings')) { $errors.Add('Burst acquisition did not complete normally.') }
+        if (-not $manifestPublished) { $errors.Add('Burst final manifest publication is not verified.') }
+        foreach ($entry in @(@{name='receipt';value=$continuity}, @{name='manifest';value=$manifestContinuity})) {
+            $value = $entry.value
+            $complete = Get-CaptureInteractionProperty $value 'complete'
+            $acquired = Get-CaptureInteractionProperty $value 'acquired'
+            $requested = Get-CaptureInteractionProperty $value 'requested'
+            $first = Get-CaptureInteractionProperty $value 'firstEngineFrame'
+            $last = Get-CaptureInteractionProperty $value 'lastEngineFrame'
+            if ($complete -isnot [bool] -or -not $complete -or
+                ($acquired -isnot [int] -and $acquired -isnot [long]) -or ($requested -isnot [int] -and $requested -isnot [long]) -or
+                $acquired -ne $count -or $requested -ne $count -or
+                ($first -isnot [int] -and $first -isnot [long]) -or ($last -isnot [int] -and $last -isnot [long]) -or
+                $first -lt 0 -or $last -lt $first -or $last - $first -ne $count - 1 -or
+                -not [string]::IsNullOrEmpty([string](Get-CaptureInteractionProperty $value 'failure'))) {
+                $errors.Add("Burst $($entry.name) continuity is incomplete or inconsistent.")
+            }
+        }
+        foreach ($field in @('firstEngineFrame','lastEngineFrame','acquired','requested')) {
+            if ((Get-CaptureInteractionProperty $continuity $field) -ne (Get-CaptureInteractionProperty $manifestContinuity $field)) { $errors.Add("Burst manifest and receipt disagree on $field.") }
+        }
+        $children = @(Get-CaptureInteractionProperty $document 'children' @())
+        if ($children.Count -ne $count) { $errors.Add('Burst manifest does not contain every requested frame.') }
+        $ordinals = [Collections.Generic.HashSet[long]]::new()
+        foreach ($child in $children) {
+            $ordinal = Get-CaptureInteractionProperty $child 'ordinal'
+            $acquisition = Get-CaptureInteractionProperty (Get-CaptureInteractionProperty $child 'actual') 'acquisition'
+            $engineFrame = Get-CaptureInteractionProperty $acquisition 'engineFrame'
+            $artifacts = @(Get-CaptureInteractionProperty $child 'artifacts' @())
+            if (($ordinal -isnot [int] -and $ordinal -isnot [long]) -or $ordinal -lt 1 -or $ordinal -gt $count -or -not $ordinals.Add([long]$ordinal) -or
+                [string](Get-CaptureInteractionProperty $child 'state') -notin @('completed','completed_with_warnings') -or
+                [string](Get-CaptureInteractionProperty $acquisition 'sourceKind') -ne 'hmd_submission' -or
+                ($engineFrame -isnot [int] -and $engineFrame -isnot [long]) -or
+                $engineFrame -ne (Get-CaptureInteractionProperty $continuity 'firstEngineFrame' 0) + $ordinal - 1 -or $artifacts.Count -ne 1) {
+                $errors.Add('Burst manifest has an invalid native frame or ordinal.'); break
+            }
+            $artifact = $artifacts[0]
+            $actual = Get-CaptureInteractionProperty $artifact 'actual'
+            $committed = Get-CaptureInteractionProperty $artifact 'committed'
+            if ($committed -isnot [bool] -or -not $committed -or
+                (Get-CaptureInteractionProperty $actual 'view') -ne 'side_by_side' -or
+                (Get-CaptureInteractionProperty $actual 'format') -ne 'png' -or
+                (Get-CaptureInteractionProperty $actual 'colourContract') -ne 'sdr_srgb' -or
+                (Get-CaptureInteractionProperty $actual 'width') -ne $Plan.atlasWidth -or
+                (Get-CaptureInteractionProperty $actual 'height') -ne $Plan.atlasHeight) {
+                $errors.Add('Burst manifest atlas layout or committed encoding is invalid.'); break
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        terminal = $terminal; continuityVerified = $terminal -and $errors.Count -eq 0
+        manifestPublished = $manifestPublished; continuity = $continuity; manifestContinuity = $manifestContinuity
+        plan = $Plan; artifactFilesVerified = $false; errors = @($errors)
+    }
+}
+
 function Set-CaptureInteractionControllerNeutral($Controller) {
     if (-not $Controller.PSObject.Properties['controller']) {
         $Controller | Add-Member -NotePropertyName controller -NotePropertyValue ([pscustomobject]@{})
@@ -356,4 +465,4 @@ function Get-CaptureInteractionSaveCandidates {
     })
 }
 
-Export-ModuleMember -Function Get-CaptureInteractionActionCatalog, Get-CaptureInteractionProperty, New-CaptureInteractionFrames, Find-CaptureInteractionScreenshotReceipt, Get-CaptureInteractionLatestFrame, New-CaptureInteractionFrameSubmission, ConvertTo-CaptureInteractionUtcBoundary, Get-CaptureInteractionSaveCandidates
+Export-ModuleMember -Function Get-CaptureInteractionActionCatalog, Get-CaptureInteractionProperty, New-CaptureInteractionFrames, Find-CaptureInteractionScreenshotReceipt, Get-CaptureInteractionLatestFrame, New-CaptureInteractionFrameSubmission, New-CaptureInteractionBurstPlan, Get-CaptureInteractionBurstEvidence, ConvertTo-CaptureInteractionUtcBoundary, Get-CaptureInteractionSaveCandidates
