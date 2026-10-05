@@ -129,6 +129,16 @@ Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.renderscale @
 $queuedConsole = Get-DevBenchCallSemanticStatus console @{action='exec'} @([pscustomobject]@{queued=$true;command='coc Example'})
 Assert-Test (-not $queuedConsole.known) 'queued console dispatch still does not establish completed scene transition'
 
+$hash = 'a1' * 32
+Assert-Test (Test-DevBenchArtifactHash -Actual $hash.ToUpperInvariant() -Expected $hash) 'artifact digest accepts equivalent lowercase and uppercase hex'
+Assert-Test (Test-DevBenchArtifactHash -Actual $hash -Expected $hash.ToUpperInvariant()) 'runtime digest continuity accepts case in either direction'
+Assert-Test (-not (Test-DevBenchArtifactHash -Actual $hash -Expected ('b1' * 32))) 'runtime digest continuity rejects a different artifact'
+foreach ($invalid in @('', ('a' * 63), ('a' * 65), ('g' * 64), ($hash + "`n"))) {
+    Assert-Test (-not (Test-DevBenchArtifactHash -Actual $hash -Expected $invalid)) 'runtime digest continuity rejects malformed expected hex'
+    Assert-Test (-not (Test-DevBenchArtifactHash -Actual $invalid -Expected $invalid)) 'runtime digest continuity rejects two identical malformed values'
+    Assert-Test (-not (Test-DevBenchArtifactHash -Actual $invalid -Expected $hash)) 'runtime digest continuity rejects malformed observed hex'
+}
+
 $success = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'success'; value = 0 } })
 Assert-Test ($success.known -and $success.ok) 'semantic status recognizes a successful API payload'
 $conflict = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'idempotency_conflict'; value = 12 } })
@@ -182,6 +192,135 @@ $readFailure = Get-DevBenchCallSemanticStatus -ToolName inspect -Arguments @{ ki
 Assert-Test ($readFailure.known -and -not $readFailure.ok -and $readFailure.outcome -eq 'read-contract-failed') 'read-only adapters never promote a structured error to success'
 $incompleteMenu = Get-DevBenchCallSemanticStatus -ToolName menu -Arguments @{ action = 'list' } -Content @([pscustomobject]@{ openMenus = @() })
 Assert-Test (-not $incompleteMenu.known) 'read-only adapters require the tool-specific response shape'
+
+$camera = [pscustomobject]@{ pov = 'other'; freeCam = $false; stateId = 9; camX = -231.7; camY = -26.9; camZ = 197.6; camPitch = 0.0; camYaw = 1.98; freeCamOwned = $false }
+foreach ($cameraArgs in @(@{}, @{ action = 'get' })) {
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments $cameraArgs -Content @($camera)
+    Assert-Test ($result.known -and $result.ok -and $result.outcome -eq 'camera-state-read-satisfied') 'camera get validates its documented state without a generic success marker'
+    Assert-Test (Test-DevBenchReadOnlyRequest -ToolName camera -Arguments $cameraArgs) 'camera get is explicitly read-only'
+}
+foreach ($field in @('pov', 'freeCam', 'stateId', 'camX', 'camY', 'camZ', 'camPitch', 'camYaw')) {
+    $badCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+    $badCamera.PSObject.Properties.Remove($field)
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($badCamera)
+    Assert-Test ($result.known -and -not $result.ok) "camera get rejects missing $field"
+}
+foreach ($invalid in @('1.0', $true, [double]::NaN, [double]::PositiveInfinity)) {
+    $badCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+    $badCamera.camX = $invalid
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($badCamera)
+    Assert-Test ($result.known -and -not $result.ok) 'camera get rejects untyped and nonfinite coordinates'
+}
+foreach ($action in @('drive', 'setPov', 'freecam')) {
+    Assert-Test (-not (Test-DevBenchReadOnlyRequest -ToolName camera -Arguments @{ action = $action })) 'camera mutation never inherits read-only admission'
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = $action } -Content @($camera)
+    Assert-Test (-not $result.known -or -not $result.ok) 'camera get observation cannot verify a camera mutation'
+}
+foreach ($invalidField in @(
+    @{ field = 'pov'; value = 'unknown' }, @{ field = 'pov'; value = $true },
+    @{ field = 'freeCam'; value = 'false' }, @{ field = 'stateId'; value = -1 },
+    @{ field = 'stateId'; value = 4294967296L }, @{ field = 'stateId'; value = 9.5 },
+    @{ field = 'freeCamOwned'; value = $null }, @{ field = 'freeCamOwned'; value = 'false' }
+)) {
+    $badCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+    $badCamera.($invalidField.field) = $invalidField.value
+    $result = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($badCamera)
+    Assert-Test ($result.known -and -not $result.ok) "camera get rejects malformed $($invalidField.field)"
+}
+$olderCamera = $camera | ConvertTo-Json | ConvertFrom-Json
+$olderCamera.PSObject.Properties.Remove('freeCamOwned')
+$olderCameraResult = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @($olderCamera)
+Assert-Test ($olderCameraResult.known -and $olderCameraResult.ok) 'camera get accepts a valid older producer without optional ownership telemetry'
+$cameraError = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{ action = 'get' } -Content @([pscustomobject]@{ error = 'camera unavailable' })
+Assert-Test ($cameraError.known -and -not $cameraError.ok) 'camera service errors remain failures'
+
+$csxMenu = [pscustomobject]@{ action = 'status'; producer = [pscustomobject]@{ buildId = ('a' * 64) }; status = [pscustomobject]@{
+    runtimeType = 1; menuEnabled = $false; menuSessionOpen = $false; mainMenuOpen = $false; loadingMenuOpen = $false
+} }
+$menuResult = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($csxMenu)
+Assert-Test ($menuResult.known -and $menuResult.ok -and $menuResult.outcome -eq 'csx-menu-status-read-satisfied') 'CSX menu status validates its typed observation without a generic success marker'
+foreach ($field in @('runtimeType', 'menuEnabled', 'menuSessionOpen', 'mainMenuOpen', 'loadingMenuOpen')) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.status.PSObject.Properties.Remove($field)
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) "CSX menu status rejects missing $field"
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.status.$field = 'false'
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) "CSX menu status rejects untyped $field"
+}
+foreach ($field in @('action', 'producer', 'status')) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.PSObject.Properties.Remove($field)
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) "CSX menu status rejects missing $field"
+}
+foreach ($invalid in @(-1, 4294967296L, 1.5, $true, $null)) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    $badMenu.status.runtimeType = $invalid
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) 'CSX menu status rejects invalid runtime type'
+}
+foreach ($change in @(@{ action = 'open' }, @{ producer = [pscustomobject]@{ buildId = 'bad' } }, @{ error = 'unavailable' }, @{ errors = @('unavailable') })) {
+    $badMenu = $csxMenu | ConvertTo-Json | ConvertFrom-Json
+    foreach ($field in $change.Keys) { $badMenu | Add-Member -NotePropertyName $field -NotePropertyValue $change[$field] -Force }
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = 'status' } -Content @($badMenu)
+    Assert-Test ($result.known -and -not $result.ok) 'CSX menu status rejects mismatched action, bad identity and service errors'
+}
+foreach ($action in @('open', 'close', 'toggle', 'set_path')) {
+    $result = Get-DevBenchCallSemanticStatus -ToolName communityshaders.menu -Arguments @{ action = $action } -Content @($csxMenu)
+    Assert-Test (-not $result.known) 'CSX menu observation cannot verify a menu mutation'
+}
+
+$completedActions = @(
+    @{ tool='camera'; args=@{action='freecam'; on=$true}; payload=@{action='freecam'; queued=$false; on=$true; freeCam=$true} },
+    @{ tool='camera'; args=@{action='freecam'; on=$false}; payload=@{action='freecam'; queued=$false; on=$false; freeCam=$false} },
+    @{ tool='camera'; args=@{action='freecam'}; payload=@{action='freecam'; queued=$false; on=$true; freeCam=$true} },
+    @{ tool='camera'; args=@{action='drive'; x=1.5; y=2; z=3; pitch=0; yaw=1}; payload=@{action='drive'; queued=$false} },
+    @{ tool='console'; args=@{action='exec'; command='tai'; capture=$true}; payload=@{command='tai'; queued=$false; capturing=$true; completed=$true} },
+    @{ tool='console'; args=@{command='tai'; capture=$true}; payload=@{command='tai'; queued=$false; capturing=$true; completed=$true} }
+)
+foreach ($fixture in $completedActions) {
+    $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$fixture.payload)
+    Assert-Test ($result.known -and $result.ok) 'completed main-thread or fenced action satisfies its narrow acknowledgement contract'
+    foreach ($field in $fixture.payload.Keys) {
+        $bad = $fixture.payload.Clone(); $bad.Remove($field)
+        $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) "completed action rejects missing $field"
+        $bad = $fixture.payload.Clone(); $bad[$field] = 'invalid'
+        $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) "completed action rejects malformed $field"
+    }
+    $bad = $fixture.payload.Clone(); $bad.queued = $true
+    $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+    Assert-Test ($result.known -and -not $result.ok) 'queued work is not a completed action'
+    foreach ($failure in @(@{error='service failure'}, @{ok=$false})) {
+        $bad = $fixture.payload.Clone(); foreach ($field in $failure.Keys) { $bad[$field] = $failure[$field] }
+        $result = Get-DevBenchCallSemanticStatus -ToolName $fixture.tool -Arguments $fixture.args -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) 'explicit service failure overrides a completed acknowledgement'
+    }
+}
+$wrongState = Get-DevBenchCallSemanticStatus -ToolName camera -Arguments @{action='freecam'; on=$false} -Content @([pscustomobject]@{action='freecam';queued=$false;on=$true;freeCam=$true})
+Assert-Test ($wrongState.known -and -not $wrongState.ok) 'freecam acknowledgement must match requested state'
+$incompleteFence = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='exec';command='tai';capture=$true} -Content @([pscustomobject]@{command='tai';queued=$false;capturing=$true;completed=$false})
+Assert-Test ($incompleteFence.known -and -not $incompleteFence.ok) 'incomplete console fence remains a failure'
+$unfenced = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='exec';command='tai'} -Content @([pscustomobject]@{command='tai';queued=$true;capturing=$false})
+Assert-Test (-not $unfenced.known) 'unfenced console queue remains unverified'
+foreach ($lines in @(@(), @('All AI Processing is Off'), @('line one','line two'))) {
+    $read = @{markersFound=$true;sawBegin=$true;sawEnd=$true;count=$lines.Count;lines=$lines;source='sampler';lossPossible=$true}
+    $result = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='read'} -Content @([pscustomobject]$read)
+    Assert-Test ($result.known -and $result.ok) 'fenced read retains empty, single and multiple text lines with loss diagnostics'
+    foreach ($field in $read.Keys) {
+        $bad = $read.Clone(); $bad.Remove($field)
+        $result = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='read'} -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) "fenced read rejects missing $field"
+    }
+    foreach ($change in @(@{count=-1},@{count=($lines.Count+1)},@{count=[double]$lines.Count},@{lines='not an array'},@{lines=@(1);count=1},@{markersFound=$false},@{sawBegin=$false},@{sawEnd=$false},@{lossPossible='false'},@{source='unknown'},@{error='service failure'})) {
+        $bad=$read.Clone(); foreach($field in $change.Keys){$bad[$field]=$change[$field]}
+        $result = Get-DevBenchCallSemanticStatus -ToolName console -Arguments @{action='read'} -Content @([pscustomobject]$bad)
+        Assert-Test ($result.known -and -not $result.ok) 'malformed or incomplete fenced reads remain failures'
+    }
+}
 
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })
 Assert-Test ($ready.ready -and -not $ready.retryable -and $ready.statePath -eq 'content.result.state') 'service readiness prefers result.state'

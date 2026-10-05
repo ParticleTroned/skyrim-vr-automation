@@ -88,12 +88,26 @@ They do not broaden the mutation boundary.
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
 Narrow adapters recognize input capability contracts, recording inventories,
-correlated recorder-stop receipts and NR `foveation_configure` settings
+correlated recorder-stop receipts, finite typed `camera get` observations,
+typed `communityshaders.menu status` observations, and NR `foveation_configure` settings
 transitions without requiring a generic `ok`. Missing/malformed fields,
 service errors and mismatched recording owners still fail. FOV acceptance
 proves the settings transition only; callers must observe a subsequent safe
 frame to establish rendering. Recording paths identify saved output but do
 not verify its physical contents. Queued console work remains unverified.
+Exact `camera freecam/drive` acknowledgements require `queued=false` and
+the requested action; free-camera state must match the requested boolean.
+This proves completed main-thread work, not a rendered viewpoint: read
+`camera get`, allow a rendered frame and inspect the acquired image.
+Console `exec capture=true` requires the exact command and a completed
+synchronous fence. `console read` requires both markers, counted text lines
+and source/loss diagnostics. Neither proves the command's intended effect;
+check the captured text and relevant game state. Sampler line loss remains
+explicit. Missing fields, queued work and service errors are not successes.
+CSX menu status requires the matching action, producer Build ID, integer
+runtime type and boolean menu/loading observations. This validates the read
+only; it does not prove a menu transition, rendering readiness or success of
+`open`, `close`, `toggle` or `set_path`. Producer verification remains required.
 The `communityshaders.profiler` bridge has a contract-specific adapter because
 its legacy response does not carry a generic top-level `ok`: `status` must
 contain a frame-bearing status object, while `enable` and `disable` must report
@@ -291,3 +305,8 @@ summaries for queued requests, admission/early exits, shader-cache deferral,
 SSS/SSGI prewarm, DLSS/FSR/FSR4 preparation, D3D creation, total preparation,
 request-to-prepared, and prepared-to-creator. Its optional transition-epoch
 filter selects exact producer events without inventing missing values.
+
+Artifact SHA-256 expectations, including `ExpectedRuntimeIdentityJson`, use
+exact 64-digit hexadecimal values with case-insensitive comparison. Different
+or malformed digests remain a pre-dispatch rejection; path, PID, process start
+and Build ID checks are unchanged.

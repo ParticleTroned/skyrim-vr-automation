@@ -183,6 +183,7 @@ function Test-DevBenchReadOnlyRequest {
     if ($ToolName -eq 'record') { return $action -eq 'status' }
     if ($ToolName -eq 'input') { return $action -in @('observe', 'status', 'capabilities') }
     if ($ToolName -eq 'recordings') { return $action -eq 'list' }
+    if ($ToolName -eq 'camera') { return $action -in @('', 'get') }
     return $false
 }
 
@@ -190,12 +191,23 @@ function Get-DevBenchActionContract {
     param([string]$ToolName, [Collections.IDictionary]$Arguments, $Payload)
 
     $action = if ($Arguments.Contains('action')) { [string]$Arguments['action'] } else { '' }
+    if ($ToolName -eq 'camera' -and $action -eq '') { $action = 'get' }
+    if ($ToolName -eq 'console' -and $action -eq '') { $action = 'exec' }
     $contract = switch ("$ToolName/$action") {
+        'camera/get' { 'camera-state-read' }
+        'camera/freecam' { 'camera-completed-action' }
+        'camera/drive' { 'camera-completed-action' }
+        'console/exec' {
+            if (-not $Arguments.Contains('capture') -or $Arguments['capture'] -isnot [bool] -or -not $Arguments['capture']) { return $null }
+            'console-fenced-completion'
+        }
+        'console/read' { 'console-fenced-read' }
         'input/capabilities' { 'input-capabilities' }
         'recordings/list' { 'recordings-list' }
         'record/stop' { 'record-stop' }
         'communityshaders.neural_rendering/foveation_configure' { 'foveation-settings-transition' }
         'communityshaders.renderscale/status' { 'renderscale-status-read' }
+        'communityshaders.menu/status' { 'csx-menu-status-read' }
         default { return $null }
     }
     $reasons = [Collections.Generic.List[string]]::new()
@@ -208,6 +220,75 @@ function Get-DevBenchActionContract {
     if ($null -ne $reportedAction -and [string]$reportedAction -cne $action) { $reasons.Add('content.action differs from the requested action') }
 
     switch ($contract) {
+        'camera-completed-action' {
+            $queued = Get-DevBenchTelemetryMember $Payload 'queued'
+            if ($reportedAction -cne $action -or $queued -isnot [bool] -or $queued) {
+                $reasons.Add('camera action requires its exact completed main-thread acknowledgement')
+            }
+            if ($action -eq 'freecam') {
+                $expected = if ($Arguments.Contains('on')) { $Arguments['on'] } else { $true }
+                $on = Get-DevBenchTelemetryMember $Payload 'on'
+                $freeCam = Get-DevBenchTelemetryMember $Payload 'freeCam'
+                if ($expected -isnot [bool] -or $on -isnot [bool] -or $freeCam -isnot [bool] -or $on -ne $expected -or $freeCam -ne $expected) {
+                    $reasons.Add('freecam acknowledgement must match the requested state')
+                }
+                $evidence.Add('content.on'); $evidence.Add('content.freeCam')
+            }
+            $evidence.Add('content.action'); $evidence.Add('content.queued')
+        }
+        'console-fenced-completion' {
+            $queued = Get-DevBenchTelemetryMember $Payload 'queued'
+            $completed = Get-DevBenchTelemetryMember $Payload 'completed'
+            $capturing = Get-DevBenchTelemetryMember $Payload 'capturing'
+            $command = Get-DevBenchTelemetryMember $Payload 'command'
+            if (-not $Arguments.Contains('command') -or $Arguments['command'] -isnot [string] -or [string]::IsNullOrWhiteSpace($Arguments['command']) -or
+                $command -isnot [string] -or $command -cne $Arguments['command'] -or
+                $queued -isnot [bool] -or $queued -or $completed -isnot [bool] -or -not $completed -or $capturing -isnot [bool] -or -not $capturing) {
+                $reasons.Add('console capture requires the exact command and a completed synchronous fence')
+            }
+            $evidence.Add('content.command'); $evidence.Add('content.queued'); $evidence.Add('content.completed'); $evidence.Add('content.capturing')
+        }
+        'console-fenced-read' {
+            foreach ($field in @('markersFound', 'sawBegin', 'sawEnd')) {
+                $value = Get-DevBenchTelemetryMember $Payload $field
+                if ($value -isnot [bool] -or -not $value) { $reasons.Add("console read requires a true $field") }
+                $evidence.Add("content.$field")
+            }
+            $lines = $null
+            $linesProperty = $Payload.PSObject.Properties['lines']
+            if ($linesProperty) { $lines = $linesProperty.Value }
+            $count = Get-DevBenchTelemetryMember $Payload 'count'
+            $source = Get-DevBenchTelemetryMember $Payload 'source'
+            $lossPossible = Get-DevBenchTelemetryMember $Payload 'lossPossible'
+            if ($lines -isnot [array] -or @($lines | Where-Object { $_ -isnot [string] }).Count -gt 0 -or
+                ($count -isnot [int] -and $count -isnot [long]) -or $count -lt 0 -or $count -ne @($lines).Count -or
+                $source -isnot [string] -or $source -cnotin @('buffer', 'sampler') -or $lossPossible -isnot [bool]) {
+                $reasons.Add('console read requires counted text lines and typed source/loss diagnostics')
+            }
+            $evidence.Add('content.lines'); $evidence.Add('content.source'); $evidence.Add('content.lossPossible')
+        }
+        'camera-state-read' {
+            $pov = Get-DevBenchTelemetryMember $Payload 'pov'
+            $freeCam = Get-DevBenchTelemetryMember $Payload 'freeCam'
+            $stateId = Get-DevBenchTelemetryMember $Payload 'stateId'
+            if ($pov -isnot [string] -or $pov -cnotin @('first', 'third', 'vanity', 'other') -or
+                $freeCam -isnot [bool] -or ($stateId -isnot [int] -and $stateId -isnot [long]) -or
+                $stateId -lt 0 -or $stateId -gt [uint32]::MaxValue) {
+                $reasons.Add('camera state requires typed POV, free-camera state and state ID')
+            }
+            foreach ($field in @('camX', 'camY', 'camZ', 'camPitch', 'camYaw')) {
+                $value = Get-DevBenchTelemetryMember $Payload $field
+                if (($value -isnot [int] -and $value -isnot [long] -and $value -isnot [double] -and $value -isnot [decimal]) -or
+                    [double]::IsNaN([double]$value) -or [double]::IsInfinity([double]$value)) {
+                    $reasons.Add("camera state requires a finite numeric $field")
+                }
+            }
+            $owned = $Payload.PSObject.Properties['freeCamOwned']
+            if ($null -ne $owned -and $owned.Value -isnot [bool]) { $reasons.Add('freeCamOwned must be a boolean when present') }
+            $evidence.Add('content.pov'); $evidence.Add('content.freeCam'); $evidence.Add('content.stateId')
+            $evidence.Add('content.camX'); $evidence.Add('content.camY'); $evidence.Add('content.camZ')
+            $evidence.Add('content.camPitch'); $evidence.Add('content.camYaw')
+        }
         'renderscale-status-read' {
             $status = Get-DevBenchTelemetryMember $Payload 'status'
             $frame = Get-DevBenchTelemetryMember $status 'frame'
@@ -224,6 +305,24 @@ function Get-DevBenchActionContract {
                 $reasons.Add('render-scale status requires its action, producer, frame and controller observation')
             }
             $evidence.Add('content.action'); $evidence.Add('content.producer.buildId'); $evidence.Add('content.status.frame')
+        }
+        'csx-menu-status-read' {
+            $status = Get-DevBenchTelemetryMember $Payload 'status'
+            $producer = Get-DevBenchTelemetryMember $Payload 'producer'
+            $buildId = Get-DevBenchTelemetryMember $producer 'buildId'
+            $runtimeType = Get-DevBenchTelemetryMember $status 'runtimeType'
+            if ($reportedAction -cne 'status' -or $status -isnot [pscustomobject] -or
+                $buildId -isnot [string] -or $buildId -notmatch '^[0-9a-f]{64}$' -or
+                ($runtimeType -isnot [int] -and $runtimeType -isnot [long]) -or $runtimeType -lt 0 -or $runtimeType -gt [uint32]::MaxValue) {
+                $reasons.Add('CSX menu status requires its action, producer and typed runtime observation')
+            }
+            foreach ($field in @('menuEnabled', 'menuSessionOpen', 'mainMenuOpen', 'loadingMenuOpen')) {
+                if ((Get-DevBenchTelemetryMember $status $field) -isnot [bool]) {
+                    $reasons.Add("CSX menu status requires a boolean $field")
+                }
+                $evidence.Add("content.status.$field")
+            }
+            $evidence.Add('content.action'); $evidence.Add('content.producer.buildId'); $evidence.Add('content.status.runtimeType')
         }
         'input-capabilities' {
             $identity = Get-DevBenchTelemetryMember $Payload 'contract'
@@ -1461,3 +1560,12 @@ function Get-DevBenchSynchronousWaitMilliseconds {
 Export-ModuleMember -Function Get-DevBenchDirectPerformanceGuard, Get-DevBenchSynchronousWaitMilliseconds
 
 Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchCallSemanticStatus, Test-DevBenchReadOnlyRequest, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfileShape, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow
+
+# Artifact hashes are hexadecimal identities; letter case is not identity.
+function Test-DevBenchArtifactHash {
+    param([string]$Actual, [string]$Expected)
+    return $Actual -cmatch '\A[0-9A-Fa-f]{64}\z' -and
+        $Expected -cmatch '\A[0-9A-Fa-f]{64}\z' -and
+        [string]::Equals($Actual, $Expected, [StringComparison]::OrdinalIgnoreCase)
+}
+Export-ModuleMember -Function Test-DevBenchArtifactHash
