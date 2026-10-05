@@ -305,3 +305,8 @@ summaries for queued requests, admission/early exits, shader-cache deferral,
 SSS/SSGI prewarm, DLSS/FSR/FSR4 preparation, D3D creation, total preparation,
 request-to-prepared, and prepared-to-creator. Its optional transition-epoch
 filter selects exact producer events without inventing missing values.
+
+Artifact SHA-256 expectations, including `ExpectedRuntimeIdentityJson`, use
+exact 64-digit hexadecimal values with case-insensitive comparison. Different
+or malformed digests remain a pre-dispatch rejection; path, PID, process start
+and Build ID checks are unchanged.

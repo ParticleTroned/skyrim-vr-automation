@@ -1560,3 +1560,12 @@ function Get-DevBenchSynchronousWaitMilliseconds {
 Export-ModuleMember -Function Get-DevBenchDirectPerformanceGuard, Get-DevBenchSynchronousWaitMilliseconds
 
 Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchCallSemanticStatus, Test-DevBenchReadOnlyRequest, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfileShape, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow
+
+# Artifact hashes are hexadecimal identities; letter case is not identity.
+function Test-DevBenchArtifactHash {
+    param([string]$Actual, [string]$Expected)
+    return $Actual -cmatch '\A[0-9A-Fa-f]{64}\z' -and
+        $Expected -cmatch '\A[0-9A-Fa-f]{64}\z' -and
+        [string]::Equals($Actual, $Expected, [StringComparison]::OrdinalIgnoreCase)
+}
+Export-ModuleMember -Function Test-DevBenchArtifactHash

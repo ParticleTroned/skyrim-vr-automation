@@ -129,6 +129,16 @@ Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.renderscale @
 $queuedConsole = Get-DevBenchCallSemanticStatus console @{action='exec'} @([pscustomobject]@{queued=$true;command='coc Example'})
 Assert-Test (-not $queuedConsole.known) 'queued console dispatch still does not establish completed scene transition'
 
+$hash = 'a1' * 32
+Assert-Test (Test-DevBenchArtifactHash -Actual $hash.ToUpperInvariant() -Expected $hash) 'artifact digest accepts equivalent lowercase and uppercase hex'
+Assert-Test (Test-DevBenchArtifactHash -Actual $hash -Expected $hash.ToUpperInvariant()) 'runtime digest continuity accepts case in either direction'
+Assert-Test (-not (Test-DevBenchArtifactHash -Actual $hash -Expected ('b1' * 32))) 'runtime digest continuity rejects a different artifact'
+foreach ($invalid in @('', ('a' * 63), ('a' * 65), ('g' * 64), ($hash + "`n"))) {
+    Assert-Test (-not (Test-DevBenchArtifactHash -Actual $hash -Expected $invalid)) 'runtime digest continuity rejects malformed expected hex'
+    Assert-Test (-not (Test-DevBenchArtifactHash -Actual $invalid -Expected $invalid)) 'runtime digest continuity rejects two identical malformed values'
+    Assert-Test (-not (Test-DevBenchArtifactHash -Actual $invalid -Expected $hash)) 'runtime digest continuity rejects malformed observed hex'
+}
+
 $success = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'success'; value = 0 } })
 Assert-Test ($success.known -and $success.ok) 'semantic status recognizes a successful API payload'
 $conflict = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'idempotency_conflict'; value = 12 } })
