@@ -1,7 +1,22 @@
 # DevBench Control
 
+For fixed-HMD recorded-route measurements and matched image captures with
+the existing Tracy MCP collector, follow [the replay protocol](tracy-replay.md).
+It includes physical memory admission, a collector-side stop timer, GPU
+timestamp gates, asynchronous replay, full trace validation and extraction.
+The helper runs inside the existing collector; it introduces no profiler or
+DevBench transport. Validate it with `python tests/test_tracy_replay_guard.py`
+from the repository root. Use the adjacent `tracy-replay-runner.js` for
+literal-alias connection ownership, pre-guard failure cleanup and immediate
+replay dispatch. Its mocked hand-off test is described in the protocol.
+
+For offline review of saved stereo stills and bursts, use the
+[image-analysis workflow](image-quality-analysis.md). It selects receipt
+artifacts and reviewed phases, reports each eye separately, and reuses
+DevBench reference scoring without a live game connection.
+
 `Invoke-DevBenchControl.ps1` lists and calls the MCP tools exposed by a running
-CSX DevBench server. Supply runtime metadata with `-RuntimePath` or set
+DevBench server, including CSX and Open Shaders. Supply runtime metadata with `-RuntimePath` or set
 `CSX_DEVBENCH_RUNTIME_PATH`; no machine-specific path is compiled into the
 client.
 
@@ -55,10 +70,20 @@ equivalents). The controller queries the CSX registry bridge and hashes the
 deployed DLL, binding source build, physical artifact, endpoint, and process in
 one evidence record.
 
-Mutation-capable calls require that complete identity. The controller keeps a
+Mutation-capable calls require verified listener/process identity and the
+deployed artifact hash. A CSX Build ID is optional: it is required only when
+explicitly pinned through runtime metadata, `-ExpectedBuildId`, or a nonempty
+`buildId` in `-ExpectedRuntimeIdentityJson`. Open Shaders and other producers
+without a CSX registry retain a null Build ID without requiring a verification
+bypass. Available CSX registries still contribute provenance, and conflicting
+registry IDs or explicit expectation mismatches still fail closed. Prior
+runtime bindings retain mandatory process and artifact fields; omit `buildId`
+when the producer does not expose one.
+
+The controller keeps a
 strict, action-sensitive allowlist for read-only inspection: built-in
-`inspect` kinds, `menu list`, `record status`, and tracked-input
-observation/status/capabilities, `communityshaders.menu status` and
+`inspect` kinds, `menu list`, `record status`, `recordings list`, `camera get`,
+input capabilities/observation/status, `communityshaders.menu status` and
 `depth_culling_snapshot`, and `communityshaders.renderscale status`. Those
 calls may proceed when listener and process identity
 are verified even if build or deployed-artifact provenance is unavailable.
@@ -67,6 +92,27 @@ They do not broaden the mutation boundary.
 `ok` reflects transport success unless `-RequireSuccess` is supplied. Every
 call also reports `transportOk` and a normalized `semantic` result, so an API
 payload such as `idempotency_conflict` cannot be mistaken for successful work.
+Narrow adapters recognize input capability contracts, recording inventories,
+correlated recorder-stop receipts, finite typed `camera get` observations,
+typed `communityshaders.menu status` observations, and NR `foveation_configure` settings
+transitions without requiring a generic `ok`. Missing/malformed fields,
+service errors and mismatched recording owners still fail. FOV acceptance
+proves the settings transition only; callers must observe a subsequent safe
+frame to establish rendering. Recording paths identify saved output but do
+not verify its physical contents. Queued console work remains unverified.
+Exact `camera freecam/drive` acknowledgements require `queued=false` and
+the requested action; free-camera state must match the requested boolean.
+This proves completed main-thread work, not a rendered viewpoint: read
+`camera get`, allow a rendered frame and inspect the acquired image.
+Console `exec capture=true` requires the exact command and a completed
+synchronous fence. `console read` requires both markers, counted text lines
+and source/loss diagnostics. Neither proves the command's intended effect;
+check the captured text and relevant game state. Sampler line loss remains
+explicit. Missing fields, queued work and service errors are not successes.
+CSX menu status requires the matching action, producer Build ID, integer
+runtime type and boolean menu/loading observations. This validates the read
+only; it does not prove a menu transition, rendering readiness or success of
+`open`, `close`, `toggle` or `set_path`. Producer verification remains required.
 The `communityshaders.profiler` bridge has a contract-specific adapter because
 its legacy response does not carry a generic top-level `ok`: `status` must
 contain a frame-bearing status object, while `enable` and `disable` must report
@@ -109,6 +155,27 @@ rejects the result if the probe became active or the epoch changed. Legacy or
 unproven status fails closed. The guard never disarms the probe; that is a
 separate runtime mutation requiring its own authorization.
 
+For direct MCP, import `DevBenchControl.psm1` offline and pass the parsed,
+unwrapped payloads from adjacent `inspect kind=state` and
+`inspect kind=registrants` calls to `Get-DevBenchDirectPerformanceGuard`
+with `-Runtime` and `-Registrants`. These helpers perform no live I/O.
+DevBench's C-ABI registration ledger is append-only for the process lifetime.
+A complete fresh ledger with neither standalone owner nor probe proves
+`applicable: false`, `neutral: true`, with a null performance epoch. An absent
+name in a cached/abbreviated callable catalog is insufficient. Preserve the
+raw responses and the normal build/process identity checks with each guard.
+
+If registered, call the exact typed temporal-probe status tool and supply its
+parsed result as `-ProbeContent`; unavailable, legacy, ambiguous or physically
+unproven status fails closed. Repeat the direct inspection before and after
+each measured window, retaining the initial guard across the whole capture.
+Use `Test-DevBenchPerformanceWindow -Before ... -After ...`: it rejects
+registration, process identity, frame rollback and ownership epoch changes.
+Do not dispatch an unavailable probe through a generic scenario or open a
+second transport. The guard qualifies only the standalone temporal probe;
+other active instrumentation, including lifetime-tracer hooks, remains a
+separate limitation on performance-neutral comparisons.
+
 The exact Skyrim VR console command `tfc 1` is denied wherever it appears in a
 tool argument tree because it has a confirmed player-camera null-write crash
 path under null-HMD automation. Prefer a naturally stationary scene for
@@ -135,6 +202,16 @@ remaining dispatch allowance. This does not extend the server's own
 measurement deadline. Use `-MaxTransientRetries 0` for ownership-bearing
 or otherwise non-replayable actions. If their response is lost, recover their
 existing owner/status instead of sending the action again.
+
+Synchronous `scenario` requests also account for their declared waits,
+repeats, nested synchronous scenarios and child `timeoutMs` budgets, plus
+the same receipt allowance. Asynchronous `scenario` and `record` children do
+not extend the request: their admission reply returns before that work finishes.
+Declared waits cannot predict arbitrary tool execution time. Use `async:true` for
+image batches and other paced scenarios, retain the returned `runId`, and
+poll that owner to its terminal transcript. Check asynchronous screenshot
+requests separately. A transport timeout does not stop server-side work
+and must not release the camera or trigger a second mutation.
 
 Each controller invocation tracks every Streamable HTTP MCP session it opens,
 closes all of them before returning, and reports every outcome under
@@ -235,6 +312,10 @@ larger PowerShell orchestration host. A missing runtime file, identity mismatch,
 or unreachable endpoint is a blocked result.
 
 `DevBenchControl.psm1` exports two lossless render-scale telemetry normalizers.
+The exact `communityshaders.renderscale/status` response is recognized by its
+action, producer Build ID, integer frame and controller observation even when
+the service has no generic `ok` field. This establishes a successful read,
+not render-scale readiness; explicit service errors still fail the call.
 `Get-DevBenchResourcePublicationTelemetry` retains publication generations,
 expected/published dimensions, completion/deferred setup, and D3D identity.
 `Get-DevBenchRenderScalePreparationTelemetry` retains the complete bounded
@@ -243,3 +324,8 @@ summaries for queued requests, admission/early exits, shader-cache deferral,
 SSS/SSGI prewarm, DLSS/FSR/FSR4 preparation, D3D creation, total preparation,
 request-to-prepared, and prepared-to-creator. Its optional transition-epoch
 filter selects exact producer events without inventing missing values.
+
+Artifact SHA-256 expectations, including `ExpectedRuntimeIdentityJson`, use
+exact 64-digit hexadecimal values with case-insensitive comparison. Different
+or malformed digests remain a pre-dispatch rejection; path, PID, process start
+and Build ID checks are unchanged.

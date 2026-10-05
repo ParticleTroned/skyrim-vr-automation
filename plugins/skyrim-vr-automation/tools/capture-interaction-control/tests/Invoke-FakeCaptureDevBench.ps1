@@ -84,7 +84,9 @@ elseif ($Tool -eq 'communityshaders.screenshot') {
     }
     elseif ($arguments.action -eq 'request_get') {
         $terminalState = if ($scenario -eq 'screenshot-failed') {'failed_partial'} else {'completed'}
-        $value = @{ok=$true;result=@{requestId='req-1';state=$terminalState;terminal=$true;manifest=@{finalPath=$data.manifestPath;partialPath=$null}}}
+        $value = @{ok=$true;result=@{requestId='req-1';kind='sequence';state=$terminalState;terminal=$true;actual=@{};
+            artifacts=@(@{path=$data.manifestPath;committed=$true;bytes=(Get-Item -LiteralPath $data.manifestPath).Length;sha256=(Get-FileHash -LiteralPath $data.manifestPath).Hash});
+            manifest=@{finalPath=$data.manifestPath;partialPath=$null}}}
         if ($data.burst) { $value.result.continuity = (Get-Content -LiteralPath $data.manifestPath -Raw | ConvertFrom-Json -Depth 30).continuity }
     }
     else { $value = @{ok=$true;result=@{requestId='req-1';state='stop_requested'}} }

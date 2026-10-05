@@ -211,7 +211,7 @@ function Resolve-WorkspaceCommunityShadersBuildBinding([string]$ProfilePath, [st
     }
     $plugin = Get-Item -LiteralPath $pluginPath
     $actualHash = (Get-FileHash -LiteralPath $pluginPath -Algorithm SHA256).Hash
-    if ($actualHash -cne $artifactHash -or ($artifactBytes -ge 0 -and [long]$plugin.Length -ne $artifactBytes)) {
+    if ($actualHash -ine $artifactHash -or ($artifactBytes -ge 0 -and [long]$plugin.Length -ne $artifactBytes)) {
         throw 'The winning Community Shaders DLL does not match its build manifest.'
     }
     return [pscustomobject][ordered]@{

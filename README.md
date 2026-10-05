@@ -42,8 +42,10 @@ optional integration rather than the identity or boundary of the toolkit.
 - `tools/steamvr-head-pose-control` — install, inspect, update, and independently
   qualify the bundled SteamVR head-pose provider used by null-HMD sessions.
 - `tools/devbench-control` — a small MCP client for the DevBench endpoint
-  exposed by a running CSX build, with listener/process/build/artifact binding
-  and normalized semantic results.
+  exposed by CSX or Open Shaders, with listener/process/build/artifact binding
+  and normalized semantic results. Its [Tracy replay protocol](tools/devbench-control/tracy-replay.md)
+  adds clean-memory admission, bounded collection and matched image evidence
+  for fixed-HMD interior and exterior recordings using the existing tools.
 - `tools/render-scale-qualification` — the bounded
   `csx-render-scale-pr-v1` COC, menu-transition, and stereo visual suite for
   local and PR render-scale qualification, with unattended image evaluation,

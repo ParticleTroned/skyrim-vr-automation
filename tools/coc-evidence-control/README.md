@@ -31,6 +31,11 @@ never accepted merely because Windows reused its numeric PID. Monitor, capture,
 and cancellation-helper children remain attributable across every return; a
 timed-out helper is reported as `cleanup-incomplete`, not as successful stop.
 
+If the target exits while its crash monitor is still running, `status` returns
+`armed-waiting` with an empty `targetPids` array. Once that monitor exits, it
+returns `monitor-exited`. Retained crash dumps still require separate content
+validation; these monitor states do not prove a successful crash capture.
+
 `capture-complete` requires the exact nonempty dump plus its matching completion
 receipt and successful ProcDump exit record. Empty, unrelated, or unfinalized
 files remain preserved as `capture-evidence-partial` and never imply that it is

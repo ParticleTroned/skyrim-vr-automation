@@ -245,6 +245,26 @@ try {
     $statePath = Join-Path $fixture 'state.json'
     $targetStartedUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
     $captureStartedUtc = $capture.StartTime.ToUniversalTime().ToString('o')
+    $exitedTargetStatePath = Join-Path $fixture 'exited-target.json'
+    $exitedTargetState = [pscustomobject][ordered]@{
+        schema = 'csx-coc-evidence-state-v1'
+        monitorPid = $capture.Id
+        monitorStartedUtc = $captureStartedUtc
+        targetName = 'pwsh.exe'
+        targetPid = [int]::MaxValue
+        targetStartedUtc = $targetStartedUtc
+        captureDirectory = $fixture
+        procDump = [pscustomobject]@{ path = $pwsh }
+    }
+    $exitedTargetState | ConvertTo-Json -Depth 10 |
+        Set-Content -LiteralPath $exitedTargetStatePath -Encoding utf8
+    $waiting = & $scriptPath status -StatePath $exitedTargetStatePath `
+        -Compact -NoExit | ConvertFrom-Json -Depth 20
+    if (-not $waiting.ok -or $waiting.state -ne 'armed-waiting' -or
+        -not $waiting.data.coverageActive -or
+        @($waiting.data.targetPids).Count -ne 0) {
+        throw "Status failed while the target was gone and its monitor remained alive: $($waiting | ConvertTo-Json -Depth 10 -Compress)"
+    }
     [pscustomobject][ordered]@{
         schema = 'csx-coc-evidence-state-v1'
         monitorPid = [int]::MaxValue
@@ -270,6 +290,13 @@ try {
 
     $capture.Kill()
     $capture.WaitForExit()
+    $monitorExited = & $scriptPath status -StatePath $exitedTargetStatePath `
+        -Compact -NoExit | ConvertFrom-Json -Depth 20
+    if ($monitorExited.ok -or $monitorExited.state -ne 'monitor-exited' -or
+        $monitorExited.data.coverageActive -or
+        @($monitorExited.data.targetPids).Count -ne 0) {
+        throw 'Status did not preserve monitor exit after the target was gone.'
+    }
     $exited = & $scriptPath status -StatePath $statePath -Compact -NoExit |
         ConvertFrom-Json -Depth 20
     if ($exited.ok -or $exited.state -ne 'capture-evidence-partial' -or
@@ -350,4 +377,5 @@ finally {
     officialCancellation = $true
     statePublicationRollback = $true
     timedOutCaptureOwnership = $true
+    exitedTargetStatus = $true
 } | ConvertTo-Json

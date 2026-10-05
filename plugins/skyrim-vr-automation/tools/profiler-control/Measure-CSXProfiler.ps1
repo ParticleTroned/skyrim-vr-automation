@@ -119,7 +119,7 @@ function Get-StableRuntimeIdentity($Identity) {
     return [ordered]@{
         listenerPid = [int]$Identity.listenerPid
         processPath = [string]$Identity.process.path
-        processStartTimeUtc = ConvertTo-DevBenchUtcTimestamp -Value $Identity.process.startTimeUtc
+        processStartTimeUtc = ConvertTo-DevBenchIdentityTimestamp $Identity.process.startTimeUtc
         buildId = [string]$Identity.build.buildId
         artifactPath = [string]$Identity.artifact.path
         artifactSha256 = [string]$Identity.artifact.sha256

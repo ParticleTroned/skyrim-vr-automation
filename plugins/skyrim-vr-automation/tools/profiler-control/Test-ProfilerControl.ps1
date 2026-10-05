@@ -197,7 +197,7 @@ $timer = [pscustomobject]@{name='Synthetic';activeGpu=$true;activeCpu=$true;hasG
 $cpuOnly = [pscustomobject]@{name='CPUOnly';activeGpu=$false;activeCpu=$true;hasGpu=$false;hasCpu=$true;gpuMs=0.0;topLevelMs=0.0;cpuMs=0.2}
 $dormant = [pscustomobject]@{name='Dormant';activeGpu=$false;activeCpu=$false;hasGpu=$true;hasCpu=$true;gpuMs=0.0;topLevelMs=0.0;cpuMs=0.0}
 if ($env:CSX_PROFILER_TEST_INCOMPLETE_TIMER -eq '1') { $timer.PSObject.Properties.Remove('activeGpu') }
-$status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.1;acquiredSlots=1;slotRefusals=0;timers=@($timer,$cpuOnly,$dormant)}
+$status = [pscustomobject]@{enabled=[bool]$state.enabled;frame_count=[long]$state.frame;capturedFrameCount=[long]$state.frame;resolvedTotalMs=1.0;resolvedCpuTotalMs=0.3;acquiredSlots=1;slotRefusals=0;timers=@($timer,$cpuOnly,$dormant)}
 if ($env:CSX_PROFILER_TEST_LEGACY_TIMING -ne '1') {
     $semantics = if ($env:CSX_PROFILER_TEST_TIMING_DRIFT -eq '1' -and $state.calls -ge 3) { 'legacy_unspecified' } else { 'gpu_cpu_self_time' }
     $status | Add-Member -NotePropertyName timingSemantics -NotePropertyValue $semantics

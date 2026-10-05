@@ -169,6 +169,12 @@ observed manifest directory and must stay inside it. Image metadata comes from
 each committed artifact's `actual` object; source and acquired frame come from the child's
 `actual.acquisition`. A scheduled frame is retained separately. Source or
 encoding mismatches suppress image submission and preserve the offending receipt.
+The sequence container's committed artifacts are its manifest and optional
+MP4 preview, not acquired images; latest-frame selection skips the declared
+manifest and preview, rejects unknown packaging, and validates the child
+images. A child never borrows acquisition
+metadata from the container or a sibling. Standalone captures still use their
+own receipt's acquisition.
 This observation pointer does not replace an assay's full stereo-pair,
 dimension, hash, provenance and image-quality validation.
 

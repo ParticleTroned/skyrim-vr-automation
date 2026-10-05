@@ -256,9 +256,11 @@ function Get-CaptureInteractionLatestFrame {
                 $artifactPath = [string](Get-CaptureInteractionProperty $artifact 'path')
                 $manifest = Get-CaptureInteractionProperty $Current 'manifest'
                 $declaredManifestPaths = @((Get-CaptureInteractionProperty $manifest 'finalPath'), (Get-CaptureInteractionProperty $manifest 'partialPath'))
-                if ((Get-CaptureInteractionProperty $Current 'kind') -eq 'sequence' -and
-                    -not [string]::IsNullOrWhiteSpace($artifactPath) -and $artifactPath -in $declaredManifestPaths) {
-                    continue
+                if ((Get-CaptureInteractionProperty $Current 'kind') -eq 'sequence') {
+                    # Packaging never supplies acquisition evidence; only child receipts do.
+                    if (-not [string]::IsNullOrWhiteSpace($artifactPath) -and
+                        ($artifactPath -in $declaredManifestPaths -or [IO.Path]::GetExtension($artifactPath) -eq '.mp4')) { continue }
+                    throw 'Unrecognized committed sequence packaging artifact.'
                 }
                 $actual = Get-CaptureInteractionProperty $artifact 'actual'
                 if ([string](Get-CaptureInteractionProperty $acquisition 'sourceKind') -ne 'hmd_submission') {
