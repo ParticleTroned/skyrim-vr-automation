@@ -31,15 +31,20 @@ do not add registry, menu, or other discovery round trips. Do not query the
 profiler service or reset telemetry there.
 
 Use exactly one live DevBench transport, with plugin-provided direct MCP tools
-mandatory when callable. After exact-cell positioning, reuse that lane's schema
-inventory and complete measurement admission: query telemetry lanes and
+mandatory when callable. Submit the positioning COC and its 10,000 ms dwell
+asynchronously. After exact-cell positioning is proven, reuse that lane's
+schema inventory and complete measurement admission. Do this while its server-owned stabilization wait is still running:
+query telemetry lanes and
 reset each supported lane once in one synchronous, fail-closed DevBench
 scenario. Validate every reset receipt, then arm captures in a second
-synchronous, fail-closed scenario. The server runs the steps serially; the
-client validates the complete transcript before the measured scenario. Do not
-run a deliberate invalid-request or stop-on-error probe during a live COC
-assay; runner error semantics belong in toolkit validation. Only independent
-read-only calls may run concurrently. Never repeat a successful setup action.
+synchronous, fail-closed scenario. Never wait for the whole Windhelm dwell and
+then begin admission, and never shorten or duplicate the dwell. The overlap
+does not authorize a stateful telemetry call before exact-cell proof. The
+server runs each batch serially; the client validates the complete transcript
+before measured dispatch. Do not run a deliberate invalid-request or stop-on-error probe
+during a live COC assay; runner error semantics belong in toolkit validation.
+Only independent read-only calls may run concurrently.
+Never repeat a successful setup action.
 Do not start CPU or GPU counters;
 transition 1's atomic dispatch remains their sole timing origin. Explicitly enable and
 verify an exposed
@@ -50,12 +55,23 @@ It must leave `persisted: false`, enable developer/debug logging, and establish
 only the runtime FOV/TAA `0.3/0.3/0.7` fixture. VR FPS Stabilizer remains the
 exclusive owner of DLSS and upscaling.
 
-Report as soon as DevBench is loaded and the exact producer identity has been
-extracted, then continue without a second handshake. Stop immediately on a
-PID/build mismatch, dead or unresponsive game control plane, aborted scenario,
-or failed required telemetry lane. Never continue with direct unmeasured COCs
-and never publish `n/a` for stabilization or retries merely because a required
-measurement call was omitted.
+The only startup update to the user is one concise admission line containing
+the exact Build ID and source commit. Do not report successful fixture,
+inventory, profiler, reset, or arm results. Preserve their full receipts
+directly in evidence and return only compact gate fields to the model context;
+surface a failure immediately and concisely. Continue without a second
+handshake. Transition 1's dispatch must occur within 120,000 ms of the trigger
+or the run stops before measured dispatch with a deadline result. Stop
+immediately on a PID/build mismatch, dead or unresponsive game control plane,
+aborted scenario, or failed required telemetry lane. Never continue with
+direct unmeasured COCs and never publish `n/a` for stabilization or retries
+merely because a required measurement call was omitted.
+
+Run the 20 measured COCs as four fail-fast five-transition scenario batches
+under the same owner and capture sessions. After validating each batch, report
+only `5/20`, `10/20`, `15/20`, or `20/20` complete and the exact current cell,
+then queue the next batch without waiting for user input. Do not print batch
+transcripts or intermediate telemetry results.
 
 Each measured block ends with one render-scale status receipt. Preserve its
 transition-filtered preparation events and summaries for admission/early exit,

@@ -68,6 +68,10 @@ foreach ($required in @(
     'complete measurement',
     'one synchronous, fail-closed DevBench',
     'synchronous, fail-closed scenario',
+    'while its server-owned stabilization wait is still running',
+    '120,000 ms',
+    'only startup update',
+    '`5/20`, `10/20`, `15/20`, or `20/20`',
     'read-only calls may run concurrently',
     'transition 1''s atomic dispatch remains their sole timing origin',
     '`persisted: false`',
@@ -139,7 +143,14 @@ foreach ($required in @(
     'with `-pvr`',
     'Do not invent a PR number',
     'vr-render-scale-ledger-0001-history.csv',
-    'State explicitly when no canonical ledger was updated.'
+    'State explicitly when no canonical ledger was updated.',
+    'four consecutive async',
+    'while the asynchronous positioning dwell is',
+    'Admission time consumes this dwell',
+    'emit only compact gate fields',
+    'Never stream a full successful render-scale status',
+    'After each batch completes',
+    'Never infer progress from wall time'
 )) {
     if (-not $protocol.Contains($required, [StringComparison]::Ordinal)) {
         throw "Simple COC protocol is missing: $required"
@@ -154,7 +165,8 @@ foreach ($forbidden in @(
     'bounded setup fan-out',
     'reset CPU/GPU telemetry',
     'refresh the live schema inventory exactly once',
-    "after the controller's short retry budget"
+    "after the controller's short retry budget",
+    'one async DevBench scenario'
 )) {
     if ($protocol.Contains($forbidden, [StringComparison]::Ordinal)) {
         throw "Simple COC retains a redundant or concurrent setup rule: $forbidden"

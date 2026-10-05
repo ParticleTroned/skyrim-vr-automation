@@ -14,18 +14,27 @@
   level raised to `debug`; an already-more-verbose level remains unchanged.
 - Qualification: one strict waiter per transition, 30,000 ms timeout, no
   target profile. VR FPS Stabilizer owns profile selection.
-- Scenario: one async DevBench scenario with `continueOnError: false`.
+- Scenario: four consecutive async DevBench scenarios with
+  `continueOnError: false`, each owning exactly five measured transitions.
 - Setup: reuse successful binding/setup for the same live PID/session;
   otherwise bind once and call `prepare_coc` first and alone. Immediately
-  position, then submit one reset batch and one arm batch after exact-cell
-  verification. Each batch is a synchronous DevBench scenario with
-  `continueOnError: false`; validate its full transcript before proceeding.
+  submit the positioning COC plus its 10,000 ms dwell asynchronously. After
+  exact-cell verification, overlap the telemetry reads, one reset batch, and
+  one arm batch with that same dwell. Each batch is a synchronous DevBench
+  scenario with `continueOnError: false`; validate its full transcript before
+  proceeding. Never add a second positioning dwell.
 - Profiler: when `communityshaders.profiler_api` is exposed, preserve its
   initial enabled state and enable it before the measured scenario. A
   `disabled` arm receipt is fatal, but profiler readiness never gates the unmeasured positioning COC.
 - Output: preserve a commit-headed CSV comparison and the complete local run
   evidence. Repositories using immutable numbered ledgers publish only in an
   identified PR's reporting workflow.
+- Admission deadline: transition 1 dispatch occurs no later than 120,000 ms
+  after the trigger. A run that cannot satisfy every gate by then stops before
+  measured dispatch.
+- User updates: one admission line with Build ID and source commit, then one
+  progress line after exactly 5, 10, 15, and 20 completed transitions. Do not
+  print successful setup or telemetry receipts.
 
 ## 1. Bind DevBench and the build
 
@@ -70,21 +79,33 @@ render scale, or any other Stabilizer-owned policy. A rejected call, missing
 fixture field, non-ready receipt, persisted change, or producer mismatch stops
 the run.
 
-Before any COC, tell the user that DevBench and the fixture are ready and print
-the exact Build ID and source commit. Continue automatically after this update.
-Bind every Community Shaders call to that exact Build ID. Fixture setup is
-outside the measured window, which begins only at transition 1's atomic
+Before any COC, send the only startup update: one concise admission line with
+the exact Build ID and source commit. Do not report the successful fixture,
+telemetry inventory, profiler, reset, or arm results; preserve their receipts
+in evidence and validate compact gate fields in-process. Continue
+automatically after this update. Bind every Community Shaders call to that
+exact Build ID. Fixture setup is outside the measured window, which begins only at transition 1's atomic
 `qualification_dispatch`.
 
 ## 2. Position at Windhelm
 
-Run one server scenario containing:
+Submit one asynchronous server scenario containing:
 
 1. `console` with `coc WindhelmExterior01`;
 2. a 10,000 ms server wait.
 
-After it completes, require the exact Windhelm editor ID and a loaded player.
-Do not count this positioning COC among the 20 measured transitions.
+While that server-owned wait is running, use bounded read-only scene checks on
+the same transport until the exact Windhelm editor ID and a loaded player are
+proven. A scene timeout or a different cell stops setup. As soon as exact-cell
+proof exists, begin section 3; do not wait for the positioning scenario to
+finish before starting telemetry admission. Stateful telemetry remains
+forbidden until exact-cell proof.
+
+Before measured dispatch, require the positioning scenario to have completed
+successfully and prove at least 10,000 ms elapsed after its positioning COC.
+Admission time consumes this dwell. If admission finishes early, wait only for
+the original scenario to complete; if it finishes late, do not add another
+wait. Do not count this positioning COC among the 20 measured transitions.
 
 ## 3. Arm all relevant render-scale telemetry
 
@@ -95,7 +116,8 @@ Do not run the bundled controller's `list`, open another loopback session, or
 switch transport lanes during the run. The bundled controller may be the sole live lane only when
 direct MCP was unavailable before the first live call.
 
-After exact-cell verification, query each required or optional telemetry lane
+After exact-cell verification, and while the asynchronous positioning dwell is
+still running when time remains, query each required or optional telemetry lane
 once through the selected transport.
 Only independent read-only calls may run concurrently. Do not repeat core
 discovery that already returned a complete receipt and do not perform a global schema refresh.
@@ -104,6 +126,12 @@ Do not generate or edit task-local orchestration scripts during live preflight
 or baseline setup. Load the installed protocol once, use its fixed actions
 directly, and preserve returned receipts under the evidence directory. Evidence
 files are not orchestration scripts.
+
+Retain complete successful inventory, reset, and arm receipts directly in the
+evidence writer. Validate them in-process and emit only compact gate fields to
+the model context. Never stream a full successful render-scale status or batch
+transcript into the conversation. On failure, report the concise failing gate
+and evidence path without dumping unrelated receipt content.
 
 When `communityshaders.profiler_api` is exposed, prefer it over the legacy
 profiler tool and complete this measurement-admission gate:
@@ -224,8 +252,10 @@ present but fails to arm, stop rather than silently downgrade the run.
 ## 4. Run the measured scenario
 
 Use the fresh render-scale stress session proven by the arm batch. Generate
-one unique owner from the Build ID and UTC time. For transition IDs 1 through
-20, append this block:
+one unique owner from the Build ID and UTC time. Create four consecutive async
+scenario batches covering transition IDs `1-5`, `6-10`, `11-15`, and `16-20`.
+Every batch uses `continueOnError: false`, the same owner, and the same capture
+sessions. For each transition in its batch, append this block:
 
 1. `qualification_begin` with the exact owner and transition ID;
 2. `{ "wait": 10000 }`;
@@ -243,7 +273,8 @@ one unique owner from the Build ID and UTC time. For transition IDs 1 through
    `status.preparation` trace, filtered to the transition epoch returned by the
    waiter. This read occurs after strict completion and is not another waiter.
 
-The profiler API step is omitted when that API was absent. Its `disabled` or
+The profiler API step appears only in the first batch and is omitted when that
+API was absent. Its `disabled` or
 other `ok: false` result must abort the scenario before
 `qualification_dispatch`. Never reinterpret exposed-but-
 disabled as `unsupported` and never dispatch transition 1 after a failed
@@ -266,6 +297,14 @@ COC, one strict result, and one post-wait telemetry snapshot. There must be
 exactly 20 dispatch receipts, 20 waiter receipts, and 20 preparation status
 receipts, plus exactly one profiler API capture receipt when that API was
 selected.
+
+After each batch completes, validate exactly five dispatch, waiter, and status
+receipts in order and preserve its full transcript without returning it to the
+conversation. Then send one concise progress update containing only `5/20`,
+`10/20`, `15/20`, or `20/20` complete and the exact current cell. Queue the
+next batch immediately without a user handshake. A batch abort stops all later
+batches. Never infer progress from wall time or report a threshold before its
+five waiter receipts are present.
 
 Preserve every result, including semantic anomalies. A successful waiter may
 report an unsatisfied milestone; that is measured evidence. Stop future COCs
