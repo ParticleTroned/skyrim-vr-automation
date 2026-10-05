@@ -1,6 +1,6 @@
 ---
 name: devbench-control
-description: "Inspect and call the MCP tools exposed by a running CSX DevBench server through one selected transport. Use for DevBench discovery, capability inspection, structured tool calls, screenshot API probing, performance API probing, or diagnosing runtime metadata and session failures."
+description: "Inspect and call the MCP tools exposed by a running DevBench server, including CSX and Open Shaders, through one selected transport. Use for DevBench discovery, capability inspection, structured tool calls, screenshot API probing, performance API probing, or diagnosing runtime metadata and session failures."
 ---
 
 # DevBench Control
@@ -50,8 +50,9 @@ or construct HTTP or MCP requests ad hoc.
    `call -Tool <exact-name> -ArgumentsJson <json>`. Parse the structured result
    and preserve errors as evidence; never infer success from a visible in-game
    effect alone.
-6. Keep runtime identity verification enabled. Supply build/artifact
-   expectations when testing a newly deployed DLL, and use `-RequireSuccess`
+6. Keep runtime identity verification enabled. Supply artifact expectations
+   when testing a newly deployed DLL and a Build ID only when the producer
+   exposes one. Open Shaders does not require a CSX Build ID. Use `-RequireSuccess`
    when a semantic failure must fail the orchestration step.
 7. On the selected controller lane, prefer
    `wait -Condition noBlockingMenu` over the server `noMenu` condition when
@@ -74,10 +75,17 @@ or construct HTTP or MCP requests ad hoc.
 11. Every timing, frame-rate, CPU, or GPU measurement on the bundled lane must
     pass `-RequirePerformanceNeutral`. The controller queries the registered
     standalone temporal-probe owner and rejects an unproven or changed epoch.
-    On the direct lane, apply the equivalent explicit before/after check for
-    `performanceDistorted: false`, `physicalStateKnown: true`, and a stable
-    ownership epoch. Never disarm the probe unless the user separately
-    authorized that mutation.
+    On the direct lane, preserve fresh `inspect kind=state` and
+    `inspect kind=registrants` payloads before/after the window and use the
+    offline `Get-DevBenchDirectPerformanceGuard` and
+    `Test-DevBenchPerformanceWindow` helpers described in the controller
+    README. A proven absent standalone owner/probe is not applicable; a
+    missing callable name alone does not prove absence. A registered probe
+    requires its exact typed status tool, `performanceDistorted: false`,
+    `physicalStateKnown: true`, and a stable ownership epoch. Missing or
+    inconsistent evidence fails closed. Never disarm the probe unless the
+    user separately authorized that mutation. This guard covers the temporal
+    probe only; other active instrumentation must be reported separately.
 12. Preserve the controller's `sessionCleanup` receipt with the command result.
    Cleanup is successful when it reports `closed`, `already_absent`, or
    `not_opened`; a cleanup failure is diagnostic and never changes the primary
@@ -101,6 +109,18 @@ or construct HTTP or MCP requests ad hoc.
     the exact managed `-WorkspaceManifestPath`. Do not use
     `-AllowUnprovenGameMutation` unless the user explicitly authorized bypassing
     workspace save policy.
+
+For a recorded performance route with Tracy (including Dragonsreach and
+Guardian Stones to Whiterun), first read and follow
+`../../tools/devbench-control/tracy-replay.md` in full. Use its existing-MCP
+guard helper, physical collector-memory admission, one connection per fresh
+game process, asynchronous replay, GPU readiness and full-capture acceptance
+checks. An empty instance list or scheduler completion cannot establish a
+clean collector or a complete performance result. Do not repair or reconnect
+mid-measurement, or declare the next route ready before extraction and image
+validation finish. For builds with main-update Tracy zones and VR timing plots,
+run the protocol's offline frame-timing export and verify every available
+series and its count before reporting the comparison.
 
 The bundled fallback entry point is:
 

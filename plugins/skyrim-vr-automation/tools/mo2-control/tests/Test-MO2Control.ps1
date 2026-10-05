@@ -40,6 +40,60 @@ $retentionFixture = & $mo2Module {
 }
 Assert-MO2Test (-not $retentionFixture.stable -and $retentionFixture.samples.Count -eq 2 -and -not $retentionFixture.samples[-1].ownerPresent) 'MO2 retention stability detects an owner that exits immediately after game shutdown'
 
+$hashFixture = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('mo2-build-binding-test-' + [guid]::NewGuid().ToString('N'))))
+try {
+    $hashMods = Join-Path $hashFixture 'mods'
+    $hashPluginDirectory = Join-Path $hashMods 'CSX\SKSE\Plugins'
+    New-Item -ItemType Directory -Path $hashPluginDirectory -Force | Out-Null
+    $hashProfile = Join-Path $hashFixture 'modlist.txt'
+    '+CSX' | Set-Content -LiteralPath $hashProfile -Encoding utf8
+    $hashPlugin = Join-Path $hashPluginDirectory 'CommunityShaders.dll'
+    $hashPluginBytes = [byte[]](1, 4, 1, 5, 9, 2, 6)
+    [IO.File]::WriteAllBytes($hashPlugin, $hashPluginBytes)
+    $hashManifest = Join-Path $hashPluginDirectory 'CSX.BuildManifest.json'
+    $hashExpected = (Get-FileHash -LiteralPath $hashPlugin -Algorithm SHA256).Hash
+    $hashTransactionTool = [IO.Path]::GetFullPath((Join-Path $packageRoot '..\shader-cache-control\Invoke-CSXShaderCacheTransaction.ps1'))
+    $hashCases = @(
+        @{ name = 'uppercase'; hash = $hashExpected; bytes = $hashPluginBytes.Length; error = $null },
+        @{ name = 'lowercase'; hash = $hashExpected.ToLowerInvariant(); bytes = $hashPluginBytes.Length; error = $null },
+        @{ name = 'mixed-case'; hash = $hashExpected.Substring(0, 32).ToLowerInvariant() + $hashExpected.Substring(32); bytes = $hashPluginBytes.Length; error = $null },
+        @{ name = 'wrong hash'; hash = ('0' * 64); bytes = $hashPluginBytes.Length; error = 'does not match its build manifest' },
+        @{ name = 'non-hex hash'; hash = ('g' * 64); bytes = $hashPluginBytes.Length; error = 'manifest lacks an exact build ID, DLL hash, or shader-cache ABI' },
+        @{ name = 'short hash'; hash = $hashExpected.Substring(0, 63); bytes = $hashPluginBytes.Length; error = 'manifest lacks an exact build ID, DLL hash, or shader-cache ABI' },
+        @{ name = 'wrong size'; hash = $hashExpected.ToLowerInvariant(); bytes = $hashPluginBytes.Length + 1; error = 'does not match its build manifest' }
+    )
+    foreach ($case in $hashCases) {
+        [ordered]@{
+            buildId = 'hash-fixture-build'
+            artifact = [ordered]@{ fileName = 'CommunityShaders.dll'; sha256 = $case.hash; sizeBytes = $case.bytes }
+            identity = [ordered]@{ shaderCache = [ordered]@{ abiId = 'hash-fixture-abi' } }
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $hashManifest -Encoding utf8
+        $hashManifestBefore = (Get-FileHash -LiteralPath $hashManifest -Algorithm SHA256).Hash
+        $hashBinding = $null
+        $hashError = $null
+        try {
+            $hashBinding = & $mo2Module {
+                param($transactionTool, $profilePath, $modsPath)
+                Resolve-MO2CommunityShadersBuildBinding -TransactionTool $transactionTool -ProfilePath $profilePath -ModsPath $modsPath
+            } $hashTransactionTool $hashProfile $hashMods
+        }
+        catch { $hashError = $_.Exception.Message }
+        if ($null -eq $case.error) {
+            Assert-MO2Test ($null -eq $hashError -and $null -ne $hashBinding -and $hashBinding.artifactSha256 -ceq $hashExpected -and $hashBinding.artifactBytes -eq $hashPluginBytes.Length) "build binding accepts $($case.name) SHA256 and returns the verified artifact identity"
+        }
+        else {
+            Assert-MO2Test ($null -ne $hashError -and $hashError.Contains([string]$case.error)) "build binding rejects $($case.name) with the expected validation error"
+        }
+        Assert-MO2Test ((Get-FileHash -LiteralPath $hashManifest -Algorithm SHA256).Hash -ceq $hashManifestBefore) "build binding preserves the $($case.name) manifest bytes"
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $hashFixture) {
+        if ((Get-Item -LiteralPath $hashFixture).FullName -cne $hashFixture) { throw 'Unexpected hash fixture cleanup target.' }
+        Remove-Item -LiteralPath $hashFixture -Recurse -Force
+    }
+}
+
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('mo2-control-test-' + [guid]::NewGuid().ToString('N'))
 try {
     $mo2Root = Join-Path $fixture 'MO2'

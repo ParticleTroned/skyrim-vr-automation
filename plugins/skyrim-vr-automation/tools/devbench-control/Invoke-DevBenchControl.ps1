@@ -82,9 +82,8 @@ function Get-RequestTimeoutSeconds {
     return [int][Math]::Max(1, [Math]::Min($script:requestTimeoutSecondsForRpc, [Math]::Ceiling($remainingSeconds)))
 }
 
-function Set-ServerWaitBudgetAtDispatch([hashtable]$Arguments) {
-    if ($null -eq $Arguments -or -not $Arguments.ContainsKey('timeoutMs') -or $null -eq $Arguments.timeoutMs) { return }
-    $serverTimeoutMilliseconds = [double]$Arguments.timeoutMs
+function Set-ServerWaitBudgetAtDispatch([hashtable]$Arguments, [string]$Name) {
+    $serverTimeoutMilliseconds = Get-DevBenchSynchronousWaitMilliseconds -Tool $Name -Arguments $Arguments
     if ($serverTimeoutMilliseconds -le 0) { return }
     $script:serverTimeoutMilliseconds = $serverTimeoutMilliseconds
     $serverTimeoutSeconds = [int][Math]::Ceiling($serverTimeoutMilliseconds / 1000.0)
@@ -422,7 +421,7 @@ function Invoke-McpRequest {
 
 function Invoke-ToolRpc {
     param([string]$Name, [hashtable]$Arguments, [hashtable]$Headers, [switch]$Mutation)
-    Set-ServerWaitBudgetAtDispatch -Arguments $Arguments
+    Set-ServerWaitBudgetAtDispatch -Arguments $Arguments -Name $Name
     $rpc = Invoke-McpRequest -Endpoint $endpoint -Headers $Headers -Payload @{ jsonrpc = '2.0'; id = [DateTime]::UtcNow.Ticks; method = 'tools/call'; params = @{ name = $Name; arguments = $Arguments } } -Mutation:$Mutation
     if ($rpc.json.PSObject.Properties['error']) { throw "DevBench tools/call failed: $($rpc.json.error | ConvertTo-Json -Compress)" }
     if ($rpc.json.result.PSObject.Properties['isError'] -and $rpc.json.result.isError) {
@@ -720,24 +719,29 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
         else {
             $actualSha = (Get-FileHash -LiteralPath $resolvedArtifact -Algorithm SHA256).Hash
             $artifact = [pscustomobject][ordered]@{ path = $resolvedArtifact; sha256 = $actualSha; bytes = [long](Get-Item -LiteralPath $resolvedArtifact).Length }
-            if ($expectations.artifactSha256 -and $actualSha -ne $expectations.artifactSha256) { $errors.Add("Expected artifact SHA-256 '$($expectations.artifactSha256)' differs from deployed artifact SHA-256 '$actualSha'.") }
+            if ($expectations.artifactSha256 -and -not (Test-DevBenchArtifactHash -Actual $actualSha -Expected $expectations.artifactSha256)) { $errors.Add("Expected artifact SHA-256 '$($expectations.artifactSha256)' differs from deployed artifact SHA-256 '$actualSha'.") }
         }
     }
     elseif ($expectations.artifactSha256) { $errors.Add('An artifact SHA-256 expectation requires artifactPath/dllPath or -ArtifactPath.') }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedRuntimeIdentityJson)) {
         try {
             $expectedIdentity = $ExpectedRuntimeIdentityJson | ConvertFrom-Json -Depth 20
-            foreach ($required in @('listenerPid', 'processPath', 'processStartTimeUtc', 'buildId', 'artifactPath', 'artifactSha256')) {
+            foreach ($required in @('listenerPid', 'processPath', 'processStartTimeUtc', 'artifactPath', 'artifactSha256')) {
                 if (-not $expectedIdentity.PSObject.Properties[$required] -or [string]::IsNullOrWhiteSpace([string]$expectedIdentity.$required)) {
                     throw "ExpectedRuntimeIdentityJson requires '$required'."
                 }
             }
             if ($listenerPid -ne [int]$expectedIdentity.listenerPid) { $errors.Add("Expected listener PID $($expectedIdentity.listenerPid) differs from observed PID $listenerPid.") }
             if ($processIdentity -and -not [string]::Equals([string]$processIdentity.path, [string]$expectedIdentity.processPath, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('Expected listener process path differs from the observed process path.') }
-            if ($processIdentity -and [string]$processIdentity.startTimeUtc -cne [string]$expectedIdentity.processStartTimeUtc) { $errors.Add('Expected listener process start time differs from the observed process start time.') }
-            if ([string]$actualBuildId -cne [string]$expectedIdentity.buildId) { $errors.Add('Expected CSX build ID differs from the observed build ID.') }
+            $expectedStart = ConvertTo-DevBenchIdentityTimestamp $expectedIdentity.processStartTimeUtc
+            if ($processIdentity -and (ConvertTo-DevBenchIdentityTimestamp $processIdentity.startTimeUtc) -cne $expectedStart) { $errors.Add('Expected listener process start time differs from the observed process start time.') }
+            if ($expectedIdentity.PSObject.Properties['buildId'] -and
+                -not [string]::IsNullOrWhiteSpace([string]$expectedIdentity.buildId) -and
+                [string]$actualBuildId -cne [string]$expectedIdentity.buildId) {
+                $errors.Add('Expected CSX build ID differs from the observed build ID.')
+            }
             if ($artifact -and -not [string]::Equals([string]$artifact.path, [string]$expectedIdentity.artifactPath, [StringComparison]::OrdinalIgnoreCase)) { $errors.Add('Expected artifact path differs from the observed artifact path.') }
-            if ($artifact -and [string]$artifact.sha256 -cne [string]$expectedIdentity.artifactSha256) { $errors.Add('Expected artifact SHA-256 differs from the observed artifact SHA-256.') }
+            if ($artifact -and -not (Test-DevBenchArtifactHash -Actual $artifact.sha256 -Expected $expectedIdentity.artifactSha256)) { $errors.Add('Expected artifact SHA-256 differs from the observed artifact SHA-256.') }
         }
         catch {
             $errors.Add("Expected runtime identity is invalid: $($_.Exception.Message)")
@@ -746,11 +750,11 @@ function Get-RuntimeIdentity($Runtime, [hashtable]$Headers, [object[]]$Tools, [s
     $missing = [Collections.Generic.List[string]]::new()
     if (-not $listenerPid) { $missing.Add('pid') }
     if (-not $processIdentity -or -not $processIdentity.path) { $missing.Add('process.path') }
-    if (-not $actualBuildId) { $missing.Add('buildId') }
+    if ($expectations.buildId -and -not $actualBuildId) { $missing.Add('buildId') }
     if (-not $artifact) { $missing.Add('artifact.path+sha256') }
     return [pscustomobject][ordered]@{
         verified = $errors.Count -eq 0 -and $null -ne $listenerPid -and $null -ne $health
-        complete = $missing.Count -eq 0
+        complete = $missing.Count -eq 0 -and $errors.Count -eq 0
         expectations = $expectations
         listenerPid = $listenerPid
         process = $processIdentity

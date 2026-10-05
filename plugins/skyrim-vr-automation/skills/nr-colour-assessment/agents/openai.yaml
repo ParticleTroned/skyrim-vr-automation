@@ -1,0 +1,4 @@
+interface:
+  display_name: "NR Colour Assessment"
+  short_description: "Blinded assessment of native CSX HMD colour images"
+  default_prompt: "Use $nr-colour-assessment to run an attributed HMD colour comparison with automated blinded image review."

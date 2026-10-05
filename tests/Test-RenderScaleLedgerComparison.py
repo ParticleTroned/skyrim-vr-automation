@@ -42,6 +42,26 @@ class LedgerComparisonTest(unittest.TestCase):
         self.assertEqual(len(result["unavailable"]), 14)
         self.assertEqual(before, self.ledger.read_bytes())
 
+    def test_large_structured_detail_is_lossless_and_restores_csv_limit(self):
+        detail = json.dumps({'trace': '\u03bb,"\n' * 40000, 'values': [False, 0, None, [], {}]}, ensure_ascii=False)
+        with self.ledger.open('a', encoding='utf-8', newline='') as stream:
+            csv.writer(stream).writerow(['tuning_detail_summary_json', detail, detail, 'retained'])
+        before = self.ledger.read_bytes()
+        previous_limit = csv.field_size_limit(131072)
+        self.addCleanup(csv.field_size_limit, previous_limit)
+        self.assertEqual(MODULE.read_ledger(self.ledger)[-1][1], detail)
+        self.assertEqual(MODULE.audit_ledger(self.ledger, self.comparison)['verifiedNumericCells'], 2)
+        self.assertEqual(csv.field_size_limit(), 131072)
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_csv_limit_restored_after_parser_failure(self):
+        previous_limit = csv.field_size_limit(64)
+        self.addCleanup(csv.field_size_limit, previous_limit)
+        with patch.object(MODULE.csv, 'reader', side_effect=csv.Error('invalid CSV')):
+            with self.assertRaisesRegex(csv.Error, 'invalid CSV'):
+                MODULE.read_ledger(self.ledger)
+        self.assertEqual(csv.field_size_limit(), 64)
+
     def test_single_lane_and_partial_runs_ignore_other_lane_history(self):
         for lane in ("nvidia", "explicit_fsr3", "explicit_fsr4", "fsr4_to_fsr3_fallback"):
             with self.subTest(lane=lane):
@@ -195,6 +215,33 @@ class ReportingPipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'historical cells'):
             self.run_pipeline()
         self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_large_detail_update_preserves_history_and_rejects_changed_detail(self):
+        detail = json.dumps({'trace': 'retained evidence ' * 12000, 'values': [False, 0, None, [], {}]})
+        with self.ledger.open('a', encoding='utf-8', newline='') as stream:
+            csv.writer(stream).writerow(['tuning_detail_summary_json', detail, detail, 'retained'])
+        before = self.ledger.read_bytes()
+        previous_limit = csv.field_size_limit(131072)
+        self.addCleanup(csv.field_size_limit, previous_limit)
+        table = MODULE.read_ledger(self.ledger)
+        self.args.ledger_candidate = Path(self.temp.name) / 'prepared.csv'
+        prepared = [row + ['new-run' if i == 0 else detail] for i, row in enumerate(table)]
+        with self.args.ledger_candidate.open('w', encoding='utf-8', newline='') as stream:
+            csv.writer(stream).writerows(prepared)
+        self.args.expected_ledger_sha256 = MODULE.sha256(self.ledger)
+        self.assertFalse(self.run_pipeline()['ledgerUnchanged'])
+        self.assertEqual((self.args.output_root / 'ledger-before.csv').read_bytes(), before)
+        self.assertEqual(MODULE.read_ledger(self.ledger), prepared)
+        self.assertEqual(csv.field_size_limit(), 131072)
+        published = self.ledger.read_bytes()
+        prepared[-1][1] += 'changed'
+        with self.args.ledger_candidate.open('w', encoding='utf-8', newline='') as stream:
+            csv.writer(stream).writerows(prepared)
+        self.args.expected_ledger_sha256 = MODULE.sha256(self.ledger)
+        with self.assertRaisesRegex(ValueError, 'historical cells'):
+            self.run_pipeline()
+        self.assertEqual(self.ledger.read_bytes(), published)
+        self.assertEqual(csv.field_size_limit(), 131072)
 
     def test_tool_failure_invalidates_previous_complete_receipt(self):
         self.run_pipeline()

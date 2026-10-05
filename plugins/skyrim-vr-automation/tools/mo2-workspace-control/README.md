@@ -157,8 +157,21 @@ location, and `loadName` as the deterministic target for a later game-load
 adapter. See `save-fixtures.example.json` for the portable schema.
 
 Use `fixture-status` to compare the manifest's expected stable-profile
-fingerprint and declared save hashes with their current actual values without
-changing anything. When no manifest is configured, or the configured file is
+fingerprint and declared save hashes with their current actual values. Like
+other workspace commands, preflight first reconciles interrupted transactions
+under a writable workspace lock. If access is denied, it returns
+`workspace-control-access-required` with the control directory, selected
+configuration and approval metadata. Rerun the exact command with access to
+that directory; do not bypass transaction recovery.
+
+Source-dependent commands require `defaults.testProfileSource` or an explicit
+`-SourceProfile`. Missing or blank source configuration returns
+`source-profile-not-configured` before transaction recovery, with the exact
+configuration path and repair parameter. No ordinary profile or alternative
+configuration is selected implicitly. Failure JSON retains configuration and
+approval metadata just as successful results do.
+
+When no manifest is configured, or the configured file is
 missing, `fixture-status` returns `fixture-not-configured` or
 `fixture-manifest-missing` with the exact configuration property, portable
 example path, current stable-profile fingerprint, and creation guidance; this

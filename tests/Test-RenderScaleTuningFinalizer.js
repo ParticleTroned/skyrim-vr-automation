@@ -6,7 +6,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { fixture: retryFixture, testRetryTelemetry } = require("./Test-RenderScaleRetryTelemetry.js");
+const { spawnSync } = require("node:child_process");
+const { fixture: ownedReleaseFixture } = require("./Test-OwnedReleaseTelemetry.js");
+const { fixture: retryFixture, ownedDrainFixture, testRetryTelemetry } = require("./Test-RenderScaleRetryTelemetry.js");
 const { writeMemoryFixture, testMemoryConfirmation } = require("./Test-RenderScaleMemoryConfirmation.js");
 const {
     collectTracePages,
@@ -1295,6 +1297,72 @@ function testRetryReportingGaps() {
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+function testOwnedDrainReportingFromRetainedEvents() {
+    const root = createEvidenceRoot();
+    try {
+        const file = path.join(root, "raw/pass-1/transitions/01/retained.json");
+        const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+        const diagnostic = ownedDrainFixture({ providers: ["DLSS", "FSR"], earlyProvider: "DLSS" }).waiter;
+        Object.assign(receipt.waiter, diagnostic);
+        writeJson(file, receipt);
+        const original = sha(file);
+        const options = { root, variant: "nvidia", runId: "nvidia-test-run",
+            buildId: "e".repeat(64), expectedRows: 2 };
+        const { summary } = finalizeEvidence(options);
+        const retry = summary.transitions[0].retryTelemetry;
+        assert(retry.status === "complete" && retry.retryCount === 1,
+            "Owned drain events invalidated the known retry evidence.");
+        const attempt = retry.ownedDrain.attempts[0];
+        assert(attempt.intervals.pendingToReady.milliseconds === 30 &&
+            attempt.intervals.pendingToReady.frames === 3 &&
+            attempt.intervals.readyToCommit.milliseconds === 10,
+        "Finalizer did not use the final provider's readiness endpoint.");
+        const csvText = fs.readFileSync(path.join(root, "transitions.csv"), "utf8");
+        assert(csvText.split("\n")[0].includes("retry_compatibility,owned_drain") &&
+            csvText.includes('""pendingToReady""') && csvText.includes('""milliseconds"":30'),
+        "CSV omitted the calculated owned drain intervals.");
+        const reportText = fs.readFileSync(path.join(root, "report.md"), "utf8");
+        assert(reportText.includes("3 / 30.0000") && reportText.includes("1 / 10.0000"),
+            "Human-readable report omitted the calculated frames and milliseconds.");
+        assert(sha(file) === original, "Offline repair modified raw retry evidence.");
+        const repeated = finalizeEvidence(options).summary.transitions[0].retryTelemetry;
+        assert(JSON.stringify(repeated) === JSON.stringify(retry),
+            "Repeated offline finalization changed derived retry evidence.");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+function testOwnedReleaseCliAndPackage() {
+    const root = createEvidenceRoot();
+    try {
+        const file = path.join(root, "raw/pass-1/transitions/01/retained.json");
+        const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+        Object.assign(receipt.waiter, ownedReleaseFixture().waiter);
+        writeJson(file, receipt);
+        const rawHash = sha(file);
+        let sourceRelease;
+        for (const prefix of ["", "plugins/skyrim-vr-automation/"]) {
+            const cli = path.resolve(__dirname, "..", prefix, "tools/renderscale-tuning-finalizer/finalizer.js");
+            const result = spawnSync(process.execPath, [cli, "--root", root, "--variant", "nvidia",
+                "--run-id", "nvidia-test-run", "--build-id", "e".repeat(64), "--expected-rows", "2",
+                "--generated-utc", "2026-09-11T18:00:00.000Z"], { encoding: "utf8", timeout: 60000 });
+            assert(result.status === 0, `Owned release CLI failed: ${result.stderr}`);
+            assert(JSON.parse(result.stdout).ok === true, "CLI did not confirm successful finalization.");
+            const summary = JSON.parse(fs.readFileSync(path.join(root, "summary.json"), "utf8"));
+            const release = summary.transitions[0].retryTelemetry.ownedRelease;
+            assert(release.attempts[0].guardExempt && release.attempts[0].intervals.readyToConsumed.milliseconds === 8,
+                "CLI omitted exact owned-release readiness correlation.");
+            if (sourceRelease) assert(JSON.stringify(release) === JSON.stringify(sourceRelease), "Source/package derived evidence differs.");
+            sourceRelease = release;
+            const report = fs.readFileSync(path.join(root, "report.md"), "utf8");
+            assert(report.includes("## Owned release stages") && report.includes("8.00") && report.includes("15.00"),
+                "Report omitted stage/fence intervals or display precision.");
+            assert(fs.readFileSync(path.join(root, "transitions.csv"), "utf8").includes('""readyToConsumed""'),
+                "CSV omitted owned-release derived evidence.");
+            assert(sha(file) === rawHash, "CLI changed immutable retained input.");
+        }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 function testMemoryFinalizationWithoutExistingSummary() {
     const root = createEvidenceRoot();
     try {
@@ -1373,6 +1441,8 @@ function testRecoveredHealthKeepsCompletedTest() {
 
 Promise.resolve().then(testBoundedPaging).then(testPagingValidation)
     .then(testRetryReportingGaps)
+    .then(testOwnedDrainReportingFromRetainedEvents)
+    .then(testOwnedReleaseCliAndPackage)
     .then(testRetryTelemetry)
     .then(testRecoveredHealthKeepsCompletedTest)
     .then(testMemoryConfirmation).then(testMemoryFinalizationWithoutExistingSummary)

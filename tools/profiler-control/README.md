@@ -6,10 +6,16 @@ enables only when needed, and restores and verifies the exact prior state in a
 `finally` path. Each accepted sample has a strictly advancing frame ID and
 finite GPU/CPU metrics. A unique capture directory retains the raw JSON,
 summary, timer CSV, DevBench invocation journals, and recovery receipt.
+Raw samples are saved before deriving summaries. CPU-only and inactive timers
+retain zero sample counts and null statistics for unobserved timing domains.
 
 Only one capture may own a given runtime metadata target at once. The collector
 uses a deterministic, bounded lease and verifies the complete DevBench process,
 start time, build, and deployed artifact identity on every profiler response.
+Start times use invariant UTC ISO 8601 with all seven fractional digits,
+including after JSON readers materialize them as date objects. The controller
+compares exact normalized timestamps. Legacy culture-formatted journal values
+cannot prove process continuity and fail closed.
 If that identity changes, it refuses to mix samples or mutate the replacement
 runtime. Each raw sample carries the verified identity fingerprint. The lease's
 deterministic control directory also owns a write-ahead transaction journal. A
@@ -25,7 +31,14 @@ ownership epoch before and after dispatch. The capture also pins that epoch
 across all warm-up and measured samples. Registration or epoch drift invalidates
 the run, while the reserved restoration path remains available to restore the
 profiler's prior state. Guard observations are retained in receipt and summary
-schema 3; the collector never disarms the probe.
+schema 4; the collector never disarms the probe.
+
+Confirmed absence of the standalone probe is a valid not-applicable guard.
+On direct MCP, use the fresh registration evidence and offline helpers in
+`../devbench-control/README.md`; the selected transport remains exclusive.
+A missing callable name is not absence proof. This check does not establish
+whole-process neutrality: report other instrumentation, and do not claim
+performance-neutral results while lifetime-tracer hooks report distortion.
 
 The collector also retains central-controller, read-only resource-publication
 snapshots immediately before and after the measured interval: current,
@@ -76,6 +89,21 @@ features receive explicit zero rows, distinguishing absence from a lost row.
 Aggregated `*.summary.json` input is rejected with a specific schema error.
 Every input needs at least three unique fresh frames, finite metrics, and the
 same environment/runtime fingerprint.
+
+CSX profiler API 1.1 / schema 2 reports GPU and CPU **self time**, excluding
+profiled descendants. The collector preserves the provider's
+`timingSemantics: gpu_cpu_self_time` marker in raw samples, receipt, summary
+(schema 4), and timer CSV. Legacy responses without the marker are labeled
+`legacy_unspecified`; the collector never infers their meaning from values.
+Changing semantics during a capture fails through the normal restoration
+path. Comparisons reject mixed semantics within or between captures and retain
+the marker in JSON (schema 2), CSV, and report explanations. Legacy-to-legacy
+comparisons remain available with an explicit warning that sums may overlap.
+
+DevBench transport still uses `contractMajor: 1`; no minor pin changes are
+needed in this toolkit. Native consumers outside this toolkit must accept
+minor version 1 in CSX service discovery. See the shader repository's
+`docs/development/api-profiler-v1.md` for the migration contract.
 
 ```powershell
 .\Compare-CSXProfiler.ps1 `

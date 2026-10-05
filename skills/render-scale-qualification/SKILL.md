@@ -5,7 +5,7 @@ description: Run the fully unattended CSX VR render-scale qualification only whe
 
 # Render-scale qualification
 
-Run the packaged revision-5 qualification once and return its final result.
+Run the packaged revision-6 qualification once and return its final result.
 The package owns capture, image-model evaluation, telemetry validation,
 evidence finalization, and verdict generation.
 

@@ -60,10 +60,19 @@ function transitionHealth(waiter) {
     nativeVendorExecution: waiter.nativeVendorExecution ?? null };
 }
 
-function gateAssessment(gate, terminal) {
-    if (gate.name === "presentation_stretch_frame_bound" && gate.limit?.maximumFrames === 2) return { ...gate,
+function gateAssessment(gate, terminal, record) {
+    const stretch = record?.presentationPath?.allowedPresentationStretch;
+    const classified = gate.classification === "diagnostic_only" &&
+        stretch?.diagnosticThresholdFrames === 2;
+    const legacy = record?.schemaVersion === 13 && gate.classification == null &&
+        stretch?.diagnosticThresholdFrames == null;
+    if (record?.schema === "community-shaders.vr-render-scale.iteration" &&
+        [13, 14].includes(record.schemaVersion) && gate.name === "presentation_stretch_frame_bound" &&
+        gate.limit?.maximumFrames === 2 && stretch?.maximumAcceptedFrames === 2 &&
+        (classified || legacy)) return { ...gate,
         assessmentRole: "DIAGNOSTIC_ONLY",
-        assessmentReason: "Fixed stretch cutoff is inapplicable to imposed settling; compare measured frames and duration." };
+        assessmentReason: legacy ? "Legacy schema-v13 cutoff retained as diagnostic; compare measured frames and duration." :
+            "Classified stretch cutoff is diagnostic; compare measured frames and duration." };
     const native = terminal?.target?.qualityMode === 0 && terminal?.target?.renderScaleMode === false &&
         ["dlss", "fsr"].includes(terminal?.target?.method) &&
         terminal?.switchHealth?.nativeVendorExecution?.required === true &&
@@ -136,6 +145,89 @@ function passHealth(root, rows, buildId) {
     const acceptance = owned ? record.acceptance ?? null : null;
     if (typeof acceptance?.accepted !== "boolean" || !Array.isArray(acceptance?.gates))
         issues.push("stress_acceptance_missing");
+    if (acceptance?.gates?.some(gate => typeof gate.name !== "string" ||
+        typeof gate.passed !== "boolean")) issues.push("invalid_stress_gate");
+    if (Array.isArray(acceptance?.gates) &&
+        new Set(acceptance.gates.map(gate => gate.name)).size !== acceptance.gates.length)
+        issues.push("duplicate_stress_gate");
+    if (owned && (record.schema !== "community-shaders.vr-render-scale.iteration" ||
+        ![13, 14].includes(record.schemaVersion))) issues.push("unsupported_stress_record_schema");
+    if (acceptance?.gates?.some(gate => (gate.classification != null &&
+        gate.classification !== "diagnostic_only") || (gate.classification === "diagnostic_only" &&
+        gate.name !== "presentation_stretch_frame_bound"))) issues.push("unsupported_stress_gate_classification");
+    const stretch = record?.presentationPath?.allowedPresentationStretch;
+    const stretchGates = acceptance?.gates?.filter(gate => gate.name === "presentation_stretch_frame_bound") ?? [];
+    const stretchGate = stretchGates[0];
+    const currentStretch = stretchGate?.classification === "diagnostic_only" &&
+        stretch?.diagnosticThresholdFrames === 2;
+    const legacyStretch = record?.schemaVersion === 13 &&
+        stretchGate?.classification == null && stretch?.diagnosticThresholdFrames == null;
+    if (owned && (stretchGates.length !== 1 || stretch?.maximumAcceptedFrames !== 2 ||
+        stretchGate?.limit?.maximumFrames !== 2 ||
+        !Number.isSafeInteger(stretch?.maximumObservedFrames) || stretch.maximumObservedFrames < 0 ||
+        stretchGate?.observed?.maximumObservedFrames !== stretch.maximumObservedFrames ||
+        stretchGate.passed !== (stretch.maximumObservedFrames <= 2) ||
+        (!currentStretch && !legacyStretch))) issues.push("unsupported_stretch_gate_contract");
+    if (owned && record.schemaVersion === 14) {
+        const trace = stretch?.episodeTrace;
+        const attributionGate = acceptance?.gates?.filter(gate => gate.name === "presentation_stretch_attribution") ?? [];
+        const inactiveGate = acceptance?.gates?.filter(gate => gate.name === "presentation_stretch_inactive_at_stop") ?? [];
+        const stereoGate = acceptance?.gates?.filter(gate => gate.name === "presentation_stretch_complete_stereo_at_stop") ?? [];
+        let tracedFrames = 0, maximumTracedFrames = 0, unattributedFrames = 0;
+        if (Array.isArray(trace) && trace.length <= 128) for (const episode of trace) {
+            tracedFrames += counter(episode?.frames) ?? NaN;
+            maximumTracedFrames = Math.max(maximumTracedFrames, counter(episode?.frames) ?? NaN);
+            unattributedFrames += counter(episode?.unattributedFrames) ?? NaN;
+        }
+        const traceComplete = Array.isArray(trace) && trace.length <= 128 &&
+            trace.length === stretch?.completedEpisodes && tracedFrames === stretch?.completedFrames &&
+            stretch?.episodeTraceOverflow === 0 && trace.every(episode => episode.epochCoherent === true);
+        const attributionPassed = traceComplete && unattributedFrames === 0;
+        if (!Array.isArray(trace) || trace.length > 128 || attributionGate.length !== 1 ||
+            inactiveGate.length !== 1 || stereoGate.length !== 1 ||
+            inactiveGate[0]?.passed !== !stretch?.activeAtStop ||
+            inactiveGate[0]?.observed?.activeAtStop !== stretch?.activeAtStop ||
+            stereoGate[0]?.passed !== !stretch?.incompleteStereoCycleAtStop ||
+            stereoGate[0]?.observed?.incompleteStereoCycleAtStop !== stretch?.incompleteStereoCycleAtStop ||
+            stereoGate[0]?.observed?.observedEyeMask !== stretch?.incompleteStereoEyeMaskAtStop ||
+            stretch?.traceComplete !== traceComplete || attributionGate[0]?.passed !== attributionPassed ||
+            counter(stretch?.episodeTraceOverflow) === null || counter(stretch?.unattributedFrames) === null ||
+            counter(stretch?.completedEpisodes) === null || counter(stretch?.completedFrames) === null ||
+            stretch?.unattributedFrames !== unattributedFrames ||
+            maximumTracedFrames > stretch?.maximumObservedFrames ||
+            stretch?.tracedFrames !== tracedFrames ||
+            attributionGate[0]?.observed?.tracedFrames !== tracedFrames ||
+            attributionGate[0]?.observed?.traceEntries !== trace.length ||
+            attributionGate[0]?.observed?.completedEpisodes !== stretch?.completedEpisodes ||
+            attributionGate[0]?.observed?.completedFrames !== stretch?.completedFrames ||
+            attributionGate[0]?.observed?.epochCoherent !==
+                trace.every(episode => episode.epochCoherent === true) ||
+            attributionGate[0]?.observed?.unattributedFrames !== unattributedFrames ||
+            attributionGate[0]?.observed?.traceOverflow !== stretch?.episodeTraceOverflow ||
+            trace.some(episode => counter(episode?.frames) === null || episode.frames < 1 ||
+                counter(episode?.unattributedFrames) === null || episode.unattributedFrames > episode.frames ||
+                typeof episode.epochCoherent !== "boolean" ||
+                counter(episode?.transitionEpoch) === null || counter(episode?.startFrame) === null ||
+                counter(episode?.endFrame) === null ||
+                counter(episode?.startQpc) === null || counter(episode?.endQpc) === null ||
+                counter(episode?.reasonMask) === null ||
+                episode.reasonMask === 0 || episode.reasonMask > 15))
+            issues.push("unsupported_stretch_attribution_contract");
+    }
+    if (owned && (typeof stretch?.activeAtStop !== "boolean" ||
+        typeof stretch?.incompleteStereoCycleAtStop !== "boolean" ||
+        counter(stretch?.incompleteStereoEyeMaskAtStop) === null ||
+        (stretch.incompleteStereoEyeMaskAtStop !== 0) !== stretch.incompleteStereoCycleAtStop ||
+        (record.schemaVersion === 13 && (stretch.activeAtStop || stretch.incompleteStereoCycleAtStop))))
+        issues.push("presentation_stretch_stop_incomplete");
+    if (owned && Array.isArray(acceptance?.gates)) {
+        const expectedReasons = acceptance.gates.filter(gate => gate.passed === false &&
+            !(currentStretch && gate.name === "presentation_stretch_frame_bound")).map(gate => gate.name);
+        if (acceptance.accepted !== (expectedReasons.length === 0) ||
+            acceptance.verdict !== (acceptance.accepted ? "pass" : "fail") ||
+            JSON.stringify(acceptance.failureReasons) !== JSON.stringify(expectedReasons))
+            issues.push("stress_acceptance_gate_mismatch");
+    }
     for (const row of rows) {
         const metric = owned ? metricFor(row, record, issues) : null;
         row.switchHealth.ownedMetric = metric;
@@ -163,7 +255,7 @@ function passHealth(root, rows, buildId) {
         terminalRender: row.renderVerdict, terminalRecovered: row.switchHealth.terminalRecovered,
         counters: row.switchHealth.counters, receipt: row.rawRetained }));
     const failedGates = (acceptance?.gates?.filter(gate => gate.passed === false) ?? [])
-        .map(gate => gateAssessment(gate, rows.at(-1)));
+        .map(gate => gateAssessment(gate, rows.at(-1), record));
     const applicableFailedGates = failedGates.filter(gate => gate.assessmentRole === "HEALTH");
     if (acceptance?.accepted === false && !failedGates.length) issues.push("unexplained_cumulative_rejection");
     const notMet = findings.length > 0 || applicableFailedGates.length > 0 ||

@@ -61,11 +61,14 @@ foreach ($required in @(
 foreach ($required in @(
     '`prepare_coc` exactly once as the first stateful call',
     'Before the unmeasured positioning COC',
-    'Do not query the profiler service or',
+    'Dispatch positioning immediately',
+    'do not repeat successful verification',
+    'invalid-request or stop-on-error probe',
     'After exact-cell positioning',
     'complete measurement',
-    'reset each supported lane once in serialized order',
-    'Only independent read-only calls may run concurrently',
+    'one synchronous, fail-closed DevBench',
+    'synchronous, fail-closed scenario',
+    'read-only calls may run concurrently',
     'transition 1''s atomic dispatch remains their sole timing origin',
     '`persisted: false`',
     'developer/debug logging',
@@ -73,6 +76,7 @@ foreach ($required in @(
     'exclusive owner of DLSS and upscaling',
     'transition-filtered preparation events',
     'prepared-to-creator',
+    'immutable numbered ledgers',
     'separate explicit command `frozen Ghidra`'
 )) {
     if (-not $skill.Contains($required, [StringComparison]::Ordinal)) {
@@ -84,10 +88,14 @@ foreach ($required in @(
     '"action":"prepare_coc"',
     'as the first',
     'Only independent read-only calls may run concurrently',
-    'stateful reset calls one at a time',
-    'each exposed trace, lifetime, and probe capture, then pre-arm',
-    'measurement-admission CPU/GPU reset',
-    'short ownership sequence',
+    'one synchronous `scenario`',
+    'stepsRun` equal to the submitted step count',
+    '`dlss_trace_reset`',
+    '`dlss_trace_start`',
+    'partial transcript',
+    'start-frame guard',
+    'foreign-owned active lane stops setup',
+    'reset receipts to show CPU and GPU',
     'do not issue another CPU/GPU reset',
     'never fan out `start`, `reset`, or `set_enabled` calls',
     'run another discovery or reset cycle',
@@ -105,8 +113,9 @@ foreach ($required in @(
     'Do not repeat the positioning COC',
     'capture.requiresEnabled: true',
     '`contractMajor: 1`',
-    'but omits only the required `frameCount`',
-    '`invalid_field`',
+    'Reuse an already successful identity binding',
+    'immediately dispatch the positioning COC',
+    'Do not run a deliberate invalid-request or stop-on-error probe',
     'stop before the',
     '`set_enabled`',
     '`enabled: true`',
@@ -127,13 +136,21 @@ foreach ($required in @(
     'scripts/Start-FrozenGhidra.ps1',
     'cryptographic producer identity',
     'programMatchesExpectation: true',
-    'with `-pvr`'
+    'with `-pvr`',
+    'Do not invent a PR number',
+    'vr-render-scale-ledger-0001-history.csv',
+    'State explicitly when no canonical ledger was updated.'
 )) {
     if (-not $protocol.Contains($required, [StringComparison]::Ordinal)) {
         throw "Simple COC protocol is missing: $required"
     }
 }
 foreach ($forbidden in @(
+    'stateful reset calls one at a time',
+    'Require and preserve each receipt before the next stateful action',
+    'but omits only the required `frameCount`',
+    'After the negative proof passes',
+    'preflight negative probe proved',
     'bounded setup fan-out',
     'reset CPU/GPU telemetry',
     'refresh the live schema inventory exactly once',
@@ -194,6 +211,37 @@ $measurementAdmissionPosition = $protocol.IndexOf(
 )
 if ($measurementAdmissionPosition -le $positioningPosition) {
     throw 'Simple COC measurement admission must follow positioning.'
+}
+
+$resetBatchPosition = $protocol.IndexOf(
+    'After discovery, construct one synchronous `scenario`',
+    [StringComparison]::Ordinal
+)
+$armBatchPosition = $protocol.IndexOf(
+    'After validating the reset transcript, construct one synchronous `scenario`',
+    [StringComparison]::Ordinal
+)
+$measuredPosition = $protocol.IndexOf(
+    '## 4. Run the measured scenario',
+    [StringComparison]::Ordinal
+)
+if ($resetBatchPosition -le $measurementAdmissionPosition -or
+    $armBatchPosition -le $resetBatchPosition -or
+    $measuredPosition -le $armBatchPosition) {
+    throw 'Simple COC setup batches are not ordered before measured dispatch.'
+}
+foreach ($batch in @(
+    @{ name = 'reset'; text = $protocol.Substring($resetBatchPosition, $armBatchPosition - $resetBatchPosition); actions = @('`reset`', '`cpu_performance_reset`', '`gpu_performance_reset`', '`dlss_trace_reset`', '`texture_lifetime_reset`', '`probe_reset`') },
+    @{ name = 'arm'; text = $protocol.Substring($armBatchPosition, $measuredPosition - $armBatchPosition); actions = @('render-scale `start`', '`dlss_trace_start`', '`texture_lifetime_start`', '`probe_start`', '`set_enabled`') }
+)) {
+    $prior = -1
+    foreach ($action in $batch.actions) {
+        $position = $batch.text.IndexOf($action, [StringComparison]::Ordinal)
+        if ($position -le $prior) {
+            throw "Simple COC $($batch.name) batch omits or reorders $action."
+        }
+        $prior = $position
+    }
 }
 
 [pscustomobject][ordered]@{
