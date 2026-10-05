@@ -2,6 +2,24 @@
 
 Set-StrictMode -Version Latest
 
+function ConvertTo-DevBenchUtcTimestamp {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Value)
+
+    # JSON readers may materialize dates; preserve every tick before comparing identity.
+    if ($Value -is [DateTimeOffset]) { return $Value.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [DateTime]) {
+        if ($Value.Kind -eq [DateTimeKind]::Unspecified) { throw 'Runtime identity timestamp requires an explicit time zone.' }
+        return $Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if ($Value -isnot [string] -or $Value -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$' -or
+        -not [DateTimeOffset]::TryParse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+        throw 'Runtime identity timestamp must be an ISO 8601 date with an explicit time zone.'
+    }
+    return $parsed.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Get-DevBenchSemanticStatus {
     [CmdletBinding()]
     param([AllowEmptyCollection()][object[]]$Content)
@@ -163,8 +181,154 @@ function Test-DevBenchReadOnlyRequest {
     }
     if ($ToolName -eq 'menu') { return $action -eq 'list' }
     if ($ToolName -eq 'record') { return $action -eq 'status' }
-    if ($ToolName -eq 'input') { return $action -in @('observe', 'status') }
+    if ($ToolName -eq 'input') { return $action -in @('observe', 'status', 'capabilities') }
+    if ($ToolName -eq 'communityshaders.menu') { return $action -in @('status', 'depth_culling_snapshot') }
+    if ($ToolName -eq 'communityshaders.renderscale') { return $action -eq 'status' }
     return $false
+}
+
+function Get-DevBenchLegacyContractSemanticStatus {
+    param([string]$ToolName, [Collections.IDictionary]$Arguments, $Payload, $Semantic)
+
+    function Test-UnsignedInteger($Value) {
+        return ($Value -is [int] -or $Value -is [long] -or $Value -is [uint32] -or $Value -is [uint64]) -and $Value -ge 0
+    }
+    function Test-BooleanEquals($Observed, $Expected) {
+        return $Observed -is [bool] -and $Expected -is [bool] -and $Observed -eq $Expected
+    }
+    $action = if ($Arguments.Contains('action')) { [string]$Arguments['action'] } else { '' }
+    $menuActions = @('status', 'depth_culling_snapshot', 'set_depth_culling_method', 'set_depth_culling_legacy_mode', 'set_depth_culling_settings', 'set_depth_culling_telemetry_enabled', 'reset_depth_culling_telemetry')
+    $recognized = ($ToolName -eq 'input' -and $action -eq 'capabilities') -or
+        ($ToolName -eq 'record' -and $action -eq 'stop') -or
+        ($ToolName -eq 'communityshaders.menu' -and $action -in $menuActions) -or
+        ($ToolName -eq 'communityshaders.renderscale' -and $action -eq 'status')
+    if (-not $recognized -or -not $Semantic.ok) { return $null }
+    $errorValue = Get-DevBenchTelemetryMember $Payload 'error'
+    if ($null -ne $errorValue) {
+        $Semantic.known = $true
+        $Semantic.ok = $false
+        $Semantic.outcome = 'legacy-contract-failed'
+        $Semantic.reasons = @("content.error is '$errorValue'")
+        return $Semantic
+    }
+
+    $satisfied = $false
+    if ($ToolName -eq 'input') {
+        $contract = Get-DevBenchTelemetryMember $Payload 'contract'
+        $version = Get-DevBenchTelemetryMember $contract 'version'
+        $capabilities = Get-DevBenchTelemetryMember $Payload 'capabilities'
+        $keyboard = Get-DevBenchTelemetryMember $capabilities 'keyboard'
+        $trackedSet = Get-DevBenchTelemetryMember $capabilities 'vrTrackedSet'
+        $satisfied = (Get-DevBenchTelemetryMember $contract 'name') -ceq 'devbench.input' -and
+            (Test-UnsignedInteger (Get-DevBenchTelemetryMember $version 'major')) -and
+            (Get-DevBenchTelemetryMember $version 'major') -eq 2 -and
+            (Get-DevBenchTelemetryMember $keyboard 'available') -is [bool] -and
+            (Get-DevBenchTelemetryMember $trackedSet 'available') -is [bool] -and
+            @((Get-DevBenchTelemetryMember $keyboard 'actions')) -contains 'status' -and
+            @((Get-DevBenchTelemetryMember $trackedSet 'actions')) -contains 'observe'
+    }
+    elseif ($ToolName -eq 'record') {
+        $meta = Get-DevBenchTelemetryMember $Payload 'meta'
+        $path = Get-DevBenchTelemetryMember $Payload 'path'
+        $satisfied = (Get-DevBenchTelemetryMember $Payload 'action') -ceq 'stop' -and
+            $path -is [string] -and -not [string]::IsNullOrWhiteSpace($path) -and
+            [IO.Path]::GetExtension($path) -eq '.json' -and
+            (Get-DevBenchTelemetryMember $meta 'format') -ceq 'devbench-recording-3' -and
+            $Arguments.Contains('expectedCorrelationId') -and
+            -not [string]::IsNullOrWhiteSpace([string]$Arguments['expectedCorrelationId']) -and
+            (Get-DevBenchTelemetryMember $meta 'correlationId') -ceq $Arguments['expectedCorrelationId']
+        foreach ($field in @('sampleCount', 'trackingSampleCount', 'recordedMs')) {
+            $observed = Get-DevBenchTelemetryMember $Payload $field
+            $satisfied = $satisfied -and (Test-UnsignedInteger $observed) -and
+                (Test-UnsignedInteger (Get-DevBenchTelemetryMember $meta $field)) -and
+                $observed -eq (Get-DevBenchTelemetryMember $meta $field)
+        }
+        $satisfied = $satisfied -and (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'limitReached') (Get-DevBenchTelemetryMember $meta 'limitReached'))
+    }
+    else {
+        $producer = Get-DevBenchTelemetryMember $Payload 'producer'
+        $status = Get-DevBenchTelemetryMember $Payload 'status'
+        $satisfied = (Get-DevBenchTelemetryMember $Payload 'action') -ceq $action -and
+            (Get-DevBenchTelemetryMember $producer 'component') -ceq 'CommunityShaders' -and
+            (Get-DevBenchTelemetryMember $producer 'buildId') -cmatch '^[0-9a-fA-F]{64}$'
+        if ($Arguments.Contains('expectedBuildId')) {
+            $satisfied = $satisfied -and (Get-DevBenchTelemetryMember $producer 'buildId') -ceq $Arguments['expectedBuildId']
+        }
+        if ($ToolName -eq 'communityshaders.renderscale') {
+            $satisfied = $satisfied -and (Test-UnsignedInteger (Get-DevBenchTelemetryMember $status 'frame')) -and
+                (Get-DevBenchTelemetryMember $status 'modeStatus') -is [string] -and
+                $null -ne (Get-DevBenchTelemetryMember $status 'controller')
+        }
+        elseif ($action -eq 'depth_culling_snapshot') {
+            $depth = Get-DevBenchTelemetryMember $Payload 'depthCullingTemporal'
+            $satisfied = $satisfied -and (Test-UnsignedInteger (Get-DevBenchTelemetryMember $Payload 'frame')) -and
+                (Get-DevBenchTelemetryMember $depth 'cullingEnabled') -is [bool] -and
+                (Get-DevBenchTelemetryMember $depth 'policy') -in @('balanced', 'legacy', 'hybrid') -and
+                (Test-UnsignedInteger (Get-DevBenchTelemetryMember $depth 'cullingEpoch'))
+        }
+        else {
+            $satisfied = $satisfied -and (Get-DevBenchTelemetryMember $status 'menuEnabled') -is [bool] -and
+                (Get-DevBenchTelemetryMember $status 'menuSessionOpen') -is [bool]
+            $depth = Get-DevBenchTelemetryMember $status 'depthCullingTemporal'
+            switch ($action) {
+                'set_depth_culling_method' {
+                    $method = $Arguments['method']
+                    $satisfied = $satisfied -and $method -in @('balanced', 'legacy', 'hybrid') -and
+                        (Get-DevBenchTelemetryMember $Payload 'method') -ceq $method -and
+                        (Get-DevBenchTelemetryMember $status 'depthCullingConfiguredPolicy') -ceq $method -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'persisted') $false)
+                }
+                'set_depth_culling_legacy_mode' {
+                    $enabled = $Arguments['enabled']
+                    $method = if ($enabled) { 'legacy' } else { 'balanced' }
+                    $satisfied = $satisfied -and $enabled -is [bool] -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'enabled') $enabled) -and
+                        (Get-DevBenchTelemetryMember $Payload 'method') -ceq $method -and
+                        (Get-DevBenchTelemetryMember $status 'depthCullingConfiguredPolicy') -ceq $method -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $status 'depthCullingLegacyMode') $enabled) -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'persisted') $false)
+                }
+                'set_depth_culling_telemetry_enabled' {
+                    $enabled = $Arguments['enabled']
+                    $satisfied = $satisfied -and $enabled -is [bool] -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'enabled') $enabled) -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $depth 'telemetryEnabled') $enabled)
+                }
+                'reset_depth_culling_telemetry' {
+                    $window = Get-DevBenchTelemetryMember $depth 'measurementWindow'
+                    $satisfied = $satisfied -and (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'reset') $true) -and
+                        (Test-UnsignedInteger (Get-DevBenchTelemetryMember $window 'id')) -and
+                        (Get-DevBenchTelemetryMember $window 'id') -gt 0 -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $window 'current') $true)
+                }
+                'set_depth_culling_settings' {
+                    $update = $Arguments['depthCulling']
+                    $fields = @{ exteriorEnabled = 'depthCullingExteriorEnabled'; interiorEnabled = 'depthCullingInteriorEnabled'; exteriorMinExtent = 'depthCullingExteriorMinExtent'; interiorMinExtent = 'depthCullingInteriorMinExtent' }
+                    $satisfied = $satisfied -and $update -is [Collections.IDictionary] -and $update.Count -gt 0 -and
+                        (Test-BooleanEquals (Get-DevBenchTelemetryMember $Payload 'persisted') $false)
+                    if ($update -is [Collections.IDictionary]) {
+                        foreach ($name in $update.Keys) {
+                            if (-not $fields.ContainsKey($name)) { $satisfied = $false; continue }
+                            $observed = Get-DevBenchTelemetryMember $status $fields[$name]
+                            if ($name.EndsWith('Enabled')) {
+                                $satisfied = $satisfied -and (Test-BooleanEquals $observed $update[$name])
+                            }
+                            else {
+                                $satisfied = $satisfied -and $update[$name] -is [ValueType] -and $update[$name] -isnot [bool] -and
+                                    $observed -is [ValueType] -and $observed -isnot [bool] -and
+                                    $update[$name] -ge 0 -and $update[$name] -le 1000 -and
+                                    [single]$observed -eq [single]$update[$name]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    $Semantic.known = [bool]$satisfied
+    $Semantic.outcome = if ($satisfied) { 'legacy-contract-satisfied' } else { 'unverified' }
+    if ($satisfied) { $Semantic.explicitOutcomeEvidence = @($Semantic.explicitOutcomeEvidence) + "tool:$ToolName/action:$action" }
+    return $Semantic
 }
 
 function Get-DevBenchCallSemanticStatus {
@@ -176,12 +340,15 @@ function Get-DevBenchCallSemanticStatus {
     )
 
     $semantic = Get-DevBenchSemanticStatus -Content $Content
-    if ($semantic.known) { return $semantic }
+    if ($semantic.known -and -not $semantic.ok) { return $semantic }
     $payloads = @($Content)
     if ($payloads.Count -ne 1 -or $null -eq $payloads[0] -or $payloads[0] -is [string] -or $payloads[0] -is [ValueType]) {
         return $semantic
     }
     $payload = $payloads[0]
+    $legacySemantic = Get-DevBenchLegacyContractSemanticStatus -ToolName $ToolName -Arguments $Arguments -Payload $payload -Semantic $semantic
+    if ($null -ne $legacySemantic) { return $legacySemantic }
+    if ($semantic.known) { return $semantic }
 
     if ($ToolName -eq 'record' -and $Arguments.Contains('action') -and [string]$Arguments['action'] -eq 'start') {
         $actionProperty = $payload.PSObject.Properties['action']
@@ -1195,4 +1362,4 @@ function Test-DevBenchPerformanceWindow {
     }
 }
 
-Export-ModuleMember -Function Get-DevBenchSemanticStatus, Get-DevBenchCallSemanticStatus, Test-DevBenchReadOnlyRequest, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfileShape, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow
+Export-ModuleMember -Function ConvertTo-DevBenchUtcTimestamp, Get-DevBenchSemanticStatus, Get-DevBenchCallSemanticStatus, Test-DevBenchReadOnlyRequest, Get-DevBenchServiceState, Test-DevBenchServiceReady, Test-DevBenchNoBlockingMenu, Test-DevBenchMainMenuReady, Get-DevBenchMenuDismissalPlan, Get-DevBenchNamedValue, Get-DevBenchResourcePublicationTelemetry, Get-DevBenchRenderScalePreparationTelemetry, Test-DevBenchUpscalingProfileShape, Test-DevBenchUpscalingProfilesEqual, Test-DevBenchUpscalingStable, Get-DevBenchRuntimeExpectations, Resolve-DevBenchServiceProbeArguments, Test-DevBenchPerformanceNeutral, Test-DevBenchPerformanceWindow

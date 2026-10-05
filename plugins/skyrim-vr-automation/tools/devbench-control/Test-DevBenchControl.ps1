@@ -10,6 +10,24 @@ $passes = [Collections.Generic.List[string]]::new()
 $failures = [Collections.Generic.List[string]]::new()
 function Assert-Test([bool]$Condition, [string]$Message) { if ($Condition) { $passes.Add($Message) } else { $failures.Add($Message) } }
 
+$identityTimestamp = '2026-10-03T20:08:36.7654641Z'
+$parsedIdentity = ('{"processStartTimeUtc":"' + $identityTimestamp + '"}') | ConvertFrom-Json
+Assert-Test ((ConvertTo-DevBenchUtcTimestamp $parsedIdentity.processStartTimeUtc) -ceq $identityTimestamp) 'JSON-materialized process timestamps preserve all seven fractional digits'
+Assert-Test ((ConvertTo-DevBenchUtcTimestamp '2026-10-03T21:08:36.7654641+01:00') -ceq $identityTimestamp) 'equivalent explicit offsets identify the same process-start instant'
+Assert-Test ((ConvertTo-DevBenchUtcTimestamp ([DateTimeOffset]::Parse($identityTimestamp))) -ceq $identityTimestamp) 'DateTimeOffset identity retains exact UTC ticks'
+Assert-Test ((ConvertTo-DevBenchUtcTimestamp '2026-10-03T20:08:36.7654642Z') -cne (ConvertTo-DevBenchUtcTimestamp $parsedIdentity.processStartTimeUtc)) 'one-tick process-start drift remains an identity mismatch'
+$originalCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+try {
+    [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('de-DE')
+    Assert-Test ((ConvertTo-DevBenchUtcTimestamp $parsedIdentity.processStartTimeUtc) -ceq $identityTimestamp) 'identity normalization is independent of current culture'
+}
+finally { [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture }
+foreach ($invalidTimestamp in @('2026-10-03T20:08:36', '10/03/2026 20:08:36', 'not-a-date', [DateTime]::SpecifyKind([DateTime]::UtcNow, [DateTimeKind]::Unspecified))) {
+    $rejected = $false
+    try { $null = ConvertTo-DevBenchUtcTimestamp $invalidTimestamp } catch { $rejected = $true }
+    Assert-Test $rejected 'ambiguous or invalid identity timestamps fail closed'
+}
+
 $success = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'success'; value = 0 } })
 Assert-Test ($success.known -and $success.ok) 'semantic status recognizes a successful API payload'
 $conflict = Get-DevBenchSemanticStatus -Content @([pscustomobject]@{ status = [pscustomobject]@{ name = 'idempotency_conflict'; value = 12 } })
@@ -59,10 +77,109 @@ $recordSemantic = Get-DevBenchCallSemanticStatus -ToolName record -Arguments @{ 
 Assert-Test ($recordSemantic.known -and $recordSemantic.ok -and $recordSemantic.outcome -eq 'record-start-contract-satisfied') 'record start validates the running receipt and correlation identity'
 $recordMismatch = Get-DevBenchCallSemanticStatus -ToolName record -Arguments @{ action = 'start'; correlationId = 'capture-1' } -Content @([pscustomobject]@{ action = 'start'; recording = $true; correlationId = 'other' })
 Assert-Test ($recordMismatch.known -and -not $recordMismatch.ok) 'record start rejects a mismatched correlation identity'
+$recordStop = '{"action":"stop","path":"recording.json","sampleCount":2,"trackingSampleCount":2,"recordedMs":100,"limitReached":false,"meta":{"format":"devbench-recording-3","correlationId":"capture-1","sampleCount":2,"trackingSampleCount":2,"recordedMs":100,"limitReached":false}}' | ConvertFrom-Json
+$recordStopSemantic = Get-DevBenchCallSemanticStatus record @{ action = 'stop'; expectedCorrelationId = 'capture-1' } @($recordStop)
+Assert-Test ($recordStopSemantic.known -and $recordStopSemantic.ok) 'record stop accepts a persisted receipt correlated to its guarded recording'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus record @{ action = 'stop'; expectedCorrelationId = 'other' } @($recordStop)).known) 'record stop rejects a receipt for another recording'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus record @{ action = 'stop' } @($recordStop)).known) 'record stop without an ownership guard cannot establish verified cleanup'
+$recordStop.path = ''
+Assert-Test (-not (Get-DevBenchCallSemanticStatus record @{ action = 'stop'; expectedCorrelationId = 'capture-1' } @($recordStop)).known) 'record stop requires a persisted recording path'
+$recordStop.path = 'recording.json'
+$recordStop.meta.sampleCount = 3
+Assert-Test (-not (Get-DevBenchCallSemanticStatus record @{ action = 'stop'; expectedCorrelationId = 'capture-1' } @($recordStop)).known) 'record stop rejects contradictory receipt metadata'
+$recordStop.meta.sampleCount = 2
+$recordStop.limitReached = $true
+$recordStop.meta.limitReached = $true
+Assert-Test ((Get-DevBenchCallSemanticStatus record @{ action = 'stop'; expectedCorrelationId = 'capture-1' } @($recordStop)).known) 'record stop preserves a successfully persisted limited recording for caller classification'
+$recordStop | Add-Member error 'recording ownership changed'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus record @{ action = 'stop'; expectedCorrelationId = 'capture-1' } @($recordStop)).ok) 'record stop never promotes an explicit persistence or ownership error'
 $readFailure = Get-DevBenchCallSemanticStatus -ToolName inspect -Arguments @{ kind = 'state' } -Content @([pscustomobject]@{ error = 'main thread busy' })
 Assert-Test ($readFailure.known -and -not $readFailure.ok -and $readFailure.outcome -eq 'read-contract-failed') 'read-only adapters never promote a structured error to success'
 $incompleteMenu = Get-DevBenchCallSemanticStatus -ToolName menu -Arguments @{ action = 'list' } -Content @([pscustomobject]@{ openMenus = @() })
 Assert-Test (-not $incompleteMenu.known) 'read-only adapters require the tool-specific response shape'
+
+$inputCapabilities = '{"contract":{"name":"devbench.input","version":{"major":2,"minor":0}},"capabilities":{"keyboard":{"available":true,"actions":["status","tap"]},"vrTrackedSet":{"available":false,"actions":["status","observe"]}}}' | ConvertFrom-Json
+$capabilitiesSemantic = Get-DevBenchCallSemanticStatus input @{ action = 'capabilities' } @($inputCapabilities)
+Assert-Test ($capabilitiesSemantic.known -and $capabilitiesSemantic.ok) 'input capabilities read succeeds even when a reported device is unavailable'
+Assert-Test (Test-DevBenchReadOnlyRequest input @{ action = 'capabilities' }) 'input capabilities is a narrowly allowlisted read'
+$inputCapabilities.contract.version.major = 3
+Assert-Test (-not (Get-DevBenchCallSemanticStatus input @{ action = 'capabilities' } @($inputCapabilities)).known) 'unknown input capability contract versions remain unverified'
+$inputCapabilities.contract.version.major = 2
+$inputCapabilities.capabilities.vrTrackedSet.actions = @('status')
+Assert-Test (-not (Get-DevBenchCallSemanticStatus input @{ action = 'capabilities' } @($inputCapabilities)).known) 'input capability response requires the tracked observation schema'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus input @{ action = 'sequence' } @($inputCapabilities)).known) 'capability payload cannot acknowledge an input mutation'
+
+function New-TestMenuContract([string]$Action) {
+    return [pscustomobject]@{
+        action = $Action; producer = [pscustomobject]@{ component = 'CommunityShaders'; buildId = ('a' * 64) }
+        status = [pscustomobject]@{
+            menuEnabled = $false; menuSessionOpen = $false; depthCullingConfiguredPolicy = 'hybrid'
+            depthCullingExteriorEnabled = $true; depthCullingInteriorMinExtent = [double][single]0.1
+            depthCullingTemporal = [pscustomobject]@{
+                telemetryEnabled = $false; cullingEnabled = $true; policy = 'hybrid'; cullingEpoch = 2
+                measurementWindow = [pscustomobject]@{ id = 1; current = $true }
+                hybrid = [pscustomobject]@{ state = 'inactive' }
+            }
+        }
+    }
+}
+$menuContract = New-TestMenuContract status
+$menuSemantic = Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'status' } @($menuContract)
+Assert-Test ($menuSemantic.known -and $menuSemantic.ok -and $menuSemantic.states -contains 'inactive') 'menu status classifies the read without treating nested inactive diagnostics as an operation failure'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'open' } @($menuContract)).known) 'menu status cannot acknowledge an unhandled mutation'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'status'; expectedBuildId = ('b' * 64) } @($menuContract)).known) 'legacy read adapter does not accept a different expected producer'
+Assert-Test (-not (Test-DevBenchReadOnlyRequest communityshaders.menu @{ action = 'set_depth_culling_method' })) 'depth setters retain complete mutation identity requirements'
+$menuContract | Add-Member error 'main thread busy'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'status' } @($menuContract)).ok) 'menu read errors reject an otherwise matching payload'
+$snapshot = New-TestMenuContract depth_culling_snapshot
+$snapshot | Add-Member depthCullingTemporal $snapshot.status.depthCullingTemporal
+$snapshot | Add-Member frame 42
+$snapshot.PSObject.Properties.Remove('status')
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'depth_culling_snapshot' } @($snapshot)).known) 'narrow depth snapshot accepts its frame and depth diagnostics without a menu status'
+$snapshot.frame = $false
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'depth_culling_snapshot' } @($snapshot)).known) 'depth snapshot rejects a boolean frame'
+
+$methodReceipt = New-TestMenuContract set_depth_culling_method
+$methodReceipt | Add-Member method hybrid
+$methodReceipt | Add-Member persisted $false
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_method'; method = 'hybrid' } @($methodReceipt)).known) 'depth method setter verifies requested method and observed configured policy'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_method'; method = 'legacy' } @($methodReceipt)).known) 'depth method setter rejects a mismatched observed policy'
+$methodReceipt.persisted = 0
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_method'; method = 'hybrid' } @($methodReceipt)).known) 'depth method setter requires a boolean persistence acknowledgement'
+$legacyReceipt = New-TestMenuContract set_depth_culling_legacy_mode
+$legacyReceipt | Add-Member enabled $true
+$legacyReceipt | Add-Member method legacy
+$legacyReceipt | Add-Member persisted $false
+$legacyReceipt.status.depthCullingConfiguredPolicy = 'legacy'
+$legacyReceipt.status | Add-Member depthCullingLegacyMode $true
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_legacy_mode'; enabled = $true } @($legacyReceipt)).known) 'legacy depth setter verifies requested flag and observed configured policy'
+$legacyReceipt.status.depthCullingLegacyMode = $false
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_legacy_mode'; enabled = $true } @($legacyReceipt)).known) 'legacy depth setter rejects contradictory observed mode'
+$telemetryReceipt = New-TestMenuContract set_depth_culling_telemetry_enabled
+$telemetryReceipt | Add-Member enabled $false
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_telemetry_enabled'; enabled = $false } @($telemetryReceipt)).known) 'telemetry disable verifies false as a real requested and observed value'
+$telemetryReceipt.status.depthCullingTemporal.telemetryEnabled = $true
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_telemetry_enabled'; enabled = $false } @($telemetryReceipt)).known) 'telemetry setter rejects contradictory observed state'
+$resetReceipt = New-TestMenuContract reset_depth_culling_telemetry
+$resetReceipt | Add-Member reset $true
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'reset_depth_culling_telemetry' } @($resetReceipt)).known) 'telemetry reset requires its current explicit measurement window'
+$resetReceipt.status.depthCullingTemporal.measurementWindow.current = $false
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'reset_depth_culling_telemetry' } @($resetReceipt)).known) 'telemetry reset rejects an obsolete measurement window'
+$busyReset = [pscustomobject]@{ error = 'busy'; errorCode = 'depth_culling_telemetry_busy'; retrySafe = $true }
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'reset_depth_culling_telemetry' } @($busyReset)).ok) 'busy telemetry reset remains a rejected operation'
+$settingsReceipt = New-TestMenuContract set_depth_culling_settings
+$settingsReceipt | Add-Member persisted $false
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_settings'; depthCulling = @{ exteriorEnabled = $true; interiorMinExtent = 0.1 } } @($settingsReceipt)).known) 'depth settings verify requested fields with native float precision'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_settings'; depthCulling = @{ exteriorEnabled = $false } } @($settingsReceipt)).known) 'depth settings reject a mismatched observed setting'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'set_depth_culling_settings'; depthCulling = @{ unexpected = 1 } } @($settingsReceipt)).known) 'depth settings do not acknowledge unknown fields'
+$renderScaleReceipt = [pscustomobject]@{ action = 'status'; producer = $settingsReceipt.producer; status = [pscustomobject]@{ frame = 42; modeStatus = 'Disabled'; controller = [pscustomobject]@{ state = 'inactive' } } }
+Assert-Test ((Get-DevBenchCallSemanticStatus communityshaders.renderscale @{ action = 'status' } @($renderScaleReceipt)).known) 'render-scale status accepts disabled diagnostics as a successful read'
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.renderscale @{ action = 'start' } @($renderScaleReceipt)).known) 'render-scale status does not acknowledge a capture mutation'
+$renderScaleReceipt.status.PSObject.Properties.Remove('controller')
+Assert-Test (-not (Get-DevBenchCallSemanticStatus communityshaders.renderscale @{ action = 'status' } @($renderScaleReceipt)).known) 'incomplete render-scale status remains unverified'
+$guardReceipt = [pscustomobject]@{ error = [pscustomobject]@{ code = 'producer_mismatch' } }
+$guardSemantic = Get-DevBenchCallSemanticStatus communityshaders.menu @{ action = 'status' } @($guardReceipt)
+Assert-Test ($guardSemantic.known -and -not $guardSemantic.ok -and $guardSemantic.guarded) 'legacy adapters preserve generic guarded rejection'
 
 $ready = Test-DevBenchServiceReady -Content @([pscustomobject]@{ ok = $true; result = [pscustomobject]@{ state = 'ready' } })
 Assert-Test ($ready.ready -and -not $ready.retryable -and $ready.statePath -eq 'content.result.state') 'service readiness prefers result.state'
