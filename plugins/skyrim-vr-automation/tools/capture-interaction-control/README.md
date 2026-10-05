@@ -39,6 +39,26 @@ submit to an image-capable model. It is deliberately the newest completed
 artifact, not the oldest unprocessed member of a backlog. Stereo artifacts and
 the CSX frame manifest remain intact for evidence.
 
+Frame submission automatically stays within a 4 MiB binary file budget.
+The controller verifies the original PNG's size, SHA-256, dimensions and HMD
+acquisition before selecting it. A PNG within the budget is used unchanged.
+Larger images receive a full-resolution JPEG in the session's `viewing`
+directory, trying qualities 95, 90, 85, 80, 70, 60, 50, 40, 30, 20 and 10 in
+that order until one fits. No resizing, retouching or color-management
+transform is performed; JPEG is lossy and omits alpha. If none fits, the
+observation reports a clear error and preserves the original evidence.
+
+`frameSubmission.original` links the exact PNG, hash, dimensions and HMD
+acquisition. `frameSubmission.viewing` identifies the view-only derivative,
+quality and attempted encodings; the submission also records its own hash,
+size and MIME type. Pixel comparisons must use the original PNG. The source
+stays open read-only during conversion, paths must stay inside their owned
+directories without reparse points, and existing derivatives are reused only
+when their bytes match the deterministic encoding. Conflicts fail without
+overwriting. Decoding is bounded to 128 MiB source files, 16384 pixels per
+axis and 64 megapixels. These are viewing limits, not capture resolution
+changes or a replacement for the stereo evidence contract.
+
 Named actions are declared in `actions.v1.json`. Controller actions first use
 the read-only DevBench tracked-set observation, preserve all three current
 poses, neutralize stale input state, and then compile a bounded atomic sequence.
@@ -90,10 +110,63 @@ headroom in the 60,000-sample recording budget at the default 50 ms interval.
 Input activity shares a separate tracking/activity budget and can exhaust it
 earlier; retained limit diagnostics must be checked throughout a run.
 
+For consecutive native temporal evidence, opt into a bounded region atlas:
+
+```powershell
+pwsh -NoProfile -File .\Invoke-CaptureInteraction.ps1 start `
+  -SessionDirectory D:\CodexScratch\...\burst `
+  -RuntimePath D:\CSX-MO2-Sessions\...\devbench-runtime.json `
+  -VisualMode sequence -MaximumFrames 160 `
+  -BurstRegionsJson '[{"x":512,"y":650,"width":768,"height":512}]' `
+  -BurstMaximumBytes 536870912 -BurstStartDelayFrames 60
+```
+
+Choose coordinates from the actual native eye reference; the example is not
+a portable scene fixture. Regions use integer pixels relative to each oriented
+eye. One to eight equal-width regions stack vertically in array order, with
+the left eye atlas beside the right. The controller selects `side_by_side`
+automatically and requests native HMD SDR PNG with rejected source fallback.
+Explicit conflicting views are rejected. No crop resampling or resizing occurs.
+
+Burst admission requires an explicit 1–240 frame count and advertised native
+region-atlas/deferred-encoding support. The complete raw stereo payload is
+`width * sum(heights) * 8 * frameCount`, bounded by `BurstMaximumBytes`
+(1–536870912 bytes), with a 128 MiB per-frame ceiling. Regions and atlas axes
+are also bounded to native texture limits. The example consumes 503316480
+raw bytes. Driver padding and encoding scratch are additional memory; actual
+source bounds remain subject to native acquisition validation. All local
+parameter and capability checks occur before starting the recording.
+
+Bursts use `game_frames`, `intervalFrames=1` and optional
+`BurstStartDelayFrames` (0–216000, including the complete sequence span).
+They reject `FrameIntervalMs` and `FrameStartDelayMs`. Ordinary wall-clock
+sequences accept `FrameStartDelayMs` from 0 through 60000, included in their
+recording-budget check. All burst/delay options are restricted to `start`
+with `VisualMode sequence`. The tool never guesses FPS to convert delays.
+Burst acquisition duration depends on rendered frames and pauses: admission
+checks recording headroom for finalization, but does not promise a wall-clock
+duration. Continue checking recording limits, and correlate actual acquired
+frames with the owned motion receipts.
+
+`observe` reports `data.observation.screenshot.burst`; final `stop` retains
+`data.screenshot.burst`. `continuityVerified` requires a completed native
+request, matching complete continuity in the receipt and published final
+manifest, every requested frame ordinal, and committed native stereo PNG
+atlas metadata with the expected dimensions. An incomplete terminal burst
+makes observation/stop fail while retaining evidence and finalizing the owned
+recording. Explicit `abort` retains incomplete evidence without claiming
+continuity. A running/draining request is never reported as continuity-verified.
+This check does not hash every artifact (`artifactFilesVerified` remains
+false), assess image quality, or prove motion overlap. An assay must verify
+all original images and motion coverage before temporal qualification.
+`status` reads the saved session; use `observe` for fresh continuity evidence.
+
 Sequence receipts reference a partial or final manifest instead of inlining
 children. Observation reads that manifest only inside the owned frames directory
-and verifies its request identity. Image metadata comes from each committed
-artifact's `actual` object; source and acquired frame come from the child's
+and verifies its request identity. The declared sequence manifest artifact is
+packaging, not a candidate image. Child image paths resolve relative to the
+observed manifest directory and must stay inside it. Image metadata comes from
+each committed artifact's `actual` object; source and acquired frame come from the child's
 `actual.acquisition`. A scheduled frame is retained separately. Source or
 encoding mismatches suppress image submission and preserve the offending receipt.
 This observation pointer does not replace an assay's full stereo-pair,

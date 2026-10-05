@@ -42,10 +42,93 @@ try {
     ) }
     $partialLatest = Get-CaptureInteractionLatestFrame -Receipt $partialReceipt -PreferredView left_eye
     Assert-Test ($partialLatest.path -eq 'current-right.png') 'latest-frame selection never prefers an older eye over the newest committed frame'
+    $manifestPath = Join-Path $root 'frames/sequence.json'
+    $sequenceReceipt = [pscustomobject]@{
+        requestId='sequence'; kind='sequence'; state='completed'; actual=[pscustomobject]@{}
+        manifest=[pscustomobject]@{finalPath=$manifestPath;partialPath="$manifestPath.partial"}
+        observedManifest=[pscustomobject]@{path=$manifestPath}
+        artifacts=@([pscustomobject]@{path=$manifestPath;committed=$true})
+        children=$receipt.children
+    }
+    $sequenceLatest = Get-CaptureInteractionLatestFrame -Receipt $sequenceReceipt
+    Assert-Test ($sequenceLatest.path -eq (Join-Path $root 'frames/latest.png') -and $sequenceLatest.engineFrame -eq 25) 'sequence packaging manifests are not images and child image paths resolve against the observed manifest'
+    $sequenceReceipt.artifacts[0].path = Join-Path $root 'frames/unknown.json'
+    $rejectedPackaging = $false
+    try { $null = Get-CaptureInteractionLatestFrame -Receipt $sequenceReceipt } catch { $rejectedPackaging = $true }
+    Assert-Test $rejectedPackaging 'unrecognized committed sequence artifacts remain invalid'
+    $sequenceReceipt.artifacts[0].path = $manifestPath
+    $sequenceReceipt.children[1].artifacts[1].path = '../escaped.png'
+    $rejectedEscape = $false
+    try { $null = Get-CaptureInteractionLatestFrame -Receipt $sequenceReceipt } catch { $rejectedEscape = $true }
+    Assert-Test $rejectedEscape 'relative image paths cannot escape the observed manifest directory'
+    $sequenceReceipt.children[1].artifacts[1].path = 'latest.png'
     $acquisition.acquisition.sourceKind = 'desktop_mirror'
     $rejectedSource = $false
     try { $null = Get-CaptureInteractionLatestFrame -Receipt $receipt } catch { $rejectedSource = $true }
     Assert-Test $rejectedSource 'source mismatch cannot be presented as an HMD frame'
+
+    Add-Type -AssemblyName System.Drawing.Common
+    $viewSession = Join-Path $root 'viewing-fixture'
+    $viewFrames = Join-Path $viewSession 'frames'
+    New-Item -ItemType Directory -Path $viewFrames -Force | Out-Null
+    $viewOriginal = Join-Path $viewFrames 'noise.png'
+    $bitmap = [Drawing.Bitmap]::new(256, 256, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    try {
+        $locked = $bitmap.LockBits([Drawing.Rectangle]::new(0,0,256,256), [Drawing.Imaging.ImageLockMode]::WriteOnly, $bitmap.PixelFormat)
+        try {
+            $pixels = [byte[]]::new($locked.Stride * 256)
+            [Random]::new(7).NextBytes($pixels)
+            [Runtime.InteropServices.Marshal]::Copy($pixels, 0, $locked.Scan0, $pixels.Length)
+        }
+        finally { $bitmap.UnlockBits($locked) }
+        $bitmap.Save($viewOriginal, [Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally { $bitmap.Dispose() }
+    $originalHash = (Get-FileHash -LiteralPath $viewOriginal).Hash
+    $viewFrame = [pscustomobject]@{
+        path=$viewOriginal;view='left_eye';format='png';colourContract='sdr_srgb';width=256;height=256
+        bytes=(Get-Item -LiteralPath $viewOriginal).Length;sha256=$originalHash;committed=$true
+        ordinal=8;engineFrame=25;requestId='frame-8';acquisition=[pscustomobject]@{sourceKind='hmd_submission';engineFrame=25}
+    }
+    $originalSubmission = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-original'
+    Assert-Test ($originalSubmission.path -eq $viewOriginal -and $originalSubmission.mimeType -eq 'image/png' -and -not $originalSubmission.viewing.derivative -and $originalSubmission.original.sha256 -eq $originalHash) 'small verified PNGs are submitted losslessly with original provenance'
+    $viewSubmission = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-jpeg' -MaximumBytes 32768
+    Assert-Test ($viewSubmission.mimeType -eq 'image/jpeg' -and $viewSubmission.bytes -le 32768 -and $viewSubmission.viewing.derivative -and $viewSubmission.viewing.lossy -and $viewSubmission.viewing.jpegQuality -lt 95 -and $viewSubmission.viewing.attemptedQualities.Count -le 11) 'large viewing images use a bounded deterministic JPEG quality fallback'
+    $preview = [Drawing.Image]::FromFile($viewSubmission.path)
+    try { Assert-Test ($preview.Width -eq 256 -and $preview.Height -eq 256) 'viewing derivatives preserve full image dimensions' }
+    finally { $preview.Dispose() }
+    $previewWriteTime = (Get-Item -LiteralPath $viewSubmission.path).LastWriteTimeUtc
+    $repeatSubmission = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-repeat' -MaximumBytes 32768
+    Assert-Test ($repeatSubmission.path -eq $viewSubmission.path -and $repeatSubmission.sha256 -eq $viewSubmission.sha256 -and (Get-Item -LiteralPath $viewSubmission.path).LastWriteTimeUtc -eq $previewWriteTime) 'matching deterministic viewing artifacts are reused without rewriting'
+    Assert-Test ((Get-FileHash -LiteralPath $viewOriginal).Hash -eq $originalHash -and $viewSubmission.original.acquisition.sourceKind -eq 'hmd_submission' -and $viewSubmission.original.requestId -eq 'frame-8') 'viewing conversion preserves original bytes and HMD acquisition identity'
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-too-small' -MaximumBytes 1 } catch { $viewRejected = $_.Exception.Message -match 'No full-resolution viewing JPEG fits' }
+    Assert-Test $viewRejected 'an impossible byte budget fails explicitly without resizing the image'
+    $viewFrame.sha256 = ('0' * 64)
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-wrong-hash' } catch { $viewRejected = $_.Exception.Message -match 'SHA-256' }
+    Assert-Test $viewRejected 'viewing artifacts cannot be made from mismatched original bytes'
+    $viewFrame.sha256 = $originalHash
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession (Join-Path $viewSession 'different-frames') 'view-outside' } catch { $viewRejected = $_.Exception.Message -match 'escaped' }
+    Assert-Test $viewRejected 'viewing sources must remain inside the owned frames directory'
+    [IO.File]::WriteAllBytes($viewSubmission.path, [byte[]](1,2,3))
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-conflict' -MaximumBytes 32768 } catch { $viewRejected = $_.Exception.Message -match 'conflicts' }
+    Assert-Test ($viewRejected -and (Get-Item -LiteralPath $viewSubmission.path).Length -eq 3) 'conflicting existing derivatives fail without overwriting evidence'
+    $corruptOriginal = Join-Path $viewFrames 'corrupt.png'
+    [IO.File]::WriteAllBytes($corruptOriginal, [byte[]]::new(24))
+    $corruptFrame = $viewFrame | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $corruptFrame.path = $corruptOriginal
+    $corruptFrame.bytes = 24
+    $corruptFrame.sha256 = (Get-FileHash -LiteralPath $corruptOriginal).Hash
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $corruptFrame $viewSession $viewFrames 'view-corrupt' } catch { $viewRejected = $_.Exception.Message -match 'not a PNG' }
+    Assert-Test $viewRejected 'a matching file hash cannot make malformed bytes a viewing image'
+    $viewFrame.width = 257
+    $viewRejected = $false
+    try { $null = New-CaptureInteractionFrameSubmission $viewFrame $viewSession $viewFrames 'view-dimensions' } catch { $viewRejected = $_.Exception.Message -match 'dimensions differ' }
+    Assert-Test $viewRejected 'viewing submission requires the encoded dimensions to match the capture receipt'
 
     $saveRoot = Join-Path $root 'saves'
     New-Item -ItemType Directory -Path $saveRoot -Force | Out-Null
@@ -57,6 +140,21 @@ try {
     Assert-Test ($saveCandidates.Count -eq 1 -and $saveCandidates[0].name -eq 'Save3_Test_WhiterunWorld.ess') 'save boundary parsing and comparison remain UTC-safe in non-UTC local time'
 
     $fake = Join-Path $PSScriptRoot 'tests/Invoke-FakeCaptureDevBench.ps1'
+    $burstRegions = '[{"x":2,"y":3,"width":4,"height":6},{"x":8,"y":9,"width":4,"height":2}]'
+    $burstPlan = New-CaptureInteractionBurstPlan -RegionsJson $burstRegions -FrameCount 3 -MaximumBytes 768 -StartDelayFrames 60
+    Assert-Test ($burstPlan.rawPayloadBytes -eq 768 -and $burstPlan.atlasWidth -eq 8 -and $burstPlan.atlasHeight -eq 8 -and $burstPlan.startDelayFrames -eq 60) 'burst memory covers both native eyes and every frame with vertical region stacking'
+    $campaignPlan = New-CaptureInteractionBurstPlan -RegionsJson '[{"x":512,"y":650,"width":768,"height":512}]' -FrameCount 160
+    Assert-Test ($campaignPlan.rawPayloadBytes -eq 503316480) '160-frame native stereo campaign atlas fits the 512 MiB bound exactly as planned'
+    foreach ($invalidRegions in @('[]', '{}', '[{"x":0,"y":0,"width":4,"height":6,"extra":1}]', '[{"x":0,"y":0,"width":4.0,"height":6}]', '[{"x":false,"y":0,"width":4,"height":6}]', '[{"x":0,"y":0,"width":"4","height":6}]', '[{"x":16383,"y":0,"width":4,"height":6}]', '[{"x":0,"y":0,"width":4,"height":6},{"x":0,"y":0,"width":5,"height":6}]', '[{"x":0,"y":0,"width":4,"height":16384},{"x":0,"y":0,"width":4,"height":1}]')) {
+        $rejected = $false
+        try { $null = New-CaptureInteractionBurstPlan -RegionsJson $invalidRegions -FrameCount 3 } catch { $rejected = $true }
+        Assert-Test $rejected 'burst regions reject malformed shape, non-integers, unknown fields and incompatible bounds'
+    }
+    foreach ($invalidPlan in @(@{FrameCount=241}, @{FrameCount=3;MaximumBytes=767}, @{FrameCount=3;StartDelayFrames=216000})) {
+        $rejected = $false
+        try { $null = New-CaptureInteractionBurstPlan -RegionsJson $burstRegions @invalidPlan } catch { $rejected = $true }
+        Assert-Test $rejected 'burst plan rejects frame, payload and delay-span overflow'
+    }
     $runtime = Join-Path $root 'runtime.json'
     '{}' | Set-Content -LiteralPath $runtime -Encoding utf8
     $env:CAPTURE_INTERACTION_FAKE_ROOT = $root
@@ -67,6 +165,7 @@ try {
     Assert-Test ($started.ok -and $started.state -eq 'session-started' -and $started.data.screenshot.requestId -eq 'req-1') 'sequence session starts recording and screenshot capture under one session'
     $observed = & $entry observe -SessionDirectory $session -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact | ConvertFrom-Json -Depth 100
     Assert-Test ($observed.ok -and $observed.data.observation.latestFrame.ordinal -eq 4) 'observe composites runtime state and the latest committed frame'
+    Assert-Test ($observed.data.observation.frameSubmission.mimeType -eq 'image/png' -and $observed.data.observation.frameSubmission.original.sha256 -eq $observed.data.observation.latestFrame.sha256) 'observe automatically supplies a bounded viewing artifact with its original source hash'
     Assert-Test (Test-Path -LiteralPath $observed.data.observationPath -PathType Leaf) 'observe persists a latest-observation receipt'
     $env:CAPTURE_INTERACTION_SESSION_PATH = $started.data.statePath
     $acted = & $entry act -SessionDirectory $session -ActionName accept -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact | ConvertFrom-Json -Depth 100
@@ -81,6 +180,68 @@ try {
     $wrongIdentity = & $entry observe -SessionDirectory $session -ExpectedRuntimeIdentityJson '{"pid":456}' -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
     Assert-Test (-not $wrongIdentity.ok -and $wrongIdentity.errors[0] -match 'identity') 'a resumed command cannot replace the persisted runtime identity'
     Remove-Item Env:CAPTURE_INTERACTION_EXPECTED_IDENTITY
+
+    Remove-Item -LiteralPath (Join-Path $root 'fake-state.json')
+    $startCallsBefore = @(Get-Content -LiteralPath (Join-Path $root 'calls.log') | Where-Object { $_ -eq 'record/start' }).Count
+    foreach ($badOptions in @(
+        @{VisualMode='none';BurstRegionsJson=$burstRegions;MaximumFrames=3},
+        @{VisualMode='sequence';BurstMaximumBytes=768},
+        @{VisualMode='sequence';BurstStartDelayFrames=60},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions;MaximumFrames=3;FrameIntervalMs=50},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions;MaximumFrames=3;FrameStartDelayMs=2000},
+        @{VisualMode='sequence';BurstRegionsJson=$burstRegions;MaximumFrames=3;PreferredView='left_eye'},
+        @{VisualMode='none';FrameStartDelayMs=2000}
+    )) {
+        $rejectedStart = & $entry start -SessionDirectory (Join-Path $root 'invalid-burst') -RuntimePath $runtime -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit @badOptions | ConvertFrom-Json -Depth 100
+        Assert-Test (-not $rejectedStart.ok) 'incompatible burst and delay options are rejected before starting a recording'
+    }
+    $env:CAPTURE_INTERACTION_SCENARIO = 'no-burst'
+    $noBurst = & $entry start -SessionDirectory (Join-Path $root 'no-burst') -RuntimePath $runtime -VisualMode sequence -MaximumFrames 3 -BurstRegionsJson $burstRegions -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+    Assert-Test (-not $noBurst.ok -and $noBurst.errors[0] -match 'capability') 'burst admission requires the exact native runtime capability'
+    $startCallsAfter = @(Get-Content -LiteralPath (Join-Path $root 'calls.log') | Where-Object { $_ -eq 'record/start' }).Count
+    Assert-Test ($startCallsBefore -eq $startCallsAfter) 'invalid burst inputs and unsupported runtime leave recording unchanged'
+    Remove-Item Env:CAPTURE_INTERACTION_SCENARIO
+    foreach ($burstScenario in @('burst-complete','burst-gap')) {
+        Remove-Item -LiteralPath (Join-Path $root 'fake-state.json')
+        $env:CAPTURE_INTERACTION_SCENARIO = $burstScenario
+        $burstSession = Join-Path $root $burstScenario
+        $burstStarted = & $entry start -SessionDirectory $burstSession -RuntimePath $runtime -VisualMode sequence -MaximumFrames 3 -BurstRegionsJson $burstRegions -BurstMaximumBytes 768 -BurstStartDelayFrames 60 -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+        Assert-Test ($burstStarted.ok -and $burstStarted.data.preferredView -eq 'side_by_side') 'native burst admission automatically selects the stereo atlas view'
+        $burstCall = @(Get-Content -LiteralPath (Join-Path $root 'calls.ndjson') | ConvertFrom-Json -Depth 80 | Where-Object { $_.tool -eq 'communityshaders.screenshot' -and $_.arguments.action -eq 'sequence_start' })[-1].arguments.sequence
+        Assert-Test ($burstCall.burst.maximumBytes -eq 768 -and $burstCall.schedule.basis -eq 'game_frames' -and $burstCall.schedule.intervalFrames -eq 1 -and $burstCall.schedule.startDelayFrames -eq 60 -and -not $burstCall.PSObject.Properties['failurePolicy']) 'burst forwards the exact native schedule, budget and shared failure contract'
+        $burstObserved = & $entry observe -SessionDirectory $burstSession -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+        $expectedComplete = $burstScenario -eq 'burst-complete'
+        Assert-Test ($burstObserved.ok -eq $expectedComplete -and $burstObserved.data.observation.screenshot.burst.continuityVerified -eq $expectedComplete -and $burstObserved.data.observation.latestFrame.view -eq 'side_by_side') 'burst observation retains native atlas evidence and rejects a reported continuity gap'
+        if ($expectedComplete) {
+            $receipt = $burstObserved.data.observation.screenshot.receipt
+            $receipt.observedManifest.document.children[1].ordinal = 1
+            $duplicate = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $duplicate.continuityVerified) 'duplicate frame ordinals cannot prove complete burst coverage'
+            $receipt.observedManifest.document.children[1].ordinal = 2
+            $receipt.observedManifest.document.children[1].actual.acquisition.engineFrame = 101
+            $frameGap = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $frameGap.continuityVerified) 'native acquired frame identities must cover the reported continuity span'
+            $receipt.observedManifest.document.children[1].actual.acquisition.engineFrame = 102
+            $receipt.observedManifest.document.continuity.lastEngineFrame = 104
+            $mismatch = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $mismatch.continuityVerified) 'receipt and final manifest continuity must agree'
+            $receipt.observedManifest.document.continuity.lastEngineFrame = 103
+            $receipt.manifest.finalPath = $null
+            $partial = Get-CaptureInteractionBurstEvidence -Receipt $receipt -Plan $burstStarted.data.screenshot.burstPlan
+            Assert-Test (-not $partial.continuityVerified) 'a partial manifest cannot qualify native burst continuity'
+        }
+        $burstStopped = & $entry stop -SessionDirectory $burstSession -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+        Assert-Test ($burstStopped.ok -eq $expectedComplete -and $burstStopped.data.screenshot.burst.continuityVerified -eq $expectedComplete -and $burstStopped.data.recording.stopReceipt.path -eq 'recording.json') 'burst stop preserves continuity failure while still finalizing the owned recording'
+    }
+    Remove-Item Env:CAPTURE_INTERACTION_SCENARIO
+    Remove-Item -LiteralPath (Join-Path $root 'fake-state.json')
+    $delayedSession = Join-Path $root 'delayed-sequence'
+    $delayed = & $entry start -SessionDirectory $delayedSession -RuntimePath $runtime -VisualMode sequence -MaximumFrames 3 -FrameStartDelayMs 2000 -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit | ConvertFrom-Json -Depth 100
+    Assert-Test $delayed.ok 'ordinary sequences support an explicit millisecond start delay'
+    $delayedCall = @(Get-Content -LiteralPath (Join-Path $root 'calls.ndjson') | ConvertFrom-Json -Depth 80 | Where-Object { $_.tool -eq 'communityshaders.screenshot' -and $_.arguments.action -eq 'sequence_start' })[-1].arguments.sequence
+    Assert-Test ($delayedCall.schedule.basis -eq 'wall_clock' -and $delayedCall.schedule.startDelayMs -eq 2000) 'ordinary sequence delay is forwarded without guessing a rendered frame count'
+    $null = & $entry stop -SessionDirectory $delayedSession -DevBenchScriptPath $fake -SkipRuntimeIdentityVerification -Compact -NoExit
 
     function Start-FixtureSession([string]$Name, [string]$Mode = 'none') {
         Remove-Item -LiteralPath (Join-Path $root 'fake-state.json') -ErrorAction SilentlyContinue

@@ -20,7 +20,7 @@ $arguments = $ArgumentsJson | ConvertFrom-Json -Depth 80
 [IO.File]::AppendAllText((Join-Path $fixtureRoot 'calls.ndjson'), (@{tool=$Tool;arguments=$arguments} | ConvertTo-Json -Depth 80 -Compress) + "`n")
 $dataPath = Join-Path $fixtureRoot 'fake-state.json'
 $data = if (Test-Path -LiteralPath $dataPath) { Get-Content -LiteralPath $dataPath -Raw | ConvertFrom-Json -Depth 80 } else {
-    [pscustomobject]@{ recording=$false; recordState='idle'; correlationId=''; maximumDurationMs=14400000; vrOwner=''; vrToken=''; vrGeneration=1; vrStopped=$false; restorePolls=0; manifestPath='' }
+    [pscustomobject]@{ recording=$false; recordState='idle'; correlationId=''; maximumDurationMs=14400000; vrOwner=''; vrToken=''; vrGeneration=1; vrStopped=$false; restorePolls=0; manifestPath=''; burst=$false }
 }
 $scenario = [string]$env:CAPTURE_INTERACTION_SCENARIO
 $value = $null
@@ -44,16 +44,36 @@ if ($Tool -eq 'record') {
     }
 }
 elseif ($Tool -eq 'communityshaders.screenshot') {
-    if ($arguments.action -eq 'request_cancel' -and $env:CAPTURE_INTERACTION_FAIL_CLEANUP -eq '1') { $failure = 'fixture screenshot cancel failure' }
+    if ($arguments.action -eq 'capabilities') {
+        $capabilities = @{schema='urn:csx:devbench:screenshot:1';sources=@('hmd_submission');views=@('side_by_side')}
+        if ($scenario -ne 'no-burst') { $capabilities.burst = @{maximumFrames=240;maximumBytes=536870912;maximumRegions=8;nativeRegionAtlas=$true;deferredEncoding=$true} }
+        $value = @{ok=$true;result=$capabilities}
+    }
+    elseif ($arguments.action -eq 'request_cancel' -and $env:CAPTURE_INTERACTION_FAIL_CLEANUP -eq '1') { $failure = 'fixture screenshot cancel failure' }
     elseif ($arguments.action -eq 'sequence_start' -and $env:CAPTURE_INTERACTION_FAIL_VISUAL_START -eq '1') { $failure = 'fixture visual start failure' }
     elseif ($arguments.action -in @('sequence_start','capture')) {
         $descriptor = if ($arguments.action -eq 'capture') { $arguments.capture } else { $arguments.sequence.capture }
         if ($descriptor.source.kind -ne 'hmd_submission' -or $descriptor.source.fallback -ne 'reject') { throw 'Unexpected capture source.' }
         $image = Join-Path $descriptor.destination.directory 'frame-left.png'
-        [IO.File]::WriteAllBytes($image, [byte[]](1,2,3))
-        $child = @{ ordinal=4; requestId='child-4'; state='completed'; scheduledEngineFrame=44; actual=@{acquisition=@{sourceKind='hmd_submission';engineFrame=48;compositorCycle=52}}; artifacts=@(@{path=$image;bytes=3;committed=$true;sha256=(Get-FileHash -LiteralPath $image).Hash;actual=@{view='left_eye';format='png';colourContract='sdr_srgb';width=100;height=100}}) }
+        Add-Type -AssemblyName System.Drawing.Common
+        $bitmap = [Drawing.Bitmap]::new(100, 100)
+        try { $bitmap.Save($image, [Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+        $child = @{ ordinal=4; requestId='child-4'; state='completed'; scheduledEngineFrame=44; actual=@{acquisition=@{sourceKind='hmd_submission';engineFrame=48;compositorCycle=52}}; artifacts=@(@{path=$image;bytes=(Get-Item -LiteralPath $image).Length;committed=$true;sha256=(Get-FileHash -LiteralPath $image).Hash;actual=@{view='left_eye';format='png';colourContract='sdr_srgb';width=100;height=100}}) }
         $data.manifestPath = Join-Path $descriptor.destination.directory 'sequence.manifest.json'
-        @{requestId='req-1';children=@($child)} | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $data.manifestPath -Encoding utf8
+        $manifest = @{requestId='req-1';children=@($child)}
+        $data.burst = $arguments.action -eq 'sequence_start' -and $null -ne $arguments.sequence.PSObject.Properties['burst']
+        if ($data.burst) {
+            if ($arguments.sequence.schedule.basis -ne 'game_frames' -or $arguments.sequence.schedule.intervalFrames -ne 1 -or $descriptor.outputs.Count -ne 1 -or $descriptor.outputs[0].view -ne 'side_by_side') { throw 'Invalid native burst schedule or output.' }
+            $width = [int]$arguments.sequence.burst.regions[0].width * 2
+            $height = [int]($arguments.sequence.burst.regions | Measure-Object -Property height -Sum).Sum
+            $bitmap = [Drawing.Bitmap]::new($width, $height)
+            try { $bitmap.Save($image, [Drawing.Imaging.ImageFormat]::Png) } finally { $bitmap.Dispose() }
+            $manifest.children = @(for ($ordinal = 1; $ordinal -le $arguments.sequence.frameCount; $ordinal++) {
+                @{ordinal=$ordinal;requestId="child-$ordinal";state='completed';actual=@{acquisition=@{sourceKind='hmd_submission';engineFrame=(100+$ordinal);compositorCycle=(200+$ordinal)}};artifacts=@(@{path=$image;bytes=(Get-Item -LiteralPath $image).Length;committed=$true;sha256=(Get-FileHash -LiteralPath $image).Hash;actual=@{view='side_by_side';format='png';colourContract='sdr_srgb';width=$width;height=$height}})}
+            })
+            $manifest.continuity = @{complete=($scenario -ne 'burst-gap');acquired=$arguments.sequence.frameCount;requested=$arguments.sequence.frameCount;firstEngineFrame=101;lastEngineFrame=(100+$arguments.sequence.frameCount);failure=$(if ($scenario -eq 'burst-gap') {'nonconsecutive_acquisition'} else {''})}
+        }
+        $manifest | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $data.manifestPath -Encoding utf8
         $value = @{ok=$true;result=@{requestId='req-1';state='running';terminal=$false}}
         if ($env:CAPTURE_INTERACTION_BREAK_SESSION_DIRECTORY) {
             $target = [IO.Path]::GetFullPath($env:CAPTURE_INTERACTION_BREAK_SESSION_DIRECTORY)
@@ -65,6 +85,7 @@ elseif ($Tool -eq 'communityshaders.screenshot') {
     elseif ($arguments.action -eq 'request_get') {
         $terminalState = if ($scenario -eq 'screenshot-failed') {'failed_partial'} else {'completed'}
         $value = @{ok=$true;result=@{requestId='req-1';state=$terminalState;terminal=$true;manifest=@{finalPath=$data.manifestPath;partialPath=$null}}}
+        if ($data.burst) { $value.result.continuity = (Get-Content -LiteralPath $data.manifestPath -Raw | ConvertFrom-Json -Depth 30).continuity }
     }
     else { $value = @{ok=$true;result=@{requestId='req-1';state='stop_requested'}} }
 }

@@ -16,7 +16,11 @@ param(
     [ValidateRange(10, 5000)][int]$RecordIntervalMs = 50,
     [ValidateRange(10, 14400000)][int]$RecordMaximumDurationMs = 14400000,
     [ValidateRange(50, 60000)][int]$FrameIntervalMs = 500,
+    [ValidateRange(0, 60000)][int]$FrameStartDelayMs = 0,
     [ValidateRange(1, 10000)][int]$MaximumFrames = 2400,
+    [string]$BurstRegionsJson,
+    [ValidateRange(1, 536870912)][long]$BurstMaximumBytes = 536870912,
+    [ValidateRange(0, 216000)][int]$BurstStartDelayFrames = 0,
     [ValidateRange(1, 120)][int]$CaptureTimeoutSeconds = 20,
     [ValidateRange(1, 55)][int]$ActionTimeoutSeconds = 15,
     [switch]$AllowNoPlayer,
@@ -262,6 +266,10 @@ function Get-CompositeObservation($State, [switch]$CaptureOnDemand) {
     else { foreach ($issue in @(Get-RecordingIssues $record.value ([string]$State.sessionId) -RequireRunning)) { $issues.Add($issue) } }
     $screenshotReceipt = $null
     $screenshotError = $null
+    $latest = $null
+    $frameSubmission = $null
+    $burstEvidence = $null
+    $observationId = [guid]::NewGuid().ToString('N')
     try {
         if ([string]$State.visualMode -eq 'sequence' -and $State.screenshot.requestId) {
             $screenshotReceipt = Get-ScreenshotReceipt -RequestId ([string]$State.screenshot.requestId) -State $State
@@ -276,9 +284,16 @@ function Get-CompositeObservation($State, [switch]$CaptureOnDemand) {
         if ($screenshotReceipt -and [string]$screenshotReceipt.state -in @('completed','completed_with_warnings') -and -not $latest) {
             $issues.Add('Completed screenshot request has no committed HMD PNG to observe.')
         }
+        $burstPlan = Get-CaptureInteractionProperty $State.screenshot 'burstPlan'
+        if ($screenshotReceipt -and $burstPlan) {
+            $burstEvidence = Get-CaptureInteractionBurstEvidence -Receipt $screenshotReceipt -Plan $burstPlan
+            foreach ($issue in $burstEvidence.errors) { $issues.Add($issue) }
+        }
+        if ($latest) {
+            $frameSubmission = New-CaptureInteractionFrameSubmission -LatestFrame $latest -SessionDirectory ([string]$State.sessionDirectory) -FramesDirectory ([string]$State.framesDirectory) -ObservationId $observationId
+        }
     }
-    catch { $screenshotError = $_.Exception.Message; $latest = $null; $issues.Add($screenshotError) }
-    $observationId = [guid]::NewGuid().ToString('N')
+    catch { $screenshotError = $_.Exception.Message; $frameSubmission = $null; $issues.Add($screenshotError) }
     $observation = [pscustomobject][ordered]@{
         contractVersion = '1.0.0'
         observationId = $observationId
@@ -287,8 +302,8 @@ function Get-CompositeObservation($State, [switch]$CaptureOnDemand) {
         ok = $issues.Count -eq 0
         errors = @($issues)
         latestFrame = $latest
-        frameSubmission = $(if ($latest) { [pscustomobject][ordered]@{ kind = 'image-file'; path = [string]$latest.path; mimeType = 'image/png'; view = [string]$latest.view; observationId = $observationId; ordinal = $latest.ordinal; engineFrame = $latest.engineFrame } } else { $null })
-        screenshot = [pscustomobject][ordered]@{ mode = [string]$State.visualMode; receipt = $screenshotReceipt; error = $screenshotError }
+        frameSubmission = $frameSubmission
+        screenshot = [pscustomobject][ordered]@{ mode = [string]$State.visualMode; receipt = $screenshotReceipt; burst = $burstEvidence; error = $screenshotError }
         recording = $record
         game = $game
         menus = $menus
@@ -344,6 +359,19 @@ function Invoke-CaptureStartupCleanup($Recovery) {
 
 $failureData = $null
 try {
+    $hasBurst = $PSBoundParameters.ContainsKey('BurstRegionsJson')
+    foreach ($option in @('BurstRegionsJson','BurstMaximumBytes','BurstStartDelayFrames','FrameStartDelayMs')) {
+        if ($PSBoundParameters.ContainsKey($option) -and ($Command -ne 'start' -or $VisualMode -ne 'sequence')) { throw "-$option is supported only by start -VisualMode sequence." }
+    }
+    if (-not $hasBurst -and ($PSBoundParameters.ContainsKey('BurstMaximumBytes') -or $PSBoundParameters.ContainsKey('BurstStartDelayFrames'))) { throw 'BurstMaximumBytes and BurstStartDelayFrames require BurstRegionsJson.' }
+    $burstPlan = $null
+    if ($hasBurst) {
+        if (-not $PSBoundParameters.ContainsKey('MaximumFrames')) { throw 'Native bursts require an explicit MaximumFrames within 1..240.' }
+        if ($PSBoundParameters.ContainsKey('FrameIntervalMs') -or $PSBoundParameters.ContainsKey('FrameStartDelayMs')) { throw 'Native bursts use rendered frames; use BurstStartDelayFrames and omit FrameIntervalMs/FrameStartDelayMs.' }
+        if ($PSBoundParameters.ContainsKey('PreferredView') -and $PreferredView -ne 'side_by_side') { throw 'Native bursts require PreferredView side_by_side.' }
+        $PreferredView = 'side_by_side'
+        $burstPlan = New-CaptureInteractionBurstPlan -RegionsJson $BurstRegionsJson -FrameCount $MaximumFrames -MaximumBytes $BurstMaximumBytes -StartDelayFrames $BurstStartDelayFrames
+    }
     if ($Command -eq 'capabilities') {
         if ([string]::IsNullOrWhiteSpace($RuntimePath)) { throw '-RuntimePath or CSX_DEVBENCH_RUNTIME_PATH is required.' }
         $transportContract = Get-CaptureTransportContract $RuntimePath
@@ -372,8 +400,32 @@ try {
         if ([string]$recordStatus.state -ne 'idle') { throw "Recording service is '$($recordStatus.state)'; it belongs to an existing capture." }
         $initialTrackedSet = (Invoke-DevBench 'input' @{ action='observe'; device='vrTrackedSet' } $RuntimePath -RequireSuccess).value
         if (-not $initialTrackedSet.PSObject.Properties['frame']) { throw 'DevBench atomic tracked-set observation returned no frame.' }
+        if ($burstPlan) {
+            $capabilityCall = Invoke-DevBench $screenshotTool (New-ScreenshotCommand 'burst-admission' 'capabilities') $RuntimePath -RequireSuccess
+            $capabilities = Get-CaptureInteractionProperty $capabilityCall.value 'result'
+            $burstCapability = Get-CaptureInteractionProperty $capabilities 'burst'
+            foreach ($flag in @('nativeRegionAtlas','deferredEncoding')) {
+                $flagValue = Get-CaptureInteractionProperty $burstCapability $flag
+                if ($flagValue -isnot [bool] -or -not $flagValue) { throw "The runtime lacks the native burst capability '$flag'." }
+            }
+            foreach ($limit in @('maximumFrames','maximumBytes','maximumRegions')) {
+                $limitValue = Get-CaptureInteractionProperty $burstCapability $limit
+                if (($limitValue -isnot [int] -and $limitValue -isnot [long]) -or $limitValue -le 0) { throw "The runtime lacks a valid native burst capability limit '$limit'." }
+            }
+            if ((Get-CaptureInteractionProperty $capabilities 'schema') -ne 'urn:csx:devbench:screenshot:1' -or
+                (Get-CaptureInteractionProperty $burstCapability 'nativeRegionAtlas') -ne $true -or
+                (Get-CaptureInteractionProperty $burstCapability 'deferredEncoding') -ne $true -or
+                (Get-CaptureInteractionProperty $burstCapability 'maximumFrames' 0) -lt $MaximumFrames -or
+                (Get-CaptureInteractionProperty $burstCapability 'maximumBytes' 0) -lt $BurstMaximumBytes -or
+                (Get-CaptureInteractionProperty $burstCapability 'maximumRegions' 0) -lt $burstPlan.descriptor.regions.Count -or
+                'hmd_submission' -notin @(Get-CaptureInteractionProperty $capabilities 'sources' @()) -or
+                'side_by_side' -notin @(Get-CaptureInteractionProperty $capabilities 'views' @())) {
+                throw 'The runtime does not advertise the required native stereo burst capability and limits.'
+            }
+        }
         if ($VisualMode -eq 'sequence') {
-            $plannedMs = [long]$MaximumFrames * $FrameIntervalMs + 2L * $CaptureTimeoutSeconds * 1000
+            $plannedMs = 2L * $CaptureTimeoutSeconds * 1000
+            if (-not $burstPlan) { $plannedMs += $FrameStartDelayMs + [long]$MaximumFrames * $FrameIntervalMs }
             if ($plannedMs -gt $RecordMaximumDurationMs -or [Math]::Ceiling($plannedMs / $RecordIntervalMs) -ge [long]$recordStatus.maximumRetainedFrames) {
                 throw 'Requested sequence exceeds the duration or pose-sample recording budget; reduce MaximumFrames or increase RecordIntervalMs.'
             }
@@ -391,7 +443,7 @@ try {
             recordAccepted = $true; recordStartReceipt = $recordCall.value; screenshotRequestId = $null
             screenshotStartReceipt = $null; cleanup = $null
         }
-        $screenshotState = [pscustomobject][ordered]@{ requestId = $null; startReceipt = $null }
+        $screenshotState = [pscustomobject][ordered]@{ requestId = $null; startReceipt = $null; burstPlan = $burstPlan }
         try {
             Write-JsonAtomic -Path ([string]$failureData.receiptPath) -Value $failureData
             $startIssues = @(Get-RecordingIssues $recordCall.value $sessionId -RequireRunning)
@@ -401,11 +453,18 @@ try {
                 $arguments['sequence'] = [ordered]@{
                     frameCount = $MaximumFrames
                     useSettings = $false
-                    schedule = [ordered]@{ basis = 'wall_clock'; intervalMs = $FrameIntervalMs; startDelayMs = 0; pausePolicy = 'hold' }
+                    schedule = [ordered]@{ basis = 'wall_clock'; intervalMs = $FrameIntervalMs; startDelayMs = $FrameStartDelayMs; pausePolicy = 'hold' }
                     backpressure = [ordered]@{ policy = 'skip'; maximumConsecutiveSkips = 20 }
                     failurePolicy = 'continue'
                     capture = New-CaptureDescriptor $framesDirectory 'frame' $sessionId
                     packaging = [ordered]@{ frameManifest = $true; previewVideo = [ordered]@{ requested = $false; required = $false; framesPerSecond = [Math]::Max(1, [int](1000 / $FrameIntervalMs)) } }
+                }
+                if ($burstPlan) {
+                    $arguments.sequence.burst = $burstPlan.descriptor
+                    $arguments.sequence.schedule = [ordered]@{ basis = 'game_frames'; intervalFrames = 1; startDelayFrames = $BurstStartDelayFrames; pausePolicy = 'hold' }
+                    $arguments.sequence.backpressure.policy = 'abort'
+                    $arguments.sequence.Remove('failurePolicy')
+                    $arguments.sequence.capture.outputs = @([ordered]@{ view = 'side_by_side'; nameSuffix = 'atlas'; encoding = [ordered]@{ format = 'png'; colourContract = 'sdr_srgb' } })
                 }
                 $started = Invoke-DevBench -Tool $screenshotTool -Arguments $arguments -Runtime $RuntimePath -RequireSuccess
                 $receipt = @(Find-CaptureInteractionScreenshotReceipt -Value $started.value | Select-Object -First 1)
@@ -574,6 +633,12 @@ try {
             } else { $recordStop = $state.recording.stopReceipt }
             if ($recordStop -and [bool](Get-CaptureInteractionProperty $recordStop 'limitReached' $false)) { $errors.Add("Recording was truncated: $(Get-CaptureInteractionProperty $recordStop 'limitReason').") }
             if ($screenshotReceipt -and [string]$screenshotReceipt.state -in @('failed','failed_partial','rejected')) { $errors.Add("Screenshot request ended in '$($screenshotReceipt.state)'.") }
+            $burstPlan = Get-CaptureInteractionProperty $state.screenshot 'burstPlan'
+            if ($screenshotReceipt -and $burstPlan) {
+                $burstEvidence = Get-CaptureInteractionBurstEvidence -Receipt $screenshotReceipt -Plan $burstPlan
+                $state.screenshot | Add-Member -NotePropertyName burst -NotePropertyValue $burstEvidence -Force
+                if ($Command -eq 'stop') { foreach ($issue in $burstEvidence.errors) { $errors.Add($issue) } }
+            }
             $state.status = if ($errors.Count -eq 0) { if ($Command -eq 'stop') { 'stopped' } else { 'aborted' } } else { 'stopped-with-errors' }
             $state.updatedUtc = [DateTime]::UtcNow.ToString('o')
             $state.recording.stopReceipt = $recordStop
