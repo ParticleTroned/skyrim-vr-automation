@@ -7,6 +7,9 @@ optional integration rather than the identity or boundary of the toolkit.
 
 ## Included tools
 
+- Manual hotspot walks with WPR, fpsVR and automatic player/HMD pause detection:
+  [hotspot-sw protocol](tools/hotspot-sw/README.md).
+
 - `tools/frustrum` — paired fast-path OFF/ON reloads for each save with the
   unchanged gameft-sw timing, health and stack/wait recorder; see its
   [protocol](tools/frustrum/README.md).

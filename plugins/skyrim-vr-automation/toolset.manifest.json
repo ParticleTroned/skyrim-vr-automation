@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "skyrim-vr-automation",
-  "version": "0.9.0+codex.20260918194719",
+  "version": "0.9.0+codex.20260920133545",
   "license": "GPL-3.0-or-later",
   "publisher": "Treatid2",
   "preservedUtc": "2026-08-21T00:00:00Z",
@@ -107,6 +107,11 @@
       "name": "build-test-control",
       "version": "1.0.0",
       "entryPoint": "tools/build-test-control/Invoke-CSXBuildTests.ps1"
+    },
+    {
+      "name": "hotspot-sw",
+      "version": "1.0.0",
+      "entryPoint": "tools/hotspot-sw/Invoke-HotspotSw.ps1"
     },
     {
       "name": "gameft-sw",

@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $powerShell = (Get-Process -Id $PID).Path
 $tests = @(
+    @{ Name = 'hotspot-sw'; Path = 'tests\Test-HotspotSw.ps1'; Arguments = @() },
     @{ Name = 'depthc'; Path = 'tests\depthc_test.ps1'; Arguments = @() },
     @{ Name = 'frustrum'; Path = 'tests\frustrum_test.ps1'; Arguments = @() },
     @{ Name = 'gameft-stack-wait'; Path = 'tests\gameft_stack_wait_test.ps1'; Arguments = @() },
