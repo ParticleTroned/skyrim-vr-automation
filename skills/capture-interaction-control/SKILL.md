@@ -8,8 +8,10 @@ description: "Capture, observe, and interact with a running Skyrim VR session th
 Use `tools/capture-interaction-control/Invoke-CaptureInteraction.ps1` as the
 only session orchestrator. Read its `README.md` before the first mutation.
 
-1. Acquire `Kind=capture` managed scratch before `start` when frames or a unique
-   activity trace will be written. Pass its `workPath` as `-SessionDirectory`.
+1. Choose a unique, retained `-SessionDirectory` before `start`. Use the
+   `workPath` of a managed `Kind=capture` allocation when available; otherwise
+   use an explicit task-owned evidence directory. Record which path owns the
+   capture and never reuse a directory from another session.
 2. Use `capabilities` before a new runtime/build. Require successful DevBench
    recording and atomic tracked-set observation. Require screenshot v1 only for
    `on-demand` or `sequence` mode.
@@ -41,9 +43,9 @@ only session orchestrator. Read its `README.md` before the first mutation.
    finalization. Both preserve receipts; neither deletes evidence.
 8. Use `wait-save` for a requested save boundary. Keep its bounded UTC receipt,
    then call `stop` separately after the expected save is stable.
-9. Promote unique retained evidence to the configured authoritative permanent
-   store and verify it before releasing capture scratch as promoted. Do not keep
-   using a released allocation.
+9. Retain and verify the completed evidence. For managed scratch, promote it to
+   the configured authoritative store before releasing the allocation. Keep an
+   explicit evidence directory until its owner directs its disposition.
 
 The tool does not launch or stop MO2/Skyrim. Use `$mo2-control` for the owned
 runtime lifecycle, `$steamvr-null-hmd` for null-HMD changes, and
